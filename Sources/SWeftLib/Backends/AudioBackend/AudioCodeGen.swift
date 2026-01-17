@@ -119,7 +119,7 @@ public class AudioCodeGen {
                 }
             }
             // Inline the first return with substitutions
-            let inlined = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
             return try buildEvaluator(for: inlined)
 
         case .extract(let callExpr, let index):
@@ -141,14 +141,14 @@ public class AudioCodeGen {
                 }
             }
             // Inline the specific return with substitutions
-            let inlined = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
             return try buildEvaluator(for: inlined)
 
         case .remap(let base, let substitutions):
             // Remap applies substitutions to the DIRECT expression of the base bundle,
             // without recursively inlining its dependencies.
-            let directExpr = try getDirectExpression(base)
-            let remapped = applyRemap(to: directExpr, substitutions: substitutions)
+            let directExpr = IRTransformations.getDirectExpression(base, program: program)
+            let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try buildEvaluator(for: remapped)
 
         case .texture:
@@ -172,187 +172,6 @@ public class AudioCodeGen {
 
     // Audio input source (set by backend)
     public weak var audioInput: AudioInputSource?
-
-    /// Substitute parameters in an expression
-    private func substituteParams(in expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
-        switch expr {
-        case .num:
-            return expr
-        case .param(let name):
-            return substitutions[name] ?? expr
-        case .index(let bundle, let indexExpr):
-            if let subst = substitutions[bundle], case .index(let newBundle, _) = subst {
-                return .index(bundle: newBundle, indexExpr: substituteParams(in: indexExpr, substitutions: substitutions))
-            }
-            return .index(bundle: bundle, indexExpr: substituteParams(in: indexExpr, substitutions: substitutions))
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(op: op, left: substituteParams(in: left, substitutions: substitutions), right: substituteParams(in: right, substitutions: substitutions))
-        case .unaryOp(let op, let operand):
-            return .unaryOp(op: op, operand: substituteParams(in: operand, substitutions: substitutions))
-        case .call(let spindle, let args):
-            return .call(spindle: spindle, args: args.map { substituteParams(in: $0, substitutions: substitutions) })
-        case .builtin(let name, let args):
-            return .builtin(name: name, args: args.map { substituteParams(in: $0, substitutions: substitutions) })
-        case .extract(let call, let index):
-            return .extract(call: substituteParams(in: call, substitutions: substitutions), index: index)
-        case .remap(let base, let remapSubs):
-            var newSubs: [String: IRExpr] = [:]
-            for (key, value) in remapSubs { newSubs[key] = substituteParams(in: value, substitutions: substitutions) }
-            return .remap(base: substituteParams(in: base, substitutions: substitutions), substitutions: newSubs)
-        case .texture(let rid, let u, let v, let ch):
-            return .texture(resourceId: rid, u: substituteParams(in: u, substitutions: substitutions), v: substituteParams(in: v, substitutions: substitutions), channel: ch)
-        case .camera(let u, let v, let ch):
-            return .camera(u: substituteParams(in: u, substitutions: substitutions), v: substituteParams(in: v, substitutions: substitutions), channel: ch)
-        case .microphone(let offset, let ch):
-            return .microphone(offset: substituteParams(in: offset, substitutions: substitutions), channel: ch)
-        }
-    }
-
-    /// Get the direct expression for a bundle reference WITHOUT recursively inlining dependencies.
-    private func getDirectExpression(_ expr: IRExpr) throws -> IRExpr {
-        switch expr {
-        case .index(let bundle, let indexExpr):
-            if bundle == "me" { return expr }
-            if let targetBundle = program.bundles[bundle] {
-                if case .num(let idx) = indexExpr {
-                    let strandIdx = Int(idx)
-                    if strandIdx < targetBundle.strands.count {
-                        return targetBundle.strands[strandIdx].expr
-                    }
-                } else if case .param(let field) = indexExpr {
-                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
-                        return strand.expr
-                    }
-                }
-            }
-            return expr
-        case .extract(let callExpr, let index):
-            guard case .call(let spindle, let args) = callExpr,
-                  let spindleDef = program.spindles[spindle],
-                  index < spindleDef.returns.count else { return expr }
-            var subs: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count { subs[param] = args[i] }
-            }
-            return substituteParams(in: spindleDef.returns[index], substitutions: subs)
-        case .call(let spindle, let args):
-            guard let spindleDef = program.spindles[spindle], !spindleDef.returns.isEmpty else { return expr }
-            var subs: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count { subs[param] = args[i] }
-            }
-            return substituteParams(in: spindleDef.returns[0], substitutions: subs)
-        default:
-            return expr
-        }
-    }
-
-    /// Inline bundle references to their actual expressions (at IR level)
-    private func inlineExpression(_ expr: IRExpr) throws -> IRExpr {
-        switch expr {
-        case .num, .param:
-            return expr
-        case .index(let bundle, let indexExpr):
-            if bundle == "me" { return expr }
-            if let targetBundle = program.bundles[bundle] {
-                if case .num(let idx) = indexExpr {
-                    let strandIdx = Int(idx)
-                    if strandIdx < targetBundle.strands.count {
-                        return try inlineExpression(targetBundle.strands[strandIdx].expr)
-                    }
-                } else if case .param(let field) = indexExpr {
-                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
-                        return try inlineExpression(strand.expr)
-                    }
-                }
-            }
-            return expr
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(op: op, left: try inlineExpression(left), right: try inlineExpression(right))
-        case .unaryOp(let op, let operand):
-            return .unaryOp(op: op, operand: try inlineExpression(operand))
-        case .call(let spindle, let args):
-            guard let spindleDef = program.spindles[spindle], !spindleDef.returns.isEmpty else { return expr }
-            var subs: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count { subs[param] = try inlineExpression(args[i]) }
-            }
-            return try inlineExpression(substituteParams(in: spindleDef.returns[0], substitutions: subs))
-        case .builtin(let name, let args):
-            return .builtin(name: name, args: try args.map { try inlineExpression($0) })
-        case .extract(let callExpr, let index):
-            guard case .call(let spindle, let args) = callExpr,
-                  let spindleDef = program.spindles[spindle],
-                  index < spindleDef.returns.count else { return expr }
-            var subs: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count { subs[param] = try inlineExpression(args[i]) }
-            }
-            return try inlineExpression(substituteParams(in: spindleDef.returns[index], substitutions: subs))
-        case .remap(let base, let substitutions):
-            let inlinedBase = try inlineExpression(base)
-            var inlinedSubs: [String: IRExpr] = [:]
-            for (key, value) in substitutions { inlinedSubs[key] = try inlineExpression(value) }
-            return applyRemap(to: inlinedBase, substitutions: inlinedSubs)
-        case .texture(let rid, let u, let v, let ch):
-            return .texture(resourceId: rid, u: try inlineExpression(u), v: try inlineExpression(v), channel: ch)
-        case .camera(let u, let v, let ch):
-            return .camera(u: try inlineExpression(u), v: try inlineExpression(v), channel: ch)
-        case .microphone(let offset, let ch):
-            return .microphone(offset: try inlineExpression(offset), channel: ch)
-        }
-    }
-
-    /// Apply remap substitutions to an expression
-    /// Substitution keys are in "bundle.field" format (e.g., "me.x", "foo.x")
-    private func applyRemap(to expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
-        switch expr {
-        case .num:
-            return expr
-        case .param(let name):
-            // Try bare name and me.name format
-            if let remapped = substitutions[name] { return remapped }
-            if let remapped = substitutions["me.\(name)"] { return remapped }
-            return expr
-        case .index(let bundle, let indexExpr):
-            // Check if this coordinate is being remapped
-            // Try multiple key formats since JS uses numeric indices but expressions use field names
-            var keysToTry: [String] = []
-            if case .param(let field) = indexExpr {
-                keysToTry.append("\(bundle).\(field)")
-                if bundle == "me" {
-                    let meIndices = ["x": 0, "y": 1, "u": 2, "v": 3, "w": 4, "h": 5, "t": 6, "i": 0, "sampleRate": 2]
-                    if let idx = meIndices[field] { keysToTry.append("\(bundle).\(idx)") }
-                }
-            } else if case .num(let idx) = indexExpr {
-                keysToTry.append("\(bundle).\(Int(idx))")
-            }
-            for key in keysToTry {
-                if let remapped = substitutions[key] { return remapped }
-            }
-            return .index(bundle: bundle, indexExpr: applyRemap(to: indexExpr, substitutions: substitutions))
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(op: op, left: applyRemap(to: left, substitutions: substitutions), right: applyRemap(to: right, substitutions: substitutions))
-        case .unaryOp(let op, let operand):
-            return .unaryOp(op: op, operand: applyRemap(to: operand, substitutions: substitutions))
-        case .call(let spindle, let args):
-            return .call(spindle: spindle, args: args.map { applyRemap(to: $0, substitutions: substitutions) })
-        case .builtin(let name, let args):
-            return .builtin(name: name, args: args.map { applyRemap(to: $0, substitutions: substitutions) })
-        case .extract(let call, let index):
-            return .extract(call: applyRemap(to: call, substitutions: substitutions), index: index)
-        case .remap(let base, let innerSubs):
-            var composed: [String: IRExpr] = [:]
-            for (key, value) in innerSubs { composed[key] = applyRemap(to: value, substitutions: substitutions) }
-            return .remap(base: applyRemap(to: base, substitutions: substitutions), substitutions: composed)
-        case .texture(let rid, let u, let v, let ch):
-            return .texture(resourceId: rid, u: applyRemap(to: u, substitutions: substitutions), v: applyRemap(to: v, substitutions: substitutions), channel: ch)
-        case .camera(let u, let v, let ch):
-            return .camera(u: applyRemap(to: u, substitutions: substitutions), v: applyRemap(to: v, substitutions: substitutions), channel: ch)
-        case .microphone(let offset, let ch):
-            return .microphone(offset: applyRemap(to: offset, substitutions: substitutions), channel: ch)
-        }
-    }
 
     /// Build binary operation evaluator
     private func buildBinaryOp(

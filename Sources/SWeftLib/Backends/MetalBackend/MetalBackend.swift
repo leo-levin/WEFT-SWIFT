@@ -35,6 +35,9 @@ public struct MetalUniforms {
 public class MetalBackend: Backend {
     public static let identifier = "visual"
     public static let ownedBuiltins: Set<String> = ["camera", "texture", "load"]
+    public static let externalBuiltins: Set<String> = ["camera", "texture"]
+    public static let statefulBuiltins: Set<String> = []
+    public static let outputSinkName: String? = "display"
     public static let coordinateFields = ["x", "y", "t", "w", "h"]
 
     public let device: MTLDevice

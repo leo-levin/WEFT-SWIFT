@@ -20,6 +20,9 @@ public class AudioCompiledUnit: CompiledUnit {
 public class AudioBackend: Backend {
     public static let identifier = "audio"
     public static let ownedBuiltins: Set<String> = ["microphone"]
+    public static let externalBuiltins: Set<String> = ["microphone"]
+    public static let statefulBuiltins: Set<String> = []
+    public static let outputSinkName: String? = "play"
     public static let coordinateFields = ["i", "t", "sampleRate"]
 
     private var audioEngine: AVAudioEngine?

@@ -26,8 +26,17 @@ public protocol Backend {
     /// Unique identifier for this backend
     static var identifier: String { get }
 
-    /// Builtins this backend owns
+    /// Builtins this backend owns (determines ownership of bundles using these)
     static var ownedBuiltins: Set<String> { get }
+
+    /// External builtins - hardware/outside world inputs (camera, microphone)
+    static var externalBuiltins: Set<String> { get }
+
+    /// Stateful builtins - functions that maintain state (cache)
+    static var statefulBuiltins: Set<String> { get }
+
+    /// Output sink name for this backend ("display" for visual, "play" for audio)
+    static var outputSinkName: String? { get }
 
     /// Coordinate fields provided by this backend (e.g., ["x", "y", "t"] for visual)
     static var coordinateFields: [String] { get }

@@ -14,7 +14,10 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var purityAnalysis: PurityAnalysis?
     public private(set) var swatchGraph: SwatchGraph?
 
-    // Backends
+    // Backend registry
+    public let registry: BackendRegistry
+
+    // Backend instances (lazily initialized)
     public private(set) var metalBackend: MetalBackend?
     public private(set) var audioBackend: AudioBackend?
 
@@ -37,7 +40,8 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var time: Double = 0
     public private(set) var isRunning = false
 
-    public init() {
+    public init(registry: BackendRegistry = .shared) {
+        self.registry = registry
         self.bufferManager = BufferManager()
         self.cacheManager = CacheManager()
     }
@@ -57,13 +61,13 @@ public class Coordinator: CameraCaptureDelegate {
         graph.build(from: program)
         self.dependencyGraph = graph
 
-        // Analyze ownership
-        let ownership = OwnershipAnalysis()
+        // Analyze ownership (using registry for backend metadata)
+        let ownership = OwnershipAnalysis(registry: registry)
         ownership.analyze(program: program)
         self.ownershipAnalysis = ownership
 
-        // Analyze purity
-        let purity = PurityAnalysis()
+        // Analyze purity (using registry for backend metadata)
+        let purity = PurityAnalysis(registry: registry)
         purity.analyze(program: program)
         self.purityAnalysis = purity
 
