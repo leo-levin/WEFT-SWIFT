@@ -212,28 +212,6 @@ public class MetalCodeGen {
             let directExpr = IRTransformations.getDirectExpression(base, program: program)
             let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try generateExpression(remapped)
-
-        case .texture(let resourceId, let u, let v, let channel):
-            // Sample from texture
-            let uCode = try generateExpression(u)
-            let vCode = try generateExpression(v)
-            let channelNames = ["r", "g", "b", "a"]
-            let channelName = channel < channelNames.count ? channelNames[channel] : "r"
-            return "texture\(resourceId).sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
-
-        case .camera(let u, let v, let channel):
-            // Sample from camera texture (treated as texture0)
-            let uCode = try generateExpression(u)
-            let vCode = try generateExpression(v)
-            let channelNames = ["r", "g", "b", "a"]
-            let channelName = channel < channelNames.count ? channelNames[channel] : "r"
-            return "cameraTexture.sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
-
-        case .microphone(let offset, let channel):
-            // Sample from audio buffer texture (1D texture, x = time, channels = L/R)
-            let offsetCode = try generateExpression(offset)
-            let channelName = channel == 0 ? "r" : "g"
-            return "audioBuffer.sample(textureSampler, float2(\(offsetCode), 0.5)).\(channelName)"
         }
     }
 
@@ -339,6 +317,64 @@ public class MetalCodeGen {
             // For now, just return the value (stateless approximation)
             // Real implementation needs texture history buffer
             return argCodes[0]
+
+        // Hardware inputs - now handled as builtins
+        case "camera":
+            // camera(u, v, channel)
+            guard args.count >= 3 else {
+                throw BackendError.unsupportedExpression("camera requires 3 arguments: u, v, channel")
+            }
+            let uCode = argCodes[0]
+            let vCode = argCodes[1]
+            let channel = args[2]
+            let channelNames = ["r", "g", "b", "a"]
+            let channelIdx: Int
+            if case .num(let ch) = channel {
+                channelIdx = Int(ch)
+            } else {
+                channelIdx = 0
+            }
+            let channelName = channelIdx < channelNames.count ? channelNames[channelIdx] : "r"
+            return "cameraTexture.sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
+
+        case "texture":
+            // texture(resourceId, u, v, channel)
+            guard args.count >= 4 else {
+                throw BackendError.unsupportedExpression("texture requires 4 arguments: resourceId, u, v, channel")
+            }
+            let resourceId: Int
+            if case .num(let rid) = args[0] {
+                resourceId = Int(rid)
+            } else {
+                resourceId = 0
+            }
+            let uCode = argCodes[1]
+            let vCode = argCodes[2]
+            let channel = args[3]
+            let texChannelNames = ["r", "g", "b", "a"]
+            let texChannelIdx: Int
+            if case .num(let ch) = channel {
+                texChannelIdx = Int(ch)
+            } else {
+                texChannelIdx = 0
+            }
+            let texChannelName = texChannelIdx < texChannelNames.count ? texChannelNames[texChannelIdx] : "r"
+            return "texture\(resourceId).sample(textureSampler, float2(\(uCode), \(vCode))).\(texChannelName)"
+
+        case "microphone":
+            // microphone(offset, channel)
+            guard args.count >= 2 else {
+                throw BackendError.unsupportedExpression("microphone requires 2 arguments: offset, channel")
+            }
+            let offsetCode = argCodes[0]
+            let channel = args[1]
+            let micChannelName: String
+            if case .num(let ch) = channel {
+                micChannelName = Int(ch) == 0 ? "r" : "g"
+            } else {
+                micChannelName = "r"
+            }
+            return "audioBuffer.sample(textureSampler, float2(\(offsetCode), 0.5)).\(micChannelName)"
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")

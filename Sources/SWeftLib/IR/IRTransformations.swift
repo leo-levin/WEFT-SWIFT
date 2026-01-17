@@ -77,27 +77,6 @@ public enum IRTransformations {
                 base: substituteParams(in: base, substitutions: substitutions),
                 substitutions: newRemapSubs
             )
-
-        case .texture(let resourceId, let u, let v, let channel):
-            return .texture(
-                resourceId: resourceId,
-                u: substituteParams(in: u, substitutions: substitutions),
-                v: substituteParams(in: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .camera(let u, let v, let channel):
-            return .camera(
-                u: substituteParams(in: u, substitutions: substitutions),
-                v: substituteParams(in: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .microphone(let offset, let channel):
-            return .microphone(
-                offset: substituteParams(in: offset, substitutions: substitutions),
-                channel: channel
-            )
         }
     }
 
@@ -252,24 +231,6 @@ public enum IRTransformations {
                 inlinedSubs[key] = try inlineExpression(value, program: program)
             }
             return applyRemap(to: inlinedBase, substitutions: inlinedSubs)
-
-        case .texture(let resourceId, let u, let v, let channel):
-            return .texture(
-                resourceId: resourceId,
-                u: try inlineExpression(u, program: program),
-                v: try inlineExpression(v, program: program),
-                channel: channel
-            )
-
-        case .camera(let u, let v, let channel):
-            return .camera(
-                u: try inlineExpression(u, program: program),
-                v: try inlineExpression(v, program: program),
-                channel: channel
-            )
-
-        case .microphone(let offset, let channel):
-            return .microphone(offset: try inlineExpression(offset, program: program), channel: channel)
         }
     }
 
@@ -362,27 +323,6 @@ public enum IRTransformations {
             return .remap(
                 base: applyRemap(to: base, substitutions: substitutions),
                 substitutions: composedSubs
-            )
-
-        case .texture(let resourceId, let u, let v, let channel):
-            return .texture(
-                resourceId: resourceId,
-                u: applyRemap(to: u, substitutions: substitutions),
-                v: applyRemap(to: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .camera(let u, let v, let channel):
-            return .camera(
-                u: applyRemap(to: u, substitutions: substitutions),
-                v: applyRemap(to: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .microphone(let offset, let channel):
-            return .microphone(
-                offset: applyRemap(to: offset, substitutions: substitutions),
-                channel: channel
             )
         }
     }

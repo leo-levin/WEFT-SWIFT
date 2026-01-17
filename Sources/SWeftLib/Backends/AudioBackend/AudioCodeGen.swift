@@ -101,7 +101,7 @@ public class AudioCodeGen {
 
         case .builtin(let name, let args):
             let argEvals = try args.map { try buildEvaluator(for: $0) }
-            return try buildBuiltin(name: name, args: argEvals)
+            return try buildBuiltin(name: name, args: argEvals, rawArgs: args)
 
         case .call(let spindle, let args):
             // Inline spindle call
@@ -150,23 +150,6 @@ public class AudioCodeGen {
             let directExpr = IRTransformations.getDirectExpression(base, program: program)
             let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try buildEvaluator(for: remapped)
-
-        case .texture:
-            // Textures not applicable to audio - return 0
-            return { _ in 0.0 }
-
-        case .camera:
-            // Camera not applicable to audio - return 0
-            return { _ in 0.0 }
-
-        case .microphone(let offset, let channel):
-            // Sample from live microphone input
-            let offsetEval = try buildEvaluator(for: offset)
-            return { [weak self] ctx in
-                guard let audioInput = self?.audioInput else { return 0.0 }
-                let sampleOffset = Int(offsetEval(ctx))
-                return audioInput.getSample(at: ctx.sampleIndex + sampleOffset, channel: channel)
-            }
         }
     }
 
@@ -215,7 +198,8 @@ public class AudioCodeGen {
     /// Build builtin function evaluator
     private func buildBuiltin(
         name: String,
-        args: [(AudioContext) -> Float]
+        args: [(AudioContext) -> Float],
+        rawArgs: [IRExpr] = []
     ) throws -> (AudioContext) -> Float {
         switch name {
         // Math functions
@@ -290,6 +274,30 @@ public class AudioCodeGen {
                 let clampedIdx = max(0, min(idx, branches.count - 1))
                 return branches[clampedIdx](ctx)  // Only selected branch is evaluated
             }
+
+        // Hardware inputs - now handled as builtins
+        case "microphone":
+            // microphone(offset, channel)
+            guard args.count >= 2, rawArgs.count >= 2 else {
+                return { _ in 0.0 }
+            }
+            let offsetEval = args[0]
+            // Extract channel as static value from raw args
+            let channel: Int
+            if case .num(let ch) = rawArgs[1] {
+                channel = Int(ch)
+            } else {
+                channel = 0
+            }
+            return { [weak self] ctx in
+                guard let audioInput = self?.audioInput else { return 0.0 }
+                let sampleOffset = Int(offsetEval(ctx))
+                return audioInput.getSample(at: ctx.sampleIndex + sampleOffset, channel: channel)
+            }
+
+        case "camera", "texture":
+            // Camera and texture not applicable to audio - return 0
+            return { _ in 0.0 }
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")

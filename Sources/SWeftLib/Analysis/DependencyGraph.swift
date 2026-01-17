@@ -100,17 +100,6 @@ public class DependencyGraph {
                 refs.formUnion(collectBundleReferences(expr: subExpr, program: program))
             }
             return refs
-
-        case .texture(_, let u, let v, _):
-            return collectBundleReferences(expr: u, program: program)
-                .union(collectBundleReferences(expr: v, program: program))
-
-        case .camera(let u, let v, _):
-            return collectBundleReferences(expr: u, program: program)
-                .union(collectBundleReferences(expr: v, program: program))
-
-        case .microphone(let offset, _):
-            return collectBundleReferences(expr: offset, program: program)
         }
     }
 
