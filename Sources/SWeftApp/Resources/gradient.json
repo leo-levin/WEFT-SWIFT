@@ -1,0 +1,19 @@
+{
+    "bundles": {
+        "display": {
+            "name": "display",
+            "strands": [
+                {"name": "r", "index": 0, "expr": {"type": "index", "bundle": "me", "field": "x"}},
+                {"name": "g", "index": 1, "expr": {"type": "index", "bundle": "me", "field": "y"}},
+                {"name": "b", "index": 2, "expr": {
+                    "type": "builtin",
+                    "name": "fract",
+                    "args": [{"type": "index", "bundle": "me", "field": "t"}]
+                }}
+            ]
+        }
+    },
+    "spindles": {},
+    "order": [{"bundle": "display"}],
+    "resources": []
+}

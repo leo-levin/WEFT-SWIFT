@@ -1,0 +1,720 @@
+// MetalCodeGen.swift - Generate Metal Shading Language from IR
+
+import Foundation
+
+// MARK: - Metal Code Generator
+
+public class MetalCodeGen {
+    private let program: IRProgram
+    private let swatch: Swatch
+
+    public init(program: IRProgram, swatch: Swatch) {
+        self.program = program
+        self.swatch = swatch
+    }
+
+    /// Generate complete Metal shader source
+    public func generate() throws -> String {
+        var code = """
+        #include <metal_stdlib>
+        using namespace metal;
+
+        // Uniforms passed from CPU
+        struct Uniforms {
+            float time;
+            float width;
+            float height;
+        };
+
+        """
+
+        // Generate compute kernel for display output
+        if swatch.bundles.contains("display") {
+            code += try generateDisplayKernel()
+        }
+
+        return code
+    }
+
+    /// Check if program uses camera
+    public func usesCamera() -> Bool {
+        for (_, bundle) in program.bundles {
+            for strand in bundle.strands {
+                if strand.expr.usesBuiltin("camera") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Check if program uses microphone
+    public func usesMicrophone() -> Bool {
+        for (_, bundle) in program.bundles {
+            for strand in bundle.strands {
+                if strand.expr.usesBuiltin("microphone") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Generate display compute kernel
+    private func generateDisplayKernel() throws -> String {
+        guard let displayBundle = program.bundles["display"] else {
+            throw BackendError.missingResource("display bundle not found")
+        }
+
+        // Collect expressions for each strand (r, g, b)
+        var colorExprs: [String] = []
+        for strand in displayBundle.strands.sorted(by: { $0.index < $1.index }) {
+            let expr = try generateExpression(strand.expr)
+            colorExprs.append(expr)
+        }
+
+        // Pad to 3 channels if needed
+        while colorExprs.count < 3 {
+            colorExprs.append("0.0")
+        }
+
+        // Check if we need camera or microphone textures
+        let needsCamera = usesCamera()
+        let needsMicrophone = usesMicrophone()
+        let needsSampler = needsCamera || needsMicrophone
+
+        var extraParams = ""
+        if needsCamera {
+            extraParams += "\n    texture2d<float, access::sample> cameraTexture [[texture(1)]],"
+        }
+        if needsMicrophone {
+            extraParams += "\n    texture2d<float, access::sample> audioBuffer [[texture(2)]],"
+        }
+        if needsSampler {
+            extraParams += "\n    sampler textureSampler [[sampler(0)]],"
+        }
+
+        return """
+        kernel void displayKernel(
+            texture2d<float, access::write> output [[texture(0)]],\(extraParams)
+            constant Uniforms& uniforms [[buffer(0)]],
+            uint2 gid [[thread_position_in_grid]]
+        ) {
+            float x = float(gid.x) / uniforms.width;
+            float y = float(gid.y) / uniforms.height;
+            float t = uniforms.time;
+            float w = uniforms.width;
+            float h = uniforms.height;
+
+            float r = \(colorExprs[0]);
+            float g = \(colorExprs[1]);
+            float b = \(colorExprs.count > 2 ? colorExprs[2] : "0.0");
+
+            output.write(float4(r, g, b, 1.0), gid);
+        }
+        """
+    }
+
+    /// Generate Metal expression from IR expression
+    public func generateExpression(_ expr: IRExpr) throws -> String {
+        switch expr {
+        case .num(let value):
+            return formatNumber(value)
+
+        case .param(let name):
+            // Coordinate parameters
+            return name
+
+        case .index(let bundle, let indexExpr):
+            if bundle == "me" {
+                // Access coordinate: me.x, me.y, me.t, etc.
+                if case .param(let field) = indexExpr {
+                    return field
+                }
+                throw BackendError.unsupportedExpression("Dynamic me index")
+            }
+
+            // Access another bundle's strand
+            if let targetBundle = program.bundles[bundle] {
+                if case .num(let idx) = indexExpr {
+                    let strandIdx = Int(idx)
+                    if strandIdx < targetBundle.strands.count {
+                        return try generateExpression(targetBundle.strands[strandIdx].expr)
+                    }
+                } else if case .param(let field) = indexExpr {
+                    // Named strand access
+                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
+                        return try generateExpression(strand.expr)
+                    }
+                }
+            }
+
+            throw BackendError.unsupportedExpression("Cannot resolve bundle \(bundle)")
+
+        case .binaryOp(let op, let left, let right):
+            let leftCode = try generateExpression(left)
+            let rightCode = try generateExpression(right)
+            return try generateBinaryOp(op: op, left: leftCode, right: rightCode)
+
+        case .unaryOp(let op, let operand):
+            let operandCode = try generateExpression(operand)
+            return try generateUnaryOp(op: op, operand: operandCode)
+
+        case .call(let spindle, let args):
+            // Inline spindle call - substitute args for params and return first value
+            guard let spindleDef = program.spindles[spindle] else {
+                throw BackendError.unsupportedExpression("Unknown spindle: \(spindle)")
+            }
+            guard !spindleDef.returns.isEmpty else {
+                throw BackendError.unsupportedExpression("Spindle \(spindle) has no returns")
+            }
+            // Build substitution map: param name -> arg expression
+            var substitutions: [String: IRExpr] = [:]
+            for (i, param) in spindleDef.params.enumerated() {
+                if i < args.count {
+                    substitutions[param] = args[i]
+                }
+            }
+            // Inline the first return with substitutions
+            let inlined = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            return try generateExpression(inlined)
+
+        case .builtin(let name, let args):
+            return try generateBuiltin(name: name, args: args)
+
+        case .extract(let callExpr, let index):
+            // Extract specific return value from spindle call
+            guard case .call(let spindle, let args) = callExpr else {
+                throw BackendError.unsupportedExpression("Extract requires a call expression")
+            }
+            guard let spindleDef = program.spindles[spindle] else {
+                throw BackendError.unsupportedExpression("Unknown spindle: \(spindle)")
+            }
+            guard index < spindleDef.returns.count else {
+                throw BackendError.unsupportedExpression("Extract index \(index) out of bounds for spindle \(spindle)")
+            }
+            // Build substitution map
+            var substitutions: [String: IRExpr] = [:]
+            for (i, param) in spindleDef.params.enumerated() {
+                if i < args.count {
+                    substitutions[param] = args[i]
+                }
+            }
+            // Inline the specific return with substitutions
+            let inlined = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            return try generateExpression(inlined)
+
+        case .remap(let base, let substitutions):
+            // Remap applies substitutions to the DIRECT expression of the base bundle,
+            // without recursively inlining its dependencies.
+            // e.g., bar.x(me.y ~ me.y-5) only affects me.y in bar.x's direct expression,
+            // not in foo.x if bar.x references foo.x
+            let directExpr = try getDirectExpression(base)
+            let remapped = applyRemap(to: directExpr, substitutions: substitutions)
+            return try generateExpression(remapped)
+
+        case .texture(let resourceId, let u, let v, let channel):
+            // Sample from texture
+            let uCode = try generateExpression(u)
+            let vCode = try generateExpression(v)
+            let channelNames = ["r", "g", "b", "a"]
+            let channelName = channel < channelNames.count ? channelNames[channel] : "r"
+            return "texture\(resourceId).sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
+
+        case .camera(let u, let v, let channel):
+            // Sample from camera texture (treated as texture0)
+            let uCode = try generateExpression(u)
+            let vCode = try generateExpression(v)
+            let channelNames = ["r", "g", "b", "a"]
+            let channelName = channel < channelNames.count ? channelNames[channel] : "r"
+            return "cameraTexture.sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
+
+        case .microphone(let offset, let channel):
+            // Sample from audio buffer texture (1D texture, x = time, channels = L/R)
+            let offsetCode = try generateExpression(offset)
+            let channelName = channel == 0 ? "r" : "g"
+            return "audioBuffer.sample(textureSampler, float2(\(offsetCode), 0.5)).\(channelName)"
+        }
+    }
+
+    /// Generate binary operation
+    private func generateBinaryOp(op: String, left: String, right: String) throws -> String {
+        switch op {
+        case "+": return "(\(left) + \(right))"
+        case "-": return "(\(left) - \(right))"
+        case "*": return "(\(left) * \(right))"
+        case "/": return "(\(left) / \(right))"
+        case "%": return "fmod(\(left), \(right))"
+        case "^": return "pow(\(left), \(right))"
+        case "<": return "(\(left) < \(right) ? 1.0 : 0.0)"
+        case ">": return "(\(left) > \(right) ? 1.0 : 0.0)"
+        case "<=": return "(\(left) <= \(right) ? 1.0 : 0.0)"
+        case ">=": return "(\(left) >= \(right) ? 1.0 : 0.0)"
+        case "==": return "(\(left) == \(right) ? 1.0 : 0.0)"
+        case "!=": return "(\(left) != \(right) ? 1.0 : 0.0)"
+        case "&&": return "((\(left) != 0.0 && \(right) != 0.0) ? 1.0 : 0.0)"
+        case "||": return "((\(left) != 0.0 || \(right) != 0.0) ? 1.0 : 0.0)"
+        default:
+            throw BackendError.unsupportedExpression("Unknown binary operator: \(op)")
+        }
+    }
+
+    /// Generate unary operation
+    private func generateUnaryOp(op: String, operand: String) throws -> String {
+        switch op {
+        case "-": return "(-\(operand))"
+        case "!": return "(\(operand) == 0.0 ? 1.0 : 0.0)"
+        default:
+            throw BackendError.unsupportedExpression("Unknown unary operator: \(op)")
+        }
+    }
+
+    /// Generate builtin function call
+    private func generateBuiltin(name: String, args: [IRExpr]) throws -> String {
+        // Handle select specially - we need short-circuit evaluation
+        if name == "select" {
+            // select(index, branch0, branch1, ...)
+            // Generate nested ternary: (idx < 1 ? b0 : (idx < 2 ? b1 : b2))
+            guard args.count >= 2 else {
+                throw BackendError.unsupportedExpression("select needs at least index and one branch")
+            }
+            let indexCode = try generateExpression(args[0])
+            let branches = Array(args.dropFirst())
+
+            if branches.count == 1 {
+                return try generateExpression(branches[0])
+            } else if branches.count == 2 {
+                let b0 = try generateExpression(branches[0])
+                let b1 = try generateExpression(branches[1])
+                return "((\(indexCode)) != 0.0 ? (\(b1)) : (\(b0)))"
+            } else {
+                // Build nested ternary from right to left
+                var result = try generateExpression(branches[branches.count - 1])
+                for i in stride(from: branches.count - 2, through: 0, by: -1) {
+                    let branchCode = try generateExpression(branches[i])
+                    result = "((\(indexCode)) < \(Float(i + 1)) ? (\(branchCode)) : (\(result)))"
+                }
+                return result
+            }
+        }
+
+        let argCodes = try args.map { try generateExpression($0) }
+
+        switch name {
+        // Math functions
+        case "sin": return "sin(\(argCodes[0]))"
+        case "cos": return "cos(\(argCodes[0]))"
+        case "tan": return "tan(\(argCodes[0]))"
+        case "asin": return "asin(\(argCodes[0]))"
+        case "acos": return "acos(\(argCodes[0]))"
+        case "atan": return "atan(\(argCodes[0]))"
+        case "atan2": return "atan2(\(argCodes[0]), \(argCodes[1]))"
+        case "abs": return "abs(\(argCodes[0]))"
+        case "floor": return "floor(\(argCodes[0]))"
+        case "ceil": return "ceil(\(argCodes[0]))"
+        case "round": return "round(\(argCodes[0]))"
+        case "sqrt": return "sqrt(\(argCodes[0]))"
+        case "pow": return "pow(\(argCodes[0]), \(argCodes[1]))"
+        case "exp": return "exp(\(argCodes[0]))"
+        case "log": return "log(\(argCodes[0]))"
+        case "log2": return "log2(\(argCodes[0]))"
+
+        // Utility functions
+        case "min": return "min(\(argCodes[0]), \(argCodes[1]))"
+        case "max": return "max(\(argCodes[0]), \(argCodes[1]))"
+        case "clamp": return "clamp(\(argCodes[0]), \(argCodes[1]), \(argCodes[2]))"
+        case "lerp", "mix": return "mix(\(argCodes[0]), \(argCodes[1]), \(argCodes[2]))"
+        case "step": return "step(\(argCodes[0]), \(argCodes[1]))"
+        case "smoothstep": return "smoothstep(\(argCodes[0]), \(argCodes[1]), \(argCodes[2]))"
+        case "fract": return "fract(\(argCodes[0]))"
+        case "mod": return "fmod(\(argCodes[0]), \(argCodes[1]))"
+        case "sign": return "sign(\(argCodes[0]))"
+
+        // Noise (simplified - would need actual implementation)
+        case "noise": return "fract(sin(dot(float2(\(argCodes[0]), \(argCodes.count > 1 ? argCodes[1] : "0.0")), float2(12.9898, 78.233))) * 43758.5453)"
+
+        // Cache builtin (for feedback effects)
+        case "cache":
+            // cache(value, history_size, tap_index, signal)
+            // For now, just return the value (stateless approximation)
+            // Real implementation needs texture history buffer
+            return argCodes[0]
+
+        default:
+            throw BackendError.unsupportedExpression("Unknown builtin: \(name)")
+        }
+    }
+
+    /// Format a number for Metal code
+    private func formatNumber(_ value: Double) -> String {
+        if value == Double(Int(value)) {
+            return "\(Int(value)).0"
+        }
+        return String(format: "%.6f", value)
+    }
+
+    /// Get the direct expression for a bundle reference WITHOUT recursively inlining dependencies.
+    /// This is used for remap so that substitutions only affect the immediate expression.
+    private func getDirectExpression(_ expr: IRExpr) throws -> IRExpr {
+        switch expr {
+        case .index(let bundle, let indexExpr):
+            if bundle == "me" {
+                // me.x, me.y etc are primitives
+                return expr
+            }
+            // Get the bundle's direct expression without further inlining
+            if let targetBundle = program.bundles[bundle] {
+                if case .num(let idx) = indexExpr {
+                    let strandIdx = Int(idx)
+                    if strandIdx < targetBundle.strands.count {
+                        return targetBundle.strands[strandIdx].expr
+                    }
+                } else if case .param(let field) = indexExpr {
+                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
+                        return strand.expr
+                    }
+                }
+            }
+            return expr
+
+        case .extract(let callExpr, let index):
+            // Extract from spindle call: inline the spindle but don't recurse into bundle refs
+            guard case .call(let spindle, let args) = callExpr else {
+                return expr
+            }
+            guard let spindleDef = program.spindles[spindle] else {
+                return expr
+            }
+            guard index < spindleDef.returns.count else {
+                return expr
+            }
+            // Substitute params but don't inline bundle refs
+            var substitutions: [String: IRExpr] = [:]
+            for (i, param) in spindleDef.params.enumerated() {
+                if i < args.count {
+                    substitutions[param] = args[i]
+                }
+            }
+            return substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+
+        case .call(let spindle, let args):
+            // Spindle call: inline the spindle but don't recurse into bundle refs
+            guard let spindleDef = program.spindles[spindle] else {
+                return expr
+            }
+            guard !spindleDef.returns.isEmpty else {
+                return expr
+            }
+            var substitutions: [String: IRExpr] = [:]
+            for (i, param) in spindleDef.params.enumerated() {
+                if i < args.count {
+                    substitutions[param] = args[i]
+                }
+            }
+            return substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+
+        default:
+            return expr
+        }
+    }
+
+    /// Inline bundle references to their actual expressions (at IR level, no code generation)
+    /// This resolves bundle.strand references to their defining expressions
+    private func inlineExpression(_ expr: IRExpr) throws -> IRExpr {
+        switch expr {
+        case .num, .param:
+            return expr
+
+        case .index(let bundle, let indexExpr):
+            if bundle == "me" {
+                // me.x, me.y etc are primitives, don't inline
+                return expr
+            }
+
+            // Inline the bundle's strand expression
+            if let targetBundle = program.bundles[bundle] {
+                if case .num(let idx) = indexExpr {
+                    let strandIdx = Int(idx)
+                    if strandIdx < targetBundle.strands.count {
+                        return try inlineExpression(targetBundle.strands[strandIdx].expr)
+                    }
+                } else if case .param(let field) = indexExpr {
+                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
+                        return try inlineExpression(strand.expr)
+                    }
+                }
+            }
+            // Can't inline, return as-is
+            return expr
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: try inlineExpression(left),
+                right: try inlineExpression(right)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(op: op, operand: try inlineExpression(operand))
+
+        case .call(let spindle, let args):
+            // Inline spindle call
+            guard let spindleDef = program.spindles[spindle] else {
+                return expr
+            }
+            guard !spindleDef.returns.isEmpty else {
+                return expr
+            }
+            var substitutions: [String: IRExpr] = [:]
+            for (i, param) in spindleDef.params.enumerated() {
+                if i < args.count {
+                    substitutions[param] = try inlineExpression(args[i])
+                }
+            }
+            let inlined = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            return try inlineExpression(inlined)
+
+        case .builtin(let name, let args):
+            return .builtin(name: name, args: try args.map { try inlineExpression($0) })
+
+        case .extract(let callExpr, let index):
+            guard case .call(let spindle, let args) = callExpr else {
+                return expr
+            }
+            guard let spindleDef = program.spindles[spindle] else {
+                return expr
+            }
+            guard index < spindleDef.returns.count else {
+                return expr
+            }
+            var substitutions: [String: IRExpr] = [:]
+            for (i, param) in spindleDef.params.enumerated() {
+                if i < args.count {
+                    substitutions[param] = try inlineExpression(args[i])
+                }
+            }
+            let inlined = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            return try inlineExpression(inlined)
+
+        case .remap(let base, let substitutions):
+            // Inline the base, then apply remap
+            let inlinedBase = try inlineExpression(base)
+            // Also inline the substitution values
+            var inlinedSubs: [String: IRExpr] = [:]
+            for (key, value) in substitutions {
+                inlinedSubs[key] = try inlineExpression(value)
+            }
+            return applyRemap(to: inlinedBase, substitutions: inlinedSubs)
+
+        case .texture(let resourceId, let u, let v, let channel):
+            return .texture(
+                resourceId: resourceId,
+                u: try inlineExpression(u),
+                v: try inlineExpression(v),
+                channel: channel
+            )
+
+        case .camera(let u, let v, let channel):
+            return .camera(
+                u: try inlineExpression(u),
+                v: try inlineExpression(v),
+                channel: channel
+            )
+
+        case .microphone(let offset, let channel):
+            return .microphone(offset: try inlineExpression(offset), channel: channel)
+        }
+    }
+
+    /// Substitute parameter references with actual argument expressions
+    private func substituteParams(in expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
+        switch expr {
+        case .num:
+            return expr
+
+        case .param(let name):
+            // Replace parameter with its substituted value
+            return substitutions[name] ?? expr
+
+        case .index(let bundle, let indexExpr):
+            // Check if bundle is a parameter
+            if let subst = substitutions[bundle] {
+                // If substituted to another bundle reference, reconstruct
+                if case .index(let newBundle, _) = subst {
+                    return .index(bundle: newBundle, indexExpr: substituteParams(in: indexExpr, substitutions: substitutions))
+                }
+            }
+            return .index(bundle: bundle, indexExpr: substituteParams(in: indexExpr, substitutions: substitutions))
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: substituteParams(in: left, substitutions: substitutions),
+                right: substituteParams(in: right, substitutions: substitutions)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: substituteParams(in: operand, substitutions: substitutions)
+            )
+
+        case .call(let spindle, let args):
+            return .call(
+                spindle: spindle,
+                args: args.map { substituteParams(in: $0, substitutions: substitutions) }
+            )
+
+        case .builtin(let name, let args):
+            return .builtin(
+                name: name,
+                args: args.map { substituteParams(in: $0, substitutions: substitutions) }
+            )
+
+        case .extract(let call, let index):
+            return .extract(
+                call: substituteParams(in: call, substitutions: substitutions),
+                index: index
+            )
+
+        case .remap(let base, let remapSubs):
+            var newRemapSubs: [String: IRExpr] = [:]
+            for (key, value) in remapSubs {
+                newRemapSubs[key] = substituteParams(in: value, substitutions: substitutions)
+            }
+            return .remap(
+                base: substituteParams(in: base, substitutions: substitutions),
+                substitutions: newRemapSubs
+            )
+
+        case .texture(let resourceId, let u, let v, let channel):
+            return .texture(
+                resourceId: resourceId,
+                u: substituteParams(in: u, substitutions: substitutions),
+                v: substituteParams(in: v, substitutions: substitutions),
+                channel: channel
+            )
+
+        case .camera(let u, let v, let channel):
+            return .camera(
+                u: substituteParams(in: u, substitutions: substitutions),
+                v: substituteParams(in: v, substitutions: substitutions),
+                channel: channel
+            )
+
+        case .microphone(let offset, let channel):
+            return .microphone(
+                offset: substituteParams(in: offset, substitutions: substitutions),
+                channel: channel
+            )
+        }
+    }
+
+    /// Apply remap substitutions to an expression (coordinate remapping)
+    /// Substitution keys are in "bundle.field" format (e.g., "me.x", "me.y")
+    private func applyRemap(to expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
+        switch expr {
+        case .num:
+            return expr
+
+        case .param(let name):
+            // Replace coordinate parameter with remapped expression
+            // Try both bare name and "me.name" format for compatibility
+            if let remapped = substitutions[name] {
+                return remapped
+            }
+            if let remapped = substitutions["me.\(name)"] {
+                return remapped
+            }
+            return expr
+
+        case .index(let bundle, let indexExpr):
+            // Check if this coordinate is being remapped
+            // Try multiple key formats since JS uses numeric indices but expressions use field names
+            var keysToTry: [String] = []
+
+            if case .param(let field) = indexExpr {
+                keysToTry.append("\(bundle).\(field)")
+                // For "me" bundle, also try numeric index
+                if bundle == "me" {
+                    let meIndices = ["x": 0, "y": 1, "u": 2, "v": 3, "w": 4, "h": 5, "t": 6]
+                    if let idx = meIndices[field] {
+                        keysToTry.append("\(bundle).\(idx)")
+                    }
+                }
+            } else if case .num(let idx) = indexExpr {
+                keysToTry.append("\(bundle).\(Int(idx))")
+            }
+
+            for key in keysToTry {
+                if let remapped = substitutions[key] {
+                    return remapped
+                }
+            }
+            return .index(bundle: bundle, indexExpr: applyRemap(to: indexExpr, substitutions: substitutions))
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: applyRemap(to: left, substitutions: substitutions),
+                right: applyRemap(to: right, substitutions: substitutions)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: applyRemap(to: operand, substitutions: substitutions)
+            )
+
+        case .call(let spindle, let args):
+            return .call(
+                spindle: spindle,
+                args: args.map { applyRemap(to: $0, substitutions: substitutions) }
+            )
+
+        case .builtin(let name, let args):
+            return .builtin(
+                name: name,
+                args: args.map { applyRemap(to: $0, substitutions: substitutions) }
+            )
+
+        case .extract(let call, let index):
+            return .extract(
+                call: applyRemap(to: call, substitutions: substitutions),
+                index: index
+            )
+
+        case .remap(let base, let innerSubs):
+            // Compose remaps: apply outer substitutions to inner ones
+            var composedSubs: [String: IRExpr] = [:]
+            for (key, value) in innerSubs {
+                composedSubs[key] = applyRemap(to: value, substitutions: substitutions)
+            }
+            return .remap(
+                base: applyRemap(to: base, substitutions: substitutions),
+                substitutions: composedSubs
+            )
+
+        case .texture(let resourceId, let u, let v, let channel):
+            return .texture(
+                resourceId: resourceId,
+                u: applyRemap(to: u, substitutions: substitutions),
+                v: applyRemap(to: v, substitutions: substitutions),
+                channel: channel
+            )
+
+        case .camera(let u, let v, let channel):
+            return .camera(
+                u: applyRemap(to: u, substitutions: substitutions),
+                v: applyRemap(to: v, substitutions: substitutions),
+                channel: channel
+            )
+
+        case .microphone(let offset, let channel):
+            return .microphone(
+                offset: applyRemap(to: offset, substitutions: substitutions),
+                channel: channel
+            )
+        }
+    }
+}

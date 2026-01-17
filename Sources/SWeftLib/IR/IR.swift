@@ -1,0 +1,401 @@
+// IR.swift - Intermediate Representation types matching JS ir.js
+
+import Foundation
+
+// MARK: - Program Structure
+
+public struct IRProgram: Codable, Equatable {
+    public var bundles: [String: IRBundle]
+    public var spindles: [String: IRSpindle]
+    public var order: [OrderEntry]
+    public var resources: [String]
+
+    public init(bundles: [String: IRBundle] = [:],
+                spindles: [String: IRSpindle] = [:],
+                order: [OrderEntry] = [],
+                resources: [String] = []) {
+        self.bundles = bundles
+        self.spindles = spindles
+        self.order = order
+        self.resources = resources
+    }
+
+    public struct OrderEntry: Codable, Equatable {
+        public var bundle: String
+        public var strands: [String]?
+
+        public init(bundle: String, strands: [String]? = nil) {
+            self.bundle = bundle
+            self.strands = strands
+        }
+    }
+}
+
+public struct IRBundle: Codable, Equatable {
+    public var name: String
+    public var strands: [IRStrand]
+
+    public var width: Int { strands.count }
+
+    public init(name: String, strands: [IRStrand]) {
+        self.name = name
+        self.strands = strands
+    }
+}
+
+public struct IRStrand: Codable, Equatable {
+    public var name: String
+    public var index: Int
+    public var expr: IRExpr
+
+    public init(name: String, index: Int, expr: IRExpr) {
+        self.name = name
+        self.index = index
+        self.expr = expr
+    }
+}
+
+public struct IRSpindle: Codable, Equatable {
+    public var name: String
+    public var params: [String]
+    public var locals: [IRBundle]
+    public var returns: [IRExpr]
+
+    public var width: Int { returns.count }
+
+    public init(name: String, params: [String], locals: [IRBundle], returns: [IRExpr]) {
+        self.name = name
+        self.params = params
+        self.locals = locals
+        self.returns = returns
+    }
+}
+
+// MARK: - Expression Types
+
+public indirect enum IRExpr: Codable, Equatable {
+    case num(Double)
+    case param(String)
+    case index(bundle: String, indexExpr: IRExpr)
+    case binaryOp(op: String, left: IRExpr, right: IRExpr)
+    case unaryOp(op: String, operand: IRExpr)
+    case call(spindle: String, args: [IRExpr])
+    case builtin(name: String, args: [IRExpr])
+    case extract(call: IRExpr, index: Int)
+    case remap(base: IRExpr, substitutions: [String: IRExpr])
+    case texture(resourceId: Int, u: IRExpr, v: IRExpr, channel: Int)
+    case camera(u: IRExpr, v: IRExpr, channel: Int)
+    case microphone(offset: IRExpr, channel: Int)
+
+    // MARK: - Codable
+
+    private enum CodingKeys: String, CodingKey {
+        case type, value, name, bundle, field, indexExpr, op, left, right, operand
+        case spindle, args, call, index, base, substitutions
+        case resourceId, u, v, channel, offset
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+
+        switch type {
+        case "num":
+            let value = try container.decode(Double.self, forKey: .value)
+            self = .num(value)
+
+        case "param":
+            let name = try container.decode(String.self, forKey: .name)
+            self = .param(name)
+
+        case "index":
+            let bundle = try container.decode(String.self, forKey: .bundle)
+            // Handle both static field access and dynamic index
+            if let field = try? container.decode(String.self, forKey: .field) {
+                // Static field access: convert field name to index expression
+                // For "me.x", "me.y", etc., we treat as special builtin coordinates
+                self = .index(bundle: bundle, indexExpr: .param(field))
+            } else if let indexExpr = try? container.decode(IRExpr.self, forKey: .indexExpr) {
+                self = .index(bundle: bundle, indexExpr: indexExpr)
+            } else {
+                // Fallback for simple numeric index
+                let index = try container.decode(Int.self, forKey: .index)
+                self = .index(bundle: bundle, indexExpr: .num(Double(index)))
+            }
+
+        case "binary":
+            let op = try container.decode(String.self, forKey: .op)
+            let left = try container.decode(IRExpr.self, forKey: .left)
+            let right = try container.decode(IRExpr.self, forKey: .right)
+            self = .binaryOp(op: op, left: left, right: right)
+
+        case "unary":
+            let op = try container.decode(String.self, forKey: .op)
+            let operand = try container.decode(IRExpr.self, forKey: .operand)
+            self = .unaryOp(op: op, operand: operand)
+
+        case "call":
+            let spindle = try container.decode(String.self, forKey: .spindle)
+            let args = try container.decode([IRExpr].self, forKey: .args)
+            self = .call(spindle: spindle, args: args)
+
+        case "builtin":
+            let name = try container.decode(String.self, forKey: .name)
+            let args = try container.decode([IRExpr].self, forKey: .args)
+            self = .builtin(name: name, args: args)
+
+        case "extract":
+            let call = try container.decode(IRExpr.self, forKey: .call)
+            let index = try container.decode(Int.self, forKey: .index)
+            self = .extract(call: call, index: index)
+
+        case "remap":
+            let base = try container.decode(IRExpr.self, forKey: .base)
+            let substitutions = try container.decode([String: IRExpr].self, forKey: .substitutions)
+            self = .remap(base: base, substitutions: substitutions)
+
+        case "texture":
+            let resourceId = try container.decode(Int.self, forKey: .resourceId)
+            let u = try container.decode(IRExpr.self, forKey: .u)
+            let v = try container.decode(IRExpr.self, forKey: .v)
+            let channel = try container.decode(Int.self, forKey: .channel)
+            self = .texture(resourceId: resourceId, u: u, v: v, channel: channel)
+
+        case "camera":
+            let u = try container.decode(IRExpr.self, forKey: .u)
+            let v = try container.decode(IRExpr.self, forKey: .v)
+            let channel = try container.decode(Int.self, forKey: .channel)
+            self = .camera(u: u, v: v, channel: channel)
+
+        case "microphone":
+            let offset = try container.decode(IRExpr.self, forKey: .offset)
+            let channel = try container.decode(Int.self, forKey: .channel)
+            self = .microphone(offset: offset, channel: channel)
+
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "Unknown expression type: \(type)"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .num(let value):
+            try container.encode("num", forKey: .type)
+            try container.encode(value, forKey: .value)
+
+        case .param(let name):
+            try container.encode("param", forKey: .type)
+            try container.encode(name, forKey: .name)
+
+        case .index(let bundle, let indexExpr):
+            try container.encode("index", forKey: .type)
+            try container.encode(bundle, forKey: .bundle)
+            try container.encode(indexExpr, forKey: .indexExpr)
+
+        case .binaryOp(let op, let left, let right):
+            try container.encode("binary", forKey: .type)
+            try container.encode(op, forKey: .op)
+            try container.encode(left, forKey: .left)
+            try container.encode(right, forKey: .right)
+
+        case .unaryOp(let op, let operand):
+            try container.encode("unary", forKey: .type)
+            try container.encode(op, forKey: .op)
+            try container.encode(operand, forKey: .operand)
+
+        case .call(let spindle, let args):
+            try container.encode("call", forKey: .type)
+            try container.encode(spindle, forKey: .spindle)
+            try container.encode(args, forKey: .args)
+
+        case .builtin(let name, let args):
+            try container.encode("builtin", forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(args, forKey: .args)
+
+        case .extract(let call, let index):
+            try container.encode("extract", forKey: .type)
+            try container.encode(call, forKey: .call)
+            try container.encode(index, forKey: .index)
+
+        case .remap(let base, let substitutions):
+            try container.encode("remap", forKey: .type)
+            try container.encode(base, forKey: .base)
+            try container.encode(substitutions, forKey: .substitutions)
+
+        case .texture(let resourceId, let u, let v, let channel):
+            try container.encode("texture", forKey: .type)
+            try container.encode(resourceId, forKey: .resourceId)
+            try container.encode(u, forKey: .u)
+            try container.encode(v, forKey: .v)
+            try container.encode(channel, forKey: .channel)
+
+        case .camera(let u, let v, let channel):
+            try container.encode("camera", forKey: .type)
+            try container.encode(u, forKey: .u)
+            try container.encode(v, forKey: .v)
+            try container.encode(channel, forKey: .channel)
+
+        case .microphone(let offset, let channel):
+            try container.encode("microphone", forKey: .type)
+            try container.encode(offset, forKey: .offset)
+            try container.encode(channel, forKey: .channel)
+        }
+    }
+}
+
+// MARK: - Expression Utilities
+
+extension IRExpr {
+    /// Get free variables (bundle.strand references) in this expression
+    public func freeVars() -> Set<String> {
+        switch self {
+        case .num:
+            return []
+        case .param:
+            return []
+        case .index(let bundle, let indexExpr):
+            var vars = indexExpr.freeVars()
+            if case .num(let idx) = indexExpr {
+                vars.insert("\(bundle).\(Int(idx))")
+            } else if case .param(let field) = indexExpr {
+                vars.insert("\(bundle).\(field)")
+            } else {
+                vars.insert(bundle)
+            }
+            return vars
+        case .binaryOp(_, let left, let right):
+            return left.freeVars().union(right.freeVars())
+        case .unaryOp(_, let operand):
+            return operand.freeVars()
+        case .call(_, let args):
+            return args.reduce(into: Set<String>()) { $0.formUnion($1.freeVars()) }
+        case .builtin(_, let args):
+            return args.reduce(into: Set<String>()) { $0.formUnion($1.freeVars()) }
+        case .extract(let call, _):
+            return call.freeVars()
+        case .remap(let base, let substitutions):
+            var vars = base.freeVars()
+            for (key, _) in substitutions {
+                vars.remove(key)
+            }
+            for (_, expr) in substitutions {
+                vars.formUnion(expr.freeVars())
+            }
+            return vars
+        case .texture(_, let u, let v, _):
+            return u.freeVars().union(v.freeVars())
+        case .camera(let u, let v, _):
+            return u.freeVars().union(v.freeVars())
+        case .microphone(let offset, _):
+            return offset.freeVars()
+        }
+    }
+
+    /// Check if expression uses a specific builtin
+    public func usesBuiltin(_ name: String) -> Bool {
+        switch self {
+        case .num, .param:
+            return false
+        case .index(_, let indexExpr):
+            return indexExpr.usesBuiltin(name)
+        case .binaryOp(_, let left, let right):
+            return left.usesBuiltin(name) || right.usesBuiltin(name)
+        case .unaryOp(_, let operand):
+            return operand.usesBuiltin(name)
+        case .call(_, let args):
+            return args.contains { $0.usesBuiltin(name) }
+        case .builtin(let builtinName, let args):
+            return builtinName == name || args.contains { $0.usesBuiltin(name) }
+        case .extract(let call, _):
+            return call.usesBuiltin(name)
+        case .remap(let base, let substitutions):
+            return base.usesBuiltin(name) || substitutions.values.contains { $0.usesBuiltin(name) }
+        case .texture:
+            return name == "texture"
+        case .camera:
+            return name == "camera"
+        case .microphone(let offset, _):
+            return name == "microphone" || offset.usesBuiltin(name)
+        }
+    }
+
+    /// Get all builtins used in this expression
+    public func allBuiltins() -> Set<String> {
+        switch self {
+        case .num, .param:
+            return []
+        case .index(_, let indexExpr):
+            return indexExpr.allBuiltins()
+        case .binaryOp(_, let left, let right):
+            return left.allBuiltins().union(right.allBuiltins())
+        case .unaryOp(_, let operand):
+            return operand.allBuiltins()
+        case .call(_, let args):
+            return args.reduce(into: Set<String>()) { $0.formUnion($1.allBuiltins()) }
+        case .builtin(let name, let args):
+            var builtins = Set([name])
+            for arg in args {
+                builtins.formUnion(arg.allBuiltins())
+            }
+            return builtins
+        case .extract(let call, _):
+            return call.allBuiltins()
+        case .remap(let base, let substitutions):
+            var builtins = base.allBuiltins()
+            for (_, expr) in substitutions {
+                builtins.formUnion(expr.allBuiltins())
+            }
+            return builtins
+        case .texture:
+            return ["texture"]
+        case .camera:
+            return ["camera"]
+        case .microphone(let offset, _):
+            return Set(["microphone"]).union(offset.allBuiltins())
+        }
+    }
+}
+
+// MARK: - Description
+
+extension IRExpr: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .num(let value):
+            return "\(value)"
+        case .param(let name):
+            return name
+        case .index(let bundle, let indexExpr):
+            if case .param(let field) = indexExpr {
+                return "\(bundle).\(field)"
+            }
+            return "\(bundle).(\(indexExpr))"
+        case .binaryOp(let op, let left, let right):
+            return "(\(left) \(op) \(right))"
+        case .unaryOp(let op, let operand):
+            return "\(op)\(operand)"
+        case .call(let spindle, let args):
+            return "\(spindle)(\(args.map { $0.description }.joined(separator: ", ")))"
+        case .builtin(let name, let args):
+            return "\(name)(\(args.map { $0.description }.joined(separator: ", ")))"
+        case .extract(let call, let index):
+            return "\(call).\(index)"
+        case .remap(let base, let substitutions):
+            let subs = substitutions.map { "\($0.key) ~ \($0.value)" }.joined(separator: ", ")
+            return "\(base)[\(subs)]"
+        case .texture(let resourceId, let u, let v, let channel):
+            return "texture(\(resourceId), \(u), \(v)).\(channel)"
+        case .camera(let u, let v, let channel):
+            return "camera(\(u), \(v)).\(channel)"
+        case .microphone(let offset, let channel):
+            return "microphone(\(offset)).\(channel)"
+        }
+    }
+}

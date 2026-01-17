@@ -1,0 +1,59 @@
+{
+    "bundles": {
+        "amp": {
+            "name": "amp",
+            "strands": [
+                {"name": "value", "index": 0, "expr": {
+                    "type": "builtin",
+                    "name": "abs",
+                    "args": [{
+                        "type": "builtin",
+                        "name": "sin",
+                        "args": [{
+                            "type": "binary",
+                            "op": "*",
+                            "left": {"type": "index", "bundle": "me", "field": "t"},
+                            "right": {"type": "num", "value": 3.0}
+                        }]
+                    }]
+                }}
+            ]
+        },
+        "play": {
+            "name": "play",
+            "strands": [
+                {"name": "left", "index": 0, "expr": {
+                    "type": "binary",
+                    "op": "*",
+                    "left": {
+                        "type": "builtin",
+                        "name": "sin",
+                        "args": [{
+                            "type": "binary",
+                            "op": "*",
+                            "left": {
+                                "type": "binary",
+                                "op": "/",
+                                "left": {"type": "index", "bundle": "me", "field": "i"},
+                                "right": {"type": "index", "bundle": "me", "field": "sampleRate"}
+                            },
+                            "right": {"type": "num", "value": 2764.6}
+                        }]
+                    },
+                    "right": {"type": "index", "bundle": "amp", "field": "value"}
+                }}
+            ]
+        },
+        "display": {
+            "name": "display",
+            "strands": [
+                {"name": "r", "index": 0, "expr": {"type": "index", "bundle": "amp", "field": "value"}},
+                {"name": "g", "index": 1, "expr": {"type": "index", "bundle": "me", "field": "y"}},
+                {"name": "b", "index": 2, "expr": {"type": "index", "bundle": "me", "field": "x"}}
+            ]
+        }
+    },
+    "spindles": {},
+    "order": [{"bundle": "amp"}, {"bundle": "play"}, {"bundle": "display"}],
+    "resources": []
+}

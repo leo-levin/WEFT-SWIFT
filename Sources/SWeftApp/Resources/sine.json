@@ -1,0 +1,32 @@
+{
+    "bundles": {
+        "play": {
+            "name": "play",
+            "strands": [
+                {"name": "left", "index": 0, "expr": {
+                    "type": "binary",
+                    "op": "*",
+                    "left": {
+                        "type": "builtin",
+                        "name": "sin",
+                        "args": [{
+                            "type": "binary",
+                            "op": "*",
+                            "left": {
+                                "type": "binary",
+                                "op": "/",
+                                "left": {"type": "index", "bundle": "me", "field": "i"},
+                                "right": {"type": "index", "bundle": "me", "field": "sampleRate"}
+                            },
+                            "right": {"type": "num", "value": 2764.6}
+                        }]
+                    },
+                    "right": {"type": "num", "value": 0.3}
+                }}
+            ]
+        }
+    },
+    "spindles": {},
+    "order": [{"bundle": "play"}],
+    "resources": []
+}
