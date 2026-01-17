@@ -8,13 +8,27 @@ public class MetalCodeGen {
     private let program: IRProgram
     private let swatch: Swatch
 
-    public init(program: IRProgram, swatch: Swatch) {
+    /// Cache descriptors for visual domain (provided by CacheManager)
+    private var cacheDescriptors: [CacheNodeDescriptor] = []
+
+    /// Counter for matching cache() calls to descriptors during codegen
+    private var cacheNodeCounter: Int = 0
+
+    /// Starting buffer index for cache buffers (after uniforms)
+    private let cacheBufferStartIndex: Int = 1
+
+    public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = []) {
         self.program = program
         self.swatch = swatch
+        // Filter to only visual domain caches
+        self.cacheDescriptors = cacheDescriptors.filter { $0.domain == .visual }
     }
 
     /// Generate complete Metal shader source
     public func generate() throws -> String {
+        // Reset cache counter for fresh generation
+        cacheNodeCounter = 0
+
         var code = """
         #include <metal_stdlib>
         using namespace metal;
@@ -60,11 +74,24 @@ public class MetalCodeGen {
         return false
     }
 
+    /// Check if program uses cache
+    public func usesCache() -> Bool {
+        return !cacheDescriptors.isEmpty
+    }
+
+    /// Get the number of cache buffer pairs needed
+    public func cacheBufferCount() -> Int {
+        return cacheDescriptors.count * 2  // history + signal per cache
+    }
+
     /// Generate display compute kernel
     private func generateDisplayKernel() throws -> String {
         guard let displayBundle = program.bundles["display"] else {
             throw BackendError.missingResource("display bundle not found")
         }
+
+        // Reset cache counter before generating expressions
+        cacheNodeCounter = 0
 
         // Collect expressions for each strand (r, g, b)
         var colorExprs: [String] = []
@@ -83,6 +110,7 @@ public class MetalCodeGen {
         let needsMicrophone = usesMicrophone()
         let needsSampler = needsCamera || needsMicrophone
 
+        // Build parameter list
         var extraParams = ""
         if needsCamera {
             extraParams += "\n    texture2d<float, access::sample> cameraTexture [[texture(1)]],"
@@ -92,6 +120,26 @@ public class MetalCodeGen {
         }
         if needsSampler {
             extraParams += "\n    sampler textureSampler [[sampler(0)]],"
+        }
+
+        // Add cache buffer parameters
+        for (i, descriptor) in cacheDescriptors.enumerated() {
+            let historyIdx = cacheBufferStartIndex + i * 2
+            let signalIdx = cacheBufferStartIndex + i * 2 + 1
+            extraParams += "\n    device float* cache\(i)_history [[buffer(\(historyIdx))]],"
+            extraParams += "\n    device float* cache\(i)_signal [[buffer(\(signalIdx))]],"
+            _ = descriptor  // Silence unused warning
+        }
+
+        // Generate cache helper code if needed
+        var cacheHelpers = ""
+        if !cacheDescriptors.isEmpty {
+            cacheHelpers = """
+
+                // Pixel index for cache buffer access
+                uint pixelIndex = gid.y * uint(uniforms.width) + gid.x;
+
+            """
         }
 
         return """
@@ -105,7 +153,7 @@ public class MetalCodeGen {
             float t = uniforms.time;
             float w = uniforms.width;
             float h = uniforms.height;
-
+        \(cacheHelpers)
             float r = \(colorExprs[0]);
             float g = \(colorExprs[1]);
             float b = \(colorExprs.count > 2 ? colorExprs[2] : "0.0");
@@ -276,6 +324,11 @@ public class MetalCodeGen {
             }
         }
 
+        // Handle cache specially - need to generate inline tick logic
+        if name == "cache" {
+            return try generateCacheAccess(args: args)
+        }
+
         let argCodes = try args.map { try generateExpression($0) }
 
         switch name {
@@ -310,13 +363,6 @@ public class MetalCodeGen {
 
         // Noise (simplified - would need actual implementation)
         case "noise": return "fract(sin(dot(float2(\(argCodes[0]), \(argCodes.count > 1 ? argCodes[1] : "0.0")), float2(12.9898, 78.233))) * 43758.5453)"
-
-        // Cache builtin (for feedback effects)
-        case "cache":
-            // cache(value, history_size, tap_index, signal)
-            // For now, just return the value (stateless approximation)
-            // Real implementation needs texture history buffer
-            return argCodes[0]
 
         // Hardware inputs - now handled as builtins
         case "camera":
@@ -379,6 +425,56 @@ public class MetalCodeGen {
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")
         }
+    }
+
+    /// Generate cache access code with tick logic
+    private func generateCacheAccess(args: [IRExpr]) throws -> String {
+        // cache(value, history_size, tap_index, signal)
+        guard args.count >= 4 else {
+            throw BackendError.unsupportedExpression("cache requires 4 arguments")
+        }
+
+        // Get the descriptor for this cache node
+        let cacheIndex = cacheNodeCounter
+        cacheNodeCounter += 1
+
+        guard cacheIndex < cacheDescriptors.count else {
+            // Fallback: no descriptor available, just return value
+            return try generateExpression(args[0])
+        }
+
+        let descriptor = cacheDescriptors[cacheIndex]
+
+        // Generate code for value and signal expressions
+        let valueCode = try generateExpression(args[0])
+        let signalCode = try generateExpression(args[3])
+
+        let historySize = descriptor.historySize
+        let tapIndex = min(descriptor.tapIndex, historySize - 1)
+
+        // Generate inline cache tick logic using IIFE pattern for expression context
+        // This creates a lambda that is immediately invoked
+        return """
+        [&]() -> float {
+                float cacheValue = \(valueCode);
+                float cacheSignal = \(signalCode);
+                uint historyBase = pixelIndex * \(historySize);
+
+                float prevSignal = cache\(cacheIndex)_signal[pixelIndex];
+                bool shouldTick = isnan(prevSignal) || prevSignal != cacheSignal;
+
+                if (shouldTick) {
+                    cache\(cacheIndex)_signal[pixelIndex] = cacheSignal;
+                    // Shift history (newest at index 0)
+                    for (int i = \(historySize - 1); i > 0; i--) {
+                        cache\(cacheIndex)_history[historyBase + i] = cache\(cacheIndex)_history[historyBase + i - 1];
+                    }
+                    cache\(cacheIndex)_history[historyBase] = cacheValue;
+                }
+
+                return cache\(cacheIndex)_history[historyBase + \(tapIndex)];
+            }()
+        """
     }
 
     /// Format a number for Metal code

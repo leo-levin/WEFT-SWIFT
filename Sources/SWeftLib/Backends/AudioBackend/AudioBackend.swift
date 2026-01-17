@@ -21,7 +21,7 @@ public class AudioBackend: Backend {
     public static let identifier = "audio"
     public static let ownedBuiltins: Set<String> = ["microphone"]
     public static let externalBuiltins: Set<String> = ["microphone"]
-    public static let statefulBuiltins: Set<String> = []
+    public static let statefulBuiltins: Set<String> = ["cache"]
     public static let outputSinkName: String? = "play"
     public static let coordinateFields = ["i", "t", "sampleRate"]
 
@@ -34,9 +34,14 @@ public class AudioBackend: Backend {
 
     public init() {}
 
-    /// Compile swatch to audio render function
+    /// Compile swatch to audio render function (without cache support)
     public func compile(swatch: Swatch, ir: IRProgram) throws -> CompiledUnit {
-        let codegen = AudioCodeGen(program: ir, swatch: swatch)
+        return try compile(swatch: swatch, ir: ir, cacheManager: nil)
+    }
+
+    /// Compile swatch to audio render function with cache manager
+    public func compile(swatch: Swatch, ir: IRProgram, cacheManager: CacheManager?) throws -> CompiledUnit {
+        let codegen = AudioCodeGen(program: ir, swatch: swatch, cacheManager: cacheManager)
         let renderFunction = try codegen.generateRenderFunction()
 
         print("Audio backend compiled successfully")

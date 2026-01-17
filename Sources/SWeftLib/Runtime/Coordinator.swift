@@ -40,6 +40,10 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var time: Double = 0
     public private(set) var isRunning = false
 
+    // Default output dimensions
+    private var outputWidth: Int = 512
+    private var outputHeight: Int = 512
+
     public init(registry: BackendRegistry = .shared) {
         self.registry = registry
         self.bufferManager = BufferManager()
@@ -81,8 +85,8 @@ public class Coordinator: CameraCaptureDelegate {
         let swatches = partitioner.partition()
         self.swatchGraph = swatches
 
-        // Analyze cache nodes
-        cacheManager.analyze(program: program)
+        // Analyze cache nodes (pass ownership for domain classification)
+        cacheManager.analyze(program: program, ownership: ownership)
 
         // Print analysis
         print("=== WEFT IR Loaded ===")
@@ -126,9 +130,23 @@ public class Coordinator: CameraCaptureDelegate {
                 if metalBackend == nil {
                     metalBackend = try MetalBackend()
                     bufferManager = BufferManager(metalDevice: metalBackend?.device)
+
+                    // Allocate cache buffers now that we have a Metal device
+                    if let device = metalBackend?.device {
+                        cacheManager.allocateBuffers(
+                            device: device,
+                            width: outputWidth,
+                            height: outputHeight
+                        )
+                    }
                 }
 
-                let unit = try metalBackend!.compile(swatch: swatch, ir: program)
+                // Pass cache descriptors to codegen via backend
+                let unit = try metalBackend!.compile(
+                    swatch: swatch,
+                    ir: program,
+                    cacheDescriptors: cacheManager.getDescriptors()
+                )
                 compiledUnits[swatch.id] = unit
 
                 // Check if this unit needs camera or microphone
@@ -147,7 +165,12 @@ public class Coordinator: CameraCaptureDelegate {
                     audioBackend = AudioBackend()
                 }
 
-                let unit = try audioBackend!.compile(swatch: swatch, ir: program)
+                // Pass cache manager to audio backend for shared buffer access
+                let unit = try audioBackend!.compile(
+                    swatch: swatch,
+                    ir: program,
+                    cacheManager: cacheManager
+                )
                 compiledUnits[swatch.id] = unit
 
             case .none:
@@ -251,10 +274,19 @@ public class Coordinator: CameraCaptureDelegate {
         // Update audio texture each frame
         updateAudioTexture()
 
+        // Resize cache buffers if needed (drawable size might differ from default)
+        let newWidth = drawable.texture.width
+        let newHeight = drawable.texture.height
+        if newWidth != outputWidth || newHeight != outputHeight {
+            outputWidth = newWidth
+            outputHeight = newHeight
+            cacheManager.resizeBuffers(width: newWidth, height: newHeight)
+        }
+
         // Find visual sink swatch
         for swatch in swatches where swatch.backend == .visual && swatch.isSink {
             if let unit = compiledUnits[swatch.id] {
-                metalBackend?.render(unit: unit, to: drawable, time: time)
+                metalBackend?.render(unit: unit, to: drawable, time: time, cacheManager: cacheManager)
                 return
             }
         }

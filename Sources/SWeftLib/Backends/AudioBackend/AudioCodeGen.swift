@@ -8,9 +8,21 @@ public class AudioCodeGen {
     private let program: IRProgram
     private let swatch: Swatch
 
-    public init(program: IRProgram, swatch: Swatch) {
+    /// Cache manager for accessing shared buffers
+    private weak var cacheManager: CacheManager?
+
+    /// Cache descriptors for audio domain
+    private var cacheDescriptors: [CacheNodeDescriptor] = []
+
+    /// Counter for matching cache() calls to descriptors during codegen
+    private var cacheNodeCounter: Int = 0
+
+    public init(program: IRProgram, swatch: Swatch, cacheManager: CacheManager? = nil) {
         self.program = program
         self.swatch = swatch
+        self.cacheManager = cacheManager
+        // Filter to only audio domain caches
+        self.cacheDescriptors = cacheManager?.getDescriptors(for: .audio) ?? []
     }
 
     /// Generate audio render function
@@ -19,6 +31,9 @@ public class AudioCodeGen {
         guard let playBundle = program.bundles["play"] else {
             throw BackendError.missingResource("play bundle not found")
         }
+
+        // Reset cache counter before building evaluators
+        cacheNodeCounter = 0
 
         // Build expression evaluators for each channel
         let channelEvaluators = try playBundle.strands.sorted(by: { $0.index < $1.index }).map { strand in
@@ -100,8 +115,7 @@ public class AudioCodeGen {
             return try buildUnaryOp(op: op, operand: operandEval)
 
         case .builtin(let name, let args):
-            let argEvals = try args.map { try buildEvaluator(for: $0) }
-            return try buildBuiltin(name: name, args: argEvals, rawArgs: args)
+            return try buildBuiltin(name: name, args: args)
 
         case .call(let spindle, let args):
             // Inline spindle call
@@ -198,93 +212,95 @@ public class AudioCodeGen {
     /// Build builtin function evaluator
     private func buildBuiltin(
         name: String,
-        args: [(AudioContext) -> Float],
-        rawArgs: [IRExpr] = []
+        args: [IRExpr]
     ) throws -> (AudioContext) -> Float {
+        // Handle cache specially - need to build closure that accesses shared buffer
+        if name == "cache" {
+            return try buildCacheAccess(args: args)
+        }
+
+        // Handle select specially - short-circuit evaluation
+        if name == "select" {
+            let argEvals = try args.map { try buildEvaluator(for: $0) }
+            guard argEvals.count >= 2 else {
+                return { _ in 0.0 }
+            }
+            let indexEval = argEvals[0]
+            let branches = Array(argEvals.dropFirst())
+            return { ctx in
+                let idx = Int(indexEval(ctx))
+                let clampedIdx = max(0, min(idx, branches.count - 1))
+                return branches[clampedIdx](ctx)
+            }
+        }
+
+        let argEvals = try args.map { try buildEvaluator(for: $0) }
+
         switch name {
         // Math functions
-        case "sin": return { ctx in sinf(args[0](ctx)) }
-        case "cos": return { ctx in cosf(args[0](ctx)) }
-        case "tan": return { ctx in tanf(args[0](ctx)) }
-        case "asin": return { ctx in asinf(args[0](ctx)) }
-        case "acos": return { ctx in acosf(args[0](ctx)) }
-        case "atan": return { ctx in atanf(args[0](ctx)) }
-        case "atan2": return { ctx in atan2f(args[0](ctx), args[1](ctx)) }
-        case "abs": return { ctx in abs(args[0](ctx)) }
-        case "floor": return { ctx in floorf(args[0](ctx)) }
-        case "ceil": return { ctx in ceilf(args[0](ctx)) }
-        case "round": return { ctx in roundf(args[0](ctx)) }
-        case "sqrt": return { ctx in sqrtf(args[0](ctx)) }
-        case "pow": return { ctx in powf(args[0](ctx), args[1](ctx)) }
-        case "exp": return { ctx in expf(args[0](ctx)) }
-        case "log": return { ctx in logf(args[0](ctx)) }
-        case "log2": return { ctx in log2f(args[0](ctx)) }
+        case "sin": return { ctx in sinf(argEvals[0](ctx)) }
+        case "cos": return { ctx in cosf(argEvals[0](ctx)) }
+        case "tan": return { ctx in tanf(argEvals[0](ctx)) }
+        case "asin": return { ctx in asinf(argEvals[0](ctx)) }
+        case "acos": return { ctx in acosf(argEvals[0](ctx)) }
+        case "atan": return { ctx in atanf(argEvals[0](ctx)) }
+        case "atan2": return { ctx in atan2f(argEvals[0](ctx), argEvals[1](ctx)) }
+        case "abs": return { ctx in abs(argEvals[0](ctx)) }
+        case "floor": return { ctx in floorf(argEvals[0](ctx)) }
+        case "ceil": return { ctx in ceilf(argEvals[0](ctx)) }
+        case "round": return { ctx in roundf(argEvals[0](ctx)) }
+        case "sqrt": return { ctx in sqrtf(argEvals[0](ctx)) }
+        case "pow": return { ctx in powf(argEvals[0](ctx), argEvals[1](ctx)) }
+        case "exp": return { ctx in expf(argEvals[0](ctx)) }
+        case "log": return { ctx in logf(argEvals[0](ctx)) }
+        case "log2": return { ctx in log2f(argEvals[0](ctx)) }
 
         // Utility functions
-        case "min": return { ctx in min(args[0](ctx), args[1](ctx)) }
-        case "max": return { ctx in max(args[0](ctx), args[1](ctx)) }
-        case "clamp": return { ctx in min(max(args[0](ctx), args[1](ctx)), args[2](ctx)) }
+        case "min": return { ctx in min(argEvals[0](ctx), argEvals[1](ctx)) }
+        case "max": return { ctx in max(argEvals[0](ctx), argEvals[1](ctx)) }
+        case "clamp": return { ctx in min(max(argEvals[0](ctx), argEvals[1](ctx)), argEvals[2](ctx)) }
         case "lerp", "mix":
             return { ctx in
-                let a = args[0](ctx)
-                let b = args[1](ctx)
-                let t = args[2](ctx)
+                let a = argEvals[0](ctx)
+                let b = argEvals[1](ctx)
+                let t = argEvals[2](ctx)
                 return a + (b - a) * t
             }
         case "step":
-            return { ctx in args[1](ctx) < args[0](ctx) ? 0.0 : 1.0 }
+            return { ctx in argEvals[1](ctx) < argEvals[0](ctx) ? 0.0 : 1.0 }
         case "smoothstep":
             return { ctx in
-                let edge0 = args[0](ctx)
-                let edge1 = args[1](ctx)
-                let x = args[2](ctx)
+                let edge0 = argEvals[0](ctx)
+                let edge1 = argEvals[1](ctx)
+                let x = argEvals[2](ctx)
                 let t = min(max((x - edge0) / (edge1 - edge0), 0.0), 1.0)
                 return t * t * (3.0 - 2.0 * t)
             }
         case "fract":
             return { ctx in
-                let v = args[0](ctx)
+                let v = argEvals[0](ctx)
                 return v - floorf(v)
             }
         case "mod":
-            return { ctx in fmodf(args[0](ctx), args[1](ctx)) }
+            return { ctx in fmodf(argEvals[0](ctx), argEvals[1](ctx)) }
         case "sign":
             return { ctx in
-                let v = args[0](ctx)
+                let v = argEvals[0](ctx)
                 if v > 0 { return 1.0 }
                 if v < 0 { return -1.0 }
                 return 0.0
             }
 
-        // Cache (simplified - just return value for now)
-        case "cache":
-            return args[0]  // Just pass through value
-
-        // Dynamic bundle selection - short-circuit evaluation
-        case "select":
-            // select(index, branch0, branch1, ...)
-            // Only evaluate the selected branch
-            guard args.count >= 2 else {
-                return { _ in 0.0 }
-            }
-            let indexEval = args[0]
-            let branches = Array(args.dropFirst())
-            return { ctx in
-                let idx = Int(indexEval(ctx))
-                let clampedIdx = max(0, min(idx, branches.count - 1))
-                return branches[clampedIdx](ctx)  // Only selected branch is evaluated
-            }
-
         // Hardware inputs - now handled as builtins
         case "microphone":
             // microphone(offset, channel)
-            guard args.count >= 2, rawArgs.count >= 2 else {
+            guard args.count >= 2 else {
                 return { _ in 0.0 }
             }
-            let offsetEval = args[0]
+            let offsetEval = argEvals[0]
             // Extract channel as static value from raw args
             let channel: Int
-            if case .num(let ch) = rawArgs[1] {
+            if case .num(let ch) = args[1] {
                 channel = Int(ch)
             } else {
                 channel = 0
@@ -301,6 +317,42 @@ public class AudioCodeGen {
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")
+        }
+    }
+
+    /// Build cache access closure that uses shared buffer via CacheManager
+    private func buildCacheAccess(args: [IRExpr]) throws -> (AudioContext) -> Float {
+        // cache(value, history_size, tap_index, signal)
+        guard args.count >= 4 else {
+            throw BackendError.unsupportedExpression("cache requires 4 arguments")
+        }
+
+        // Get the descriptor for this cache node
+        let cacheIndex = cacheNodeCounter
+        cacheNodeCounter += 1
+
+        guard cacheIndex < cacheDescriptors.count else {
+            // Fallback: no descriptor available, just return value
+            let valueEval = try buildEvaluator(for: args[0])
+            return valueEval
+        }
+
+        let descriptor = cacheDescriptors[cacheIndex]
+
+        // Build evaluators for value and signal expressions
+        let valueEval = try buildEvaluator(for: args[0])
+        let signalEval = try buildEvaluator(for: args[3])
+
+        // Capture cache manager and descriptor for closure
+        let manager = self.cacheManager
+
+        return { ctx in
+            let value = valueEval(ctx)
+            let signal = signalEval(ctx)
+
+            // Use CacheManager's tick method for audio caches
+            guard let mgr = manager else { return value }
+            return mgr.tickAudioCache(descriptor: descriptor, value: value, signal: signal)
         }
     }
 }

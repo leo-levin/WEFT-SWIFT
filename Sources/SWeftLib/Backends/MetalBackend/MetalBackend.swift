@@ -12,13 +12,25 @@ public class MetalCompiledUnit: CompiledUnit {
     public let shaderSource: String
     public let needsCamera: Bool
     public let needsMicrophone: Bool
+    public let needsCache: Bool
+    public let cacheDescriptors: [CacheNodeDescriptor]
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, needsCamera: Bool = false, needsMicrophone: Bool = false) {
+    public init(
+        swatchId: UUID,
+        pipelineState: MTLComputePipelineState,
+        shaderSource: String,
+        needsCamera: Bool = false,
+        needsMicrophone: Bool = false,
+        needsCache: Bool = false,
+        cacheDescriptors: [CacheNodeDescriptor] = []
+    ) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
         self.needsCamera = needsCamera
         self.needsMicrophone = needsMicrophone
+        self.needsCache = needsCache
+        self.cacheDescriptors = cacheDescriptors
     }
 }
 
@@ -36,7 +48,7 @@ public class MetalBackend: Backend {
     public static let identifier = "visual"
     public static let ownedBuiltins: Set<String> = ["camera", "texture", "load"]
     public static let externalBuiltins: Set<String> = ["camera", "texture"]
-    public static let statefulBuiltins: Set<String> = []
+    public static let statefulBuiltins: Set<String> = ["cache"]
     public static let outputSinkName: String? = "display"
     public static let coordinateFields = ["x", "y", "t", "w", "h"]
 
@@ -98,12 +110,21 @@ public class MetalBackend: Backend {
         outputTexture = device.makeTexture(descriptor: descriptor)
     }
 
-    /// Compile swatch to Metal pipeline
+    /// Compile swatch to Metal pipeline (without cache support)
     public func compile(swatch: Swatch, ir: IRProgram) throws -> CompiledUnit {
-        let codegen = MetalCodeGen(program: ir, swatch: swatch)
+        return try compile(swatch: swatch, ir: ir, cacheDescriptors: [])
+    }
+
+    /// Compile swatch to Metal pipeline with cache descriptors
+    public func compile(swatch: Swatch, ir: IRProgram, cacheDescriptors: [CacheNodeDescriptor]) throws -> CompiledUnit {
+        let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors)
         let shaderSource = try codegen.generate()
         let needsCamera = codegen.usesCamera()
         let needsMicrophone = codegen.usesMicrophone()
+        let needsCache = codegen.usesCache()
+
+        // Filter to visual-domain caches only
+        let visualCaches = cacheDescriptors.filter { $0.domain == .visual }
 
         // Debug: print generated shader
         print("Generated Metal shader:")
@@ -133,7 +154,9 @@ public class MetalBackend: Backend {
             pipelineState: pipelineState,
             shaderSource: shaderSource,
             needsCamera: needsCamera,
-            needsMicrophone: needsMicrophone
+            needsMicrophone: needsMicrophone,
+            needsCache: needsCache,
+            cacheDescriptors: visualCaches
         )
     }
 
@@ -186,11 +209,21 @@ public class MetalBackend: Backend {
         return outputTexture
     }
 
-    /// Render to a drawable (for MTKView)
+    /// Render to a drawable (for MTKView) - without cache support
     public func render(
         unit: CompiledUnit,
         to drawable: CAMetalDrawable,
         time: Double
+    ) {
+        render(unit: unit, to: drawable, time: time, cacheManager: nil)
+    }
+
+    /// Render to a drawable (for MTKView) with cache buffer binding
+    public func render(
+        unit: CompiledUnit,
+        to drawable: CAMetalDrawable,
+        time: Double,
+        cacheManager: CacheManager?
     ) {
         guard let metalUnit = unit as? MetalCompiledUnit else { return }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
@@ -229,6 +262,23 @@ public class MetalBackend: Backend {
         if metalUnit.needsCamera || metalUnit.needsMicrophone {
             if let sampler = samplerState {
                 computeEncoder.setSamplerState(sampler, index: 0)
+            }
+        }
+
+        // Bind cache buffers if needed
+        if metalUnit.needsCache, let manager = cacheManager {
+            for (i, descriptor) in metalUnit.cacheDescriptors.enumerated() {
+                // Buffer indices: 0 = uniforms, 1+ = cache buffers
+                // Each cache has: history buffer, signal buffer
+                let historyBufferIndex = 1 + i * 2
+                let signalBufferIndex = 1 + i * 2 + 1
+
+                if let historyBuffer = manager.getBuffer(index: descriptor.historyBufferIndex) {
+                    computeEncoder.setBuffer(historyBuffer.mtlBuffer, offset: 0, index: historyBufferIndex)
+                }
+                if let signalBuffer = manager.getBuffer(index: descriptor.signalBufferIndex) {
+                    computeEncoder.setBuffer(signalBuffer.mtlBuffer, offset: 0, index: signalBufferIndex)
+                }
             }
         }
 
