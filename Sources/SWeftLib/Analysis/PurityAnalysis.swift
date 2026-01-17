@@ -130,15 +130,6 @@ public class PurityAnalysis {
                 result = max(result, classifyExpression(expr: subExpr, bundleName: bundleName, program: program))
             }
             return result
-
-        case .texture:
-            return .external
-
-        case .camera:
-            return .external
-
-        case .microphone:
-            return .external
         }
     }
 
@@ -207,17 +198,6 @@ public class PurityAnalysis {
                 refs.formUnion(collectBundleReferences(expr: subExpr))
             }
             return refs
-
-        case .texture(_, let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .camera(let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .microphone(let offset, _):
-            return collectBundleReferences(expr: offset)
         }
     }
 
