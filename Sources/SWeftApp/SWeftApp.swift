@@ -17,21 +17,99 @@ struct SWeftApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            PanelCommands()
         }
     }
 }
 
+// MARK: - Panel Commands (View Menu)
+
+struct PanelCommands: Commands {
+    @FocusedBinding(\.showInspector) var showInspector
+    @FocusedBinding(\.showGraph) var showGraph
+    @FocusedBinding(\.showErrors) var showErrors
+    @FocusedBinding(\.showStats) var showStats
+
+    var body: some Commands {
+        CommandGroup(after: .toolbar) {
+            Section {
+                Toggle("Inspector", isOn: Binding(
+                    get: { showInspector ?? true },
+                    set: { showInspector = $0 }
+                ))
+                .keyboardShortcut("i", modifiers: [.command, .option])
+
+                Toggle("Graph", isOn: Binding(
+                    get: { showGraph ?? true },
+                    set: { showGraph = $0 }
+                ))
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+
+                Toggle("Errors", isOn: Binding(
+                    get: { showErrors ?? true },
+                    set: { showErrors = $0 }
+                ))
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+
+                Toggle("Stats Overlay", isOn: Binding(
+                    get: { showStats ?? true },
+                    set: { showStats = $0 }
+                ))
+                .keyboardShortcut("s", modifiers: [.command, .option])
+            }
+        }
+    }
+}
+
+// MARK: - Focused Values for Panel State
+
+struct ShowInspectorKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
+struct ShowGraphKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
+struct ShowErrorsKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
+struct ShowStatsKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
+extension FocusedValues {
+    var showInspector: Binding<Bool>? {
+        get { self[ShowInspectorKey.self] }
+        set { self[ShowInspectorKey.self] = newValue }
+    }
+
+    var showGraph: Binding<Bool>? {
+        get { self[ShowGraphKey.self] }
+        set { self[ShowGraphKey.self] = newValue }
+    }
+
+    var showErrors: Binding<Bool>? {
+        get { self[ShowErrorsKey.self] }
+        set { self[ShowErrorsKey.self] = newValue }
+    }
+
+    var showStats: Binding<Bool>? {
+        get { self[ShowStatsKey.self] }
+        set { self[ShowStatsKey.self] = newValue }
+    }
+}
+
+// MARK: - App Delegate
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // Set activation policy to regular app (shows in Dock and menu bar)
         NSApp.setActivationPolicy(.regular)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Activate the app and bring to front
         NSApp.activate(ignoringOtherApps: true)
-
-        // Make sure the main window becomes key
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
         }

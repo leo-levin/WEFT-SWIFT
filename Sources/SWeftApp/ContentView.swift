@@ -21,6 +21,10 @@ struct ContentView: View {
         .onAppear {
             viewModel.loadExample(.gradient)
         }
+        .focusedSceneValue(\.showInspector, $showInspector)
+        .focusedSceneValue(\.showGraph, $showGraph)
+        .focusedSceneValue(\.showErrors, $showErrors)
+        .focusedSceneValue(\.showStats, $showStats)
     }
 
     // MARK: - Toolbar
@@ -68,13 +72,13 @@ struct ContentView: View {
 
             // Panel toggles
             HStack(spacing: 2) {
-                ToolbarIconButton("speedometer", label: "Toggle Stats", isActive: showStats) {
+                ToolbarIconButton("speedometer", label: "Stats (⌥⌘S)", isActive: showStats) {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showStats.toggle()
                     }
                 }
 
-                ToolbarIconButton("exclamationmark.triangle", label: "Toggle Errors", isActive: showErrors && viewModel.hasError) {
+                ToolbarIconButton("exclamationmark.triangle", label: "Errors (⇧⌘E)", isActive: showErrors && viewModel.hasError) {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showErrors.toggle()
                     }
@@ -85,13 +89,13 @@ struct ContentView: View {
                     .frame(height: 14)
                     .padding(.horizontal, Spacing.xs)
 
-                ToolbarIconButton("rectangle.bottomthird.inset.filled", label: "Toggle Graph", isActive: showGraph) {
+                ToolbarIconButton("rectangle.bottomthird.inset.filled", label: "Graph (⇧⌘G)", isActive: showGraph) {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showGraph.toggle()
                     }
                 }
 
-                ToolbarIconButton("sidebar.trailing", label: "Toggle Inspector", isActive: showInspector) {
+                ToolbarIconButton("sidebar.trailing", label: "Inspector (⌥⌘I)", isActive: showInspector) {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showInspector.toggle()
                     }
