@@ -14,9 +14,6 @@ public class AudioCodeGen {
     /// Cache descriptors for audio domain
     private var cacheDescriptors: [CacheNodeDescriptor] = []
 
-    /// Counter for matching cache() calls to descriptors during codegen
-    private var cacheNodeCounter: Int = 0
-
     public init(program: IRProgram, swatch: Swatch, cacheManager: CacheManager? = nil) {
         self.program = program
         self.swatch = swatch
@@ -38,9 +35,6 @@ public class AudioCodeGen {
               let playBundle = program.bundles[bundleName] else {
             throw BackendError.missingResource("audio output bundle not found")
         }
-
-        // Reset cache counter before building evaluators
-        cacheNodeCounter = 0
 
         // Build expression evaluators for each channel
         let channelEvaluators = try playBundle.strands.sorted(by: { $0.index < $1.index }).map { strand in
@@ -334,17 +328,15 @@ public class AudioCodeGen {
             throw BackendError.unsupportedExpression("cache requires 4 arguments")
         }
 
-        // Get the descriptor for this cache node
-        let cacheIndex = cacheNodeCounter
-        cacheNodeCounter += 1
-
-        guard cacheIndex < cacheDescriptors.count else {
+        // Find matching descriptor by comparing value and signal expressions
+        // This is more robust than relying on traversal order
+        guard let descriptor = cacheDescriptors.first(where: { desc in
+            desc.valueExpr == args[0] && desc.signalExpr == args[3]
+        }) else {
             // Fallback: no descriptor available, just return value
             let valueEval = try buildEvaluator(for: args[0])
             return valueEval
         }
-
-        let descriptor = cacheDescriptors[cacheIndex]
 
         // Build evaluators for value and signal expressions
         let valueEval = try buildEvaluator(for: args[0])

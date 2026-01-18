@@ -34,11 +34,26 @@ public struct CacheNodeDescriptor {
     /// Backend domain (visual or audio)
     public let domain: CacheDomain
 
-    /// Buffer index for history data
+    /// Buffer index for history data (CacheManager internal)
     public let historyBufferIndex: Int
 
-    /// Buffer index for previous signal tracking
+    /// Buffer index for previous signal tracking (CacheManager internal)
     public let signalBufferIndex: Int
+
+    // MARK: - Shader Buffer Index Calculation
+
+    /// Base buffer index for cache buffers in shader (after uniforms at index 0)
+    public static let shaderBufferStartIndex: Int = 1
+
+    /// Calculate shader buffer index for history buffer given cache array position
+    public static func shaderHistoryBufferIndex(cachePosition: Int) -> Int {
+        return shaderBufferStartIndex + cachePosition * 2
+    }
+
+    /// Calculate shader buffer index for signal buffer given cache array position
+    public static func shaderSignalBufferIndex(cachePosition: Int) -> Int {
+        return shaderBufferStartIndex + cachePosition * 2 + 1
+    }
 }
 
 /// Cache domain determines buffer layout
@@ -85,9 +100,6 @@ public class CacheManager {
 
     /// Next available buffer index
     private var nextBufferIndex: Int = 0
-
-    /// Audio write indices for circular buffers (one per audio cache)
-    private var audioWriteIndices: [String: Int] = [:]
 
     public init() {}
 
@@ -146,7 +158,7 @@ public class CacheManager {
                 // Determine domain from bundle ownership
                 let domain: CacheDomain
                 if let ownership = ownership {
-                    let bundleOwner = ownership.getOwnership(bundle: bundleName)
+                    let bundleOwner = ownership.ownership[bundleName] ?? .none
                     domain = (bundleOwner == .audio) ? .audio : .visual
                 } else {
                     // Default heuristic: "play" bundle is audio, else visual
@@ -224,7 +236,6 @@ public class CacheManager {
 
         // Clear existing buffers
         buffers = [:]
-        audioWriteIndices = [:]
 
         for descriptor in descriptors {
             allocateBuffersForDescriptor(descriptor)
@@ -250,11 +261,9 @@ public class CacheManager {
             signalCount = width * height
 
         case .audio:
-            // Shared delay line: history_size
-            historyCount = descriptor.historySize
+            // Shared delay line: history_size + 1 (extra element stores write index)
+            historyCount = descriptor.historySize + 1
             signalCount = 1
-            // Initialize write index for circular buffer
-            audioWriteIndices[descriptor.id] = 0
         }
 
         // Allocate history buffer
@@ -320,23 +329,17 @@ public class CacheManager {
         return (width, height)
     }
 
-    // MARK: - Audio Cache Helpers
-
-    /// Get write index for audio cache (circular buffer)
-    public func getAudioWriteIndex(for descriptorId: String) -> Int {
-        return audioWriteIndices[descriptorId] ?? 0
-    }
-
-    /// Advance write index for audio cache
-    public func advanceAudioWriteIndex(for descriptorId: String, historySize: Int) {
-        let current = audioWriteIndices[descriptorId] ?? 0
-        audioWriteIndices[descriptorId] = (current + 1) % historySize
-    }
-
     // MARK: - Audio Cache Operations (called from AudioCodeGen closures)
 
     /// Tick audio cache: store value if signal changed
     /// Returns the tapped value
+    ///
+    /// Thread safety: This method is called from the audio render callback, which
+    /// runs on a single real-time thread. The method is safe for single-threaded
+    /// access. Do not call `allocateBuffers()` while audio playback is active.
+    ///
+    /// The write index is stored at historyBuffer[historySize] (one extra element)
+    /// to avoid dictionary access in the hot path.
     public func tickAudioCache(
         descriptor: CacheNodeDescriptor,
         value: Float,
@@ -353,17 +356,20 @@ public class CacheManager {
         let prevSignal = signalPtr[0]
         let shouldTick = prevSignal.isNaN || prevSignal != signal
 
+        // Write index stored at end of history buffer (avoids dictionary in hot path)
+        let writeIdxPtr = historyPtr.advanced(by: descriptor.historySize)
+        var writeIdx = Int(writeIdxPtr.pointee)
+
         if shouldTick {
             signalPtr[0] = signal
 
-            // Circular buffer approach: advance write index and store
-            let writeIdx = audioWriteIndices[descriptor.id] ?? 0
+            // Circular buffer: store at write position, advance index
             historyPtr[writeIdx] = value
-            audioWriteIndices[descriptor.id] = (writeIdx + 1) % descriptor.historySize
+            writeIdx = (writeIdx + 1) % descriptor.historySize
+            writeIdxPtr.pointee = Float(writeIdx)
         }
 
         // Read from tap position (relative to current write position)
-        let writeIdx = audioWriteIndices[descriptor.id] ?? 0
         let readIdx = (writeIdx - 1 - descriptor.tapIndex + descriptor.historySize * 2) % descriptor.historySize
         return historyPtr[readIdx]
     }

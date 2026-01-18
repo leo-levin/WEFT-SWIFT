@@ -11,12 +11,6 @@ public class MetalCodeGen {
     /// Cache descriptors for visual domain (provided by CacheManager)
     private var cacheDescriptors: [CacheNodeDescriptor] = []
 
-    /// Counter for matching cache() calls to descriptors during codegen
-    private var cacheNodeCounter: Int = 0
-
-    /// Starting buffer index for cache buffers (after uniforms)
-    private let cacheBufferStartIndex: Int = 1
-
     public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = []) {
         self.program = program
         self.swatch = swatch
@@ -26,9 +20,6 @@ public class MetalCodeGen {
 
     /// Generate complete Metal shader source
     public func generate() throws -> String {
-        // Reset cache counter for fresh generation
-        cacheNodeCounter = 0
-
         var code = """
         #include <metal_stdlib>
         using namespace metal;
@@ -94,9 +85,6 @@ public class MetalCodeGen {
             throw BackendError.missingResource("\(bundleName) bundle not found")
         }
 
-        // Reset cache counter before generating expressions
-        cacheNodeCounter = 0
-
         // Collect expressions for each strand (r, g, b)
         var colorExprs: [String] = []
         for strand in displayBundle.strands.sorted(by: { $0.index < $1.index }) {
@@ -133,12 +121,11 @@ public class MetalCodeGen {
         }
 
         // Add cache buffer parameters
-        for (i, descriptor) in cacheDescriptors.enumerated() {
-            let historyIdx = cacheBufferStartIndex + i * 2
-            let signalIdx = cacheBufferStartIndex + i * 2 + 1
+        for (i, _) in cacheDescriptors.enumerated() {
+            let historyIdx = CacheNodeDescriptor.shaderHistoryBufferIndex(cachePosition: i)
+            let signalIdx = CacheNodeDescriptor.shaderSignalBufferIndex(cachePosition: i)
             extraParams += "\n    device float* cache\(i)_history [[buffer(\(historyIdx))]],"
             extraParams += "\n    device float* cache\(i)_signal [[buffer(\(signalIdx))]],"
-            _ = descriptor  // Silence unused warning
         }
 
         // Generate cache helper code if needed
@@ -444,16 +431,14 @@ public class MetalCodeGen {
             throw BackendError.unsupportedExpression("cache requires 4 arguments")
         }
 
-        // Get the descriptor for this cache node
-        let cacheIndex = cacheNodeCounter
-        cacheNodeCounter += 1
-
-        guard cacheIndex < cacheDescriptors.count else {
+        // Find matching descriptor by comparing value and signal expressions
+        // This is more robust than relying on traversal order
+        guard let (cacheIndex, descriptor) = cacheDescriptors.enumerated().first(where: { (_, desc) in
+            desc.valueExpr == args[0] && desc.signalExpr == args[3]
+        }) else {
             // Fallback: no descriptor available, just return value
             return try generateExpression(args[0])
         }
-
-        let descriptor = cacheDescriptors[cacheIndex]
 
         // Generate code for value and signal expressions
         let valueCode = try generateExpression(args[0])

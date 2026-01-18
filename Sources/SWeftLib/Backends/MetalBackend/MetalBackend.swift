@@ -282,16 +282,14 @@ public class MetalBackend: Backend {
         if metalUnit.usedInputs.contains("cache"), let manager = cacheManager {
             let cacheDescriptors = manager.getDescriptors(for: .visual)
             for (i, descriptor) in cacheDescriptors.enumerated() {
-                // Buffer indices: 0 = uniforms, 1+ = cache buffers
-                // Each cache has: history buffer, signal buffer
-                let historyBufferIndex = 1 + i * 2
-                let signalBufferIndex = 1 + i * 2 + 1
+                let historyIdx = CacheNodeDescriptor.shaderHistoryBufferIndex(cachePosition: i)
+                let signalIdx = CacheNodeDescriptor.shaderSignalBufferIndex(cachePosition: i)
 
                 if let historyBuffer = manager.getBuffer(index: descriptor.historyBufferIndex) {
-                    computeEncoder.setBuffer(historyBuffer.mtlBuffer, offset: 0, index: historyBufferIndex)
+                    computeEncoder.setBuffer(historyBuffer.mtlBuffer, offset: 0, index: historyIdx)
                 }
                 if let signalBuffer = manager.getBuffer(index: descriptor.signalBufferIndex) {
-                    computeEncoder.setBuffer(signalBuffer.mtlBuffer, offset: 0, index: signalBufferIndex)
+                    computeEncoder.setBuffer(signalBuffer.mtlBuffer, offset: 0, index: signalIdx)
                 }
             }
         }
