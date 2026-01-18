@@ -165,6 +165,20 @@ public class AudioCodeGen {
             let directExpr = IRTransformations.getDirectExpression(base, program: program)
             let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try buildEvaluator(for: remapped)
+
+        case .cacheRead(let cacheId, let tapIndex):
+            // Read from cache history buffer (used to break cycles)
+            // Find the descriptor for this cacheId
+            guard let descriptor = cacheDescriptors.first(where: { $0.id == cacheId }) else {
+                // Fallback: return 0 if no descriptor found
+                return { _ in 0.0 }
+            }
+            let manager = self.cacheManager
+            let clampedTap = min(tapIndex, descriptor.historySize - 1)
+            return { _ in
+                guard let mgr = manager else { return 0.0 }
+                return mgr.readAudioCache(descriptor: descriptor, tapIndex: clampedTap)
+            }
         }
     }
 

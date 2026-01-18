@@ -88,6 +88,12 @@ public class Coordinator: CameraCaptureDelegate {
         // Analyze cache nodes (pass ownership for domain classification)
         cacheManager.analyze(program: program, ownership: ownership)
 
+        // Transform program to break cache cycles (replace back-references with cacheRead)
+        if var mutableProgram = self.program {
+            cacheManager.transformProgramForCaches(program: &mutableProgram)
+            self.program = mutableProgram
+        }
+
         // Print analysis
         print("=== WEFT IR Loaded ===")
         print("Bundles: \(program.bundles.keys.sorted().joined(separator: ", "))")

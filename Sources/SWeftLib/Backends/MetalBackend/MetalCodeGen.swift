@@ -257,6 +257,20 @@ public class MetalCodeGen {
             let directExpr = IRTransformations.getDirectExpression(base, program: program)
             let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try generateExpression(remapped)
+
+        case .cacheRead(let cacheId, let tapIndex):
+            // Read from cache history buffer (used to break cycles)
+            // Find the descriptor for this cacheId
+            guard let (cacheIndex, descriptor) = cacheDescriptors.enumerated().first(where: { (_, desc) in
+                desc.id == cacheId
+            }) else {
+                // Fallback: return 0 if no descriptor found
+                return "0.0"
+            }
+            let historySize = descriptor.historySize
+            let clampedTap = min(tapIndex, historySize - 1)
+            // Read from history buffer at the appropriate offset
+            return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(clampedTap)]"
         }
     }
 

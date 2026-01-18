@@ -226,6 +226,141 @@ public class CacheManager {
         }
     }
 
+    // MARK: - Cycle Breaking Transformation
+
+    /// Transform the program to break cache cycles
+    /// This replaces back-references to cache locations with cacheRead expressions
+    public func transformProgramForCaches(program: inout IRProgram) {
+        // Build map of cache locations: "bundleName.strandIndex" or "bundleName.strandName" -> (cacheId, tapIndex)
+        var cacheLocations: [String: (cacheId: String, tapIndex: Int)] = [:]
+
+        for descriptor in descriptors {
+            // A strand whose expression IS a cache builtin - the strand itself is the cache
+            // We need to identify if the strand expression is directly a cache
+            if let bundle = program.bundles[descriptor.bundleName] {
+                for strand in bundle.strands where strand.index == descriptor.strandIndex {
+                    // Check if this strand's expression is a cache
+                    if case .builtin(let name, _) = strand.expr, name == "cache" {
+                        // Map both by index and by name
+                        cacheLocations["\(descriptor.bundleName).\(strand.index)"] = (descriptor.id, descriptor.tapIndex)
+                        cacheLocations["\(descriptor.bundleName).\(strand.name)"] = (descriptor.id, descriptor.tapIndex)
+                    }
+                }
+            }
+        }
+
+        guard !cacheLocations.isEmpty else { return }
+
+        print("CacheManager: breaking cycles for cache locations: \(cacheLocations.keys.sorted())")
+
+        // Transform each bundle's strand expressions
+        for (bundleName, bundle) in program.bundles {
+            var modifiedStrands = bundle.strands
+            for i in 0..<modifiedStrands.count {
+                modifiedStrands[i].expr = breakCacheCycles(
+                    in: modifiedStrands[i].expr,
+                    cacheLocations: cacheLocations,
+                    program: program,
+                    visited: []
+                )
+            }
+            program.bundles[bundleName] = IRBundle(name: bundleName, strands: modifiedStrands)
+        }
+
+        // Also update the descriptors' valueExpr to use transformed expressions
+        for i in 0..<descriptors.count {
+            let transformedValueExpr = breakCacheCycles(
+                in: descriptors[i].valueExpr,
+                cacheLocations: cacheLocations,
+                program: program,
+                visited: []
+            )
+            // Recreate descriptor with transformed valueExpr
+            descriptors[i] = CacheNodeDescriptor(
+                id: descriptors[i].id,
+                bundleName: descriptors[i].bundleName,
+                strandIndex: descriptors[i].strandIndex,
+                historySize: descriptors[i].historySize,
+                tapIndex: descriptors[i].tapIndex,
+                valueExpr: transformedValueExpr,
+                signalExpr: descriptors[i].signalExpr,
+                domain: descriptors[i].domain,
+                historyBufferIndex: descriptors[i].historyBufferIndex,
+                signalBufferIndex: descriptors[i].signalBufferIndex
+            )
+        }
+    }
+
+    /// Recursively transform expression to replace cache back-references with cacheRead
+    private func breakCacheCycles(
+        in expr: IRExpr,
+        cacheLocations: [String: (cacheId: String, tapIndex: Int)],
+        program: IRProgram,
+        visited: Set<String>
+    ) -> IRExpr {
+        switch expr {
+        case .index(let bundle, let indexExpr):
+            // Check if this is a reference to a cache location
+            let key: String
+            if case .param(let field) = indexExpr {
+                key = "\(bundle).\(field)"
+            } else if case .num(let idx) = indexExpr {
+                key = "\(bundle).\(Int(idx))"
+            } else {
+                // Dynamic index - transform the index expression and return
+                let transformedIndex = breakCacheCycles(in: indexExpr, cacheLocations: cacheLocations, program: program, visited: visited)
+                return .index(bundle: bundle, indexExpr: transformedIndex)
+            }
+
+            // If this reference is to a cache location, replace with cacheRead
+            if let cacheInfo = cacheLocations[key] {
+                return .cacheRead(cacheId: cacheInfo.cacheId, tapIndex: cacheInfo.tapIndex)
+            }
+
+            // Otherwise, continue with the original expression
+            return expr
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: breakCacheCycles(in: left, cacheLocations: cacheLocations, program: program, visited: visited),
+                right: breakCacheCycles(in: right, cacheLocations: cacheLocations, program: program, visited: visited)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: breakCacheCycles(in: operand, cacheLocations: cacheLocations, program: program, visited: visited)
+            )
+
+        case .builtin(let name, let args):
+            let transformedArgs = args.map { breakCacheCycles(in: $0, cacheLocations: cacheLocations, program: program, visited: visited) }
+            return .builtin(name: name, args: transformedArgs)
+
+        case .call(let spindle, let args):
+            let transformedArgs = args.map { breakCacheCycles(in: $0, cacheLocations: cacheLocations, program: program, visited: visited) }
+            return .call(spindle: spindle, args: transformedArgs)
+
+        case .extract(let callExpr, let index):
+            return .extract(
+                call: breakCacheCycles(in: callExpr, cacheLocations: cacheLocations, program: program, visited: visited),
+                index: index
+            )
+
+        case .remap(let base, let substitutions):
+            let transformedBase = breakCacheCycles(in: base, cacheLocations: cacheLocations, program: program, visited: visited)
+            var transformedSubs: [String: IRExpr] = [:]
+            for (key, subExpr) in substitutions {
+                transformedSubs[key] = breakCacheCycles(in: subExpr, cacheLocations: cacheLocations, program: program, visited: visited)
+            }
+            return .remap(base: transformedBase, substitutions: transformedSubs)
+
+        default:
+            // num, param, cacheRead - no transformation needed
+            return expr
+        }
+    }
+
     // MARK: - Buffer Allocation
 
     /// Allocate unified memory buffers for all cache nodes
@@ -371,6 +506,24 @@ public class CacheManager {
 
         // Read from tap position (relative to current write position)
         let readIdx = (writeIdx - 1 - descriptor.tapIndex + descriptor.historySize * 2) % descriptor.historySize
+        return historyPtr[readIdx]
+    }
+
+    /// Read from audio cache without ticking (for cacheRead expressions)
+    /// Returns the value at the specified tap index
+    public func readAudioCache(descriptor: CacheNodeDescriptor, tapIndex: Int) -> Float {
+        guard let historyBuffer = buffers[descriptor.historyBufferIndex] else {
+            return 0.0
+        }
+
+        let historyPtr = historyBuffer.floatPointer
+
+        // Write index stored at end of history buffer
+        let writeIdx = Int(historyPtr.advanced(by: descriptor.historySize).pointee)
+
+        // Read from tap position (relative to current write position)
+        let clampedTap = min(tapIndex, descriptor.historySize - 1)
+        let readIdx = (writeIdx - 1 - clampedTap + descriptor.historySize * 2) % descriptor.historySize
         return historyPtr[readIdx]
     }
 }

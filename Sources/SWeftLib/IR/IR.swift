@@ -83,6 +83,8 @@ public indirect enum IRExpr: Codable, Equatable {
     case builtin(name: String, args: [IRExpr])
     case extract(call: IRExpr, index: Int)
     case remap(base: IRExpr, substitutions: [String: IRExpr])
+    /// Read from cache history buffer (used to break cycles in feedback effects)
+    case cacheRead(cacheId: String, tapIndex: Int)
 
     // MARK: - Codable
 
@@ -90,6 +92,7 @@ public indirect enum IRExpr: Codable, Equatable {
         case type, value, name, bundle, field, indexExpr, op, left, right, operand
         case spindle, args, call, index, base, substitutions
         case resourceId, u, v, channel, offset
+        case cacheId, tapIndex
     }
 
     public init(from decoder: Decoder) throws {
@@ -172,6 +175,11 @@ public indirect enum IRExpr: Codable, Equatable {
             let channel = try container.decode(Int.self, forKey: .channel)
             self = .builtin(name: "microphone", args: [offset, .num(Double(channel))])
 
+        case "cacheRead":
+            let cacheId = try container.decode(String.self, forKey: .cacheId)
+            let tapIndex = try container.decode(Int.self, forKey: .tapIndex)
+            self = .cacheRead(cacheId: cacheId, tapIndex: tapIndex)
+
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .type,
@@ -228,6 +236,11 @@ public indirect enum IRExpr: Codable, Equatable {
             try container.encode("remap", forKey: .type)
             try container.encode(base, forKey: .base)
             try container.encode(substitutions, forKey: .substitutions)
+
+        case .cacheRead(let cacheId, let tapIndex):
+            try container.encode("cacheRead", forKey: .type)
+            try container.encode(cacheId, forKey: .cacheId)
+            try container.encode(tapIndex, forKey: .tapIndex)
         }
     }
 }
@@ -271,13 +284,15 @@ extension IRExpr {
                 vars.formUnion(expr.freeVars())
             }
             return vars
+        case .cacheRead:
+            return []  // cacheRead is a terminal - no bundle references
         }
     }
 
     /// Check if expression uses a specific builtin
     public func usesBuiltin(_ name: String) -> Bool {
         switch self {
-        case .num, .param:
+        case .num, .param, .cacheRead:
             return false
         case .index(_, let indexExpr):
             return indexExpr.usesBuiltin(name)
@@ -299,7 +314,7 @@ extension IRExpr {
     /// Get all builtins used in this expression
     public func allBuiltins() -> Set<String> {
         switch self {
-        case .num, .param:
+        case .num, .param, .cacheRead:
             return []
         case .index(_, let indexExpr):
             return indexExpr.allBuiltins()
@@ -354,6 +369,8 @@ extension IRExpr: CustomStringConvertible {
         case .remap(let base, let substitutions):
             let subs = substitutions.map { "\($0.key) ~ \($0.value)" }.joined(separator: ", ")
             return "\(base)[\(subs)]"
+        case .cacheRead(let cacheId, let tapIndex):
+            return "cacheRead(\(cacheId), \(tapIndex))"
         }
     }
 }
