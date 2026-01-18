@@ -42,36 +42,40 @@ public class MetalCodeGen {
 
         """
 
-        // Generate compute kernel for display output
-        if swatch.bundles.contains("display") {
-            code += try generateDisplayKernel()
+        // Get output bundle name from bindings
+        let outputBundleName = MetalBackend.bindings.compactMap { binding -> String? in
+            if case .output(let output) = binding { return output.bundleName }
+            return nil
+        }.first
+
+        // Generate compute kernel for output
+        if let bundleName = outputBundleName, swatch.bundles.contains(bundleName) {
+            code += try generateDisplayKernel(bundleName: bundleName)
         }
 
         return code
     }
 
-    /// Check if program uses camera
-    public func usesCamera() -> Bool {
-        for (_, bundle) in program.bundles {
-            for strand in bundle.strands {
-                if strand.expr.usesBuiltin("camera") {
-                    return true
-                }
-            }
-        }
-        return false
-    }
+    /// Get set of used input builtin names from this swatch
+    public func usedInputs() -> Set<String> {
+        // Get input binding names from MetalBackend
+        let inputNames = Set(MetalBackend.bindings.compactMap { binding -> String? in
+            if case .input(let input) = binding { return input.builtinName }
+            return nil
+        })
 
-    /// Check if program uses microphone
-    public func usesMicrophone() -> Bool {
-        for (_, bundle) in program.bundles {
-            for strand in bundle.strands {
-                if strand.expr.usesBuiltin("microphone") {
-                    return true
+        // Collect all builtins used in the swatch's bundles
+        var usedBuiltins = Set<String>()
+        for bundleName in swatch.bundles {
+            if let bundle = program.bundles[bundleName] {
+                for strand in bundle.strands {
+                    usedBuiltins.formUnion(strand.expr.allBuiltins())
                 }
             }
         }
-        return false
+
+        // Return intersection of input bindings and used builtins
+        return usedBuiltins.intersection(inputNames)
     }
 
     /// Check if program uses cache
@@ -85,9 +89,9 @@ public class MetalCodeGen {
     }
 
     /// Generate display compute kernel
-    private func generateDisplayKernel() throws -> String {
-        guard let displayBundle = program.bundles["display"] else {
-            throw BackendError.missingResource("display bundle not found")
+    private func generateDisplayKernel(bundleName: String) throws -> String {
+        guard let displayBundle = program.bundles[bundleName] else {
+            throw BackendError.missingResource("\(bundleName) bundle not found")
         }
 
         // Reset cache counter before generating expressions
@@ -105,19 +109,25 @@ public class MetalCodeGen {
             colorExprs.append("0.0")
         }
 
-        // Check if we need camera or microphone textures
-        let needsCamera = usesCamera()
-        let needsMicrophone = usesMicrophone()
-        let needsSampler = needsCamera || needsMicrophone
-
-        // Build parameter list
+        // Build shader params from used input bindings
+        let usedInputNames = usedInputs()
         var extraParams = ""
-        if needsCamera {
-            extraParams += "\n    texture2d<float, access::sample> cameraTexture [[texture(1)]],"
+        var needsSampler = false
+
+        for binding in MetalBackend.bindings {
+            if case .input(let input) = binding, usedInputNames.contains(input.builtinName) {
+                if let shaderParam = input.shaderParam {
+                    extraParams += "\n    \(shaderParam),"
+                    needsSampler = true
+                }
+                // Special case for microphone which uses audioBuffer texture at index 2
+                if input.builtinName == "microphone" {
+                    extraParams += "\n    texture2d<float, access::sample> audioBuffer [[texture(2)]],"
+                    needsSampler = true
+                }
+            }
         }
-        if needsMicrophone {
-            extraParams += "\n    texture2d<float, access::sample> audioBuffer [[texture(2)]],"
-        }
+
         if needsSampler {
             extraParams += "\n    sampler textureSampler [[sampler(0)]],"
         }

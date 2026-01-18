@@ -73,8 +73,38 @@ public final class BackendRegistry {
     public var outputSinks: [String: String] {
         var result: [String: String] = [:]
         for (identifier, type) in backendTypes {
-            if let sinkName = type.outputSinkName {
-                result[sinkName] = identifier
+            for binding in type.bindings {
+                if case .output(let output) = binding {
+                    result[output.bundleName] = identifier
+                }
+            }
+        }
+        return result
+    }
+
+    /// Map from input builtin name to (backendId, InputBinding)
+    /// e.g., "camera" -> ("visual", InputBinding(...))
+    public var allInputBindings: [String: (backendId: String, binding: InputBinding)] {
+        var result: [String: (backendId: String, binding: InputBinding)] = [:]
+        for (identifier, type) in backendTypes {
+            for binding in type.bindings {
+                if case .input(let input) = binding {
+                    result[input.builtinName] = (identifier, input)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Map from output sink name to (backendId, OutputBinding)
+    /// e.g., "display" -> ("visual", OutputBinding(...))
+    public var allOutputBindings: [String: (backendId: String, binding: OutputBinding)] {
+        var result: [String: (backendId: String, binding: OutputBinding)] = [:]
+        for (identifier, type) in backendTypes {
+            for binding in type.bindings {
+                if case .output(let output) = binding {
+                    result[output.bundleName] = (identifier, output)
+                }
             }
         }
         return result

@@ -9,17 +9,30 @@ public class Partitioner {
     private let ownership: OwnershipAnalysis
     private let purity: PurityAnalysis
     private let graph: DependencyGraph
+    private let registry: BackendRegistry
 
     public init(
         program: IRProgram,
         ownership: OwnershipAnalysis,
         purity: PurityAnalysis,
-        graph: DependencyGraph
+        graph: DependencyGraph,
+        registry: BackendRegistry = .shared
     ) {
         self.program = program
         self.ownership = ownership
         self.purity = purity
         self.graph = graph
+        self.registry = registry
+    }
+
+    /// Get output bundle name for a backend from registry
+    private func outputBundleName(for backendId: String) -> String? {
+        registry.allOutputBindings.first { $0.value.backendId == backendId }?.key
+    }
+
+    /// Check if any sink belongs to a backend
+    private func hasSinkFor(backendId: String) -> Bool {
+        ownership.sinks.values.contains(backendId)
     }
 
     /// Partition the IR into Swatches
@@ -52,7 +65,10 @@ public class Partitioner {
         // Pure bundles are duplicated into each backend that needs them
 
         // Visual swatch
-        if !visualBundles.isEmpty || ownership.sinks.values.contains(.display) {
+        let visualBackendId = MetalBackend.identifier
+        let visualOutputBundle = outputBundleName(for: visualBackendId)
+
+        if !visualBundles.isEmpty || hasSinkFor(backendId: visualBackendId) {
             var allVisualBundles = visualBundles
 
             // Add pure bundles that visual depends on
@@ -65,15 +81,15 @@ public class Partitioner {
                 }
             }
 
-            // Also include display if present
-            if program.bundles["display"] != nil {
-                allVisualBundles.insert("display")
+            // Also include output bundle if present
+            if let outputBundle = visualOutputBundle, program.bundles[outputBundle] != nil {
+                allVisualBundles.insert(outputBundle)
             }
 
             let visualSwatch = Swatch(
                 backend: .visual,
                 bundles: allVisualBundles,
-                isSink: ownership.sinks["display"] != nil
+                isSink: visualOutputBundle.map { ownership.sinks[$0] != nil } ?? false
             )
             swatchGraph.swatches.append(visualSwatch)
 
@@ -83,7 +99,10 @@ public class Partitioner {
         }
 
         // Audio swatch
-        if !audioBundles.isEmpty || ownership.sinks.values.contains(.play) {
+        let audioBackendId = AudioBackend.identifier
+        let audioOutputBundle = outputBundleName(for: audioBackendId)
+
+        if !audioBundles.isEmpty || hasSinkFor(backendId: audioBackendId) {
             var allAudioBundles = audioBundles
 
             // Add pure bundles that audio depends on
@@ -96,15 +115,15 @@ public class Partitioner {
                 }
             }
 
-            // Also include play if present
-            if program.bundles["play"] != nil {
-                allAudioBundles.insert("play")
+            // Also include output bundle if present
+            if let outputBundle = audioOutputBundle, program.bundles[outputBundle] != nil {
+                allAudioBundles.insert(outputBundle)
             }
 
             let audioSwatch = Swatch(
                 backend: .audio,
                 bundles: allAudioBundles,
-                isSink: ownership.sinks["play"] != nil
+                isSink: audioOutputBundle.map { ownership.sinks[$0] != nil } ?? false
             )
             swatchGraph.swatches.append(audioSwatch)
 
@@ -201,16 +220,6 @@ public class Partitioner {
             }
             return refs
 
-        case .texture(_, let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .camera(let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .microphone(let offset, _):
-            return collectBundleReferences(expr: offset)
         }
     }
 }

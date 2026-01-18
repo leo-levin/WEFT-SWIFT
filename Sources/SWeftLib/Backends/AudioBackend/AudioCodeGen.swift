@@ -28,8 +28,15 @@ public class AudioCodeGen {
     /// Generate audio render function
     /// Returns a closure: (sampleIndex: Int, time: Double, sampleRate: Double) -> (left: Float, right: Float)
     public func generateRenderFunction() throws -> AudioRenderFunction {
-        guard let playBundle = program.bundles["play"] else {
-            throw BackendError.missingResource("play bundle not found")
+        // Get output bundle name from AudioBackend bindings
+        let outputBundleName = AudioBackend.bindings.compactMap { binding -> String? in
+            if case .output(let output) = binding { return output.bundleName }
+            return nil
+        }.first
+
+        guard let bundleName = outputBundleName,
+              let playBundle = program.bundles[bundleName] else {
+            throw BackendError.missingResource("audio output bundle not found")
         }
 
         // Reset cache counter before building evaluators

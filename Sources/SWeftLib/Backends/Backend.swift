@@ -3,6 +3,49 @@
 import Foundation
 import Metal
 
+// MARK: - Backend Bindings
+
+/// Unified abstraction for all special backend interactions
+public enum BackendBinding {
+    /// External input: builtin that reads from outside world
+    case input(InputBinding)
+
+    /// Output sink: special bundle name that writes to outside world
+    case output(OutputBinding)
+}
+
+/// Describes an external input (camera, microphone, texture)
+public struct InputBinding: Hashable {
+    /// Builtin function name in WEFT IR (e.g., "camera", "microphone")
+    public let builtinName: String
+
+    /// Metal shader parameter declaration (nil for CPU-only backends)
+    public let shaderParam: String?
+
+    /// GPU texture slot index (nil for CPU-only backends)
+    public let textureIndex: Int?
+
+    public init(builtinName: String, shaderParam: String? = nil, textureIndex: Int? = nil) {
+        self.builtinName = builtinName
+        self.shaderParam = shaderParam
+        self.textureIndex = textureIndex
+    }
+}
+
+/// Describes an output sink (display, play)
+public struct OutputBinding: Hashable {
+    /// Bundle name in WEFT IR (e.g., "display", "play")
+    public let bundleName: String
+
+    /// Kernel/callback name in generated code
+    public let kernelName: String
+
+    public init(bundleName: String, kernelName: String) {
+        self.bundleName = bundleName
+        self.kernelName = kernelName
+    }
+}
+
 // MARK: - Buffer Protocol
 
 /// Abstraction over Metal textures, audio buffers, etc.
@@ -35,8 +78,8 @@ public protocol Backend {
     /// Stateful builtins - functions that maintain state (cache)
     static var statefulBuiltins: Set<String> { get }
 
-    /// Output sink name for this backend ("display" for visual, "play" for audio)
-    static var outputSinkName: String? { get }
+    /// All bindings (inputs and outputs) for this backend
+    static var bindings: [BackendBinding] { get }
 
     /// Coordinate fields provided by this backend (e.g., ["x", "y", "t"] for visual)
     static var coordinateFields: [String] { get }
