@@ -13,7 +13,7 @@ struct SWeftApp: App {
                 .navigationTitle("WEFT")
         }
         .windowStyle(.automatic)
-        .defaultSize(width: 1200, height: 700)
+        .defaultSize(width: 1100, height: 700)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { }
@@ -25,7 +25,6 @@ struct SWeftApp: App {
 // MARK: - Panel Commands (View Menu)
 
 struct PanelCommands: Commands {
-    @FocusedBinding(\.showInspector) var showInspector
     @FocusedBinding(\.showGraph) var showGraph
     @FocusedBinding(\.showErrors) var showErrors
     @FocusedBinding(\.showStats) var showStats
@@ -33,12 +32,6 @@ struct PanelCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .toolbar) {
             Section {
-                Toggle("Inspector", isOn: Binding(
-                    get: { showInspector ?? true },
-                    set: { showInspector = $0 }
-                ))
-                .keyboardShortcut("i", modifiers: [.command, .option])
-
                 Toggle("Graph", isOn: Binding(
                     get: { showGraph ?? true },
                     set: { showGraph = $0 }
@@ -63,10 +56,6 @@ struct PanelCommands: Commands {
 
 // MARK: - Focused Values for Panel State
 
-struct ShowInspectorKey: FocusedValueKey {
-    typealias Value = Binding<Bool>
-}
-
 struct ShowGraphKey: FocusedValueKey {
     typealias Value = Binding<Bool>
 }
@@ -80,11 +69,6 @@ struct ShowStatsKey: FocusedValueKey {
 }
 
 extension FocusedValues {
-    var showInspector: Binding<Bool>? {
-        get { self[ShowInspectorKey.self] }
-        set { self[ShowInspectorKey.self] = newValue }
-    }
-
     var showGraph: Binding<Bool>? {
         get { self[ShowGraphKey.self] }
         set { self[ShowGraphKey.self] = newValue }

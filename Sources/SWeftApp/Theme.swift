@@ -6,12 +6,12 @@ import AppKit
 // MARK: - Spacing Scale
 
 enum Spacing {
+    static let xxs: CGFloat = 2
     static let xs: CGFloat = 4
     static let sm: CGFloat = 8
     static let md: CGFloat = 12
     static let lg: CGFloat = 16
     static let xl: CGFloat = 24
-    static let xxl: CGFloat = 32
 }
 
 // MARK: - Colors
@@ -50,7 +50,7 @@ extension Font {
     static let codeSmall = Font.system(size: 10, design: .monospaced)
     static let codeMedium = Font.system(size: 11, design: .monospaced)
     static let codeLarge = Font.system(size: 13, design: .monospaced)
-    static let statsOverlay = Font.system(size: 10, weight: .medium, design: .monospaced)
+    static let statsLabel = Font.system(size: 9, weight: .medium, design: .monospaced)
 }
 
 // MARK: - Panel Header Style
@@ -102,8 +102,41 @@ struct PanelHeader<TrailingContent: View>: View {
 
             trailing()
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm)
+        .padding(.horizontal, Spacing.sm)
+        .padding(.vertical, Spacing.xs)
+        .background(Color.panelHeaderBackground)
+    }
+}
+
+// MARK: - Collapsed Panel Header (minimal)
+
+struct CollapsedPanelHeader: View {
+    let title: String
+    let icon: String?
+    let onExpand: () -> Void
+
+    var body: some View {
+        Button(action: onExpand) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
         .background(Color.panelHeaderBackground)
     }
 }
@@ -220,75 +253,6 @@ struct ToolbarIconButton: View {
     }
 }
 
-// MARK: - Code Block View
-
-struct CodeBlockView: View {
-    let content: String
-    let placeholder: String
-    let fontSize: CGFloat
-
-    init(_ content: String, placeholder: String = "No output", fontSize: CGFloat = 10) {
-        self.content = content
-        self.placeholder = placeholder
-        self.fontSize = fontSize
-    }
-
-    var body: some View {
-        ScrollView {
-            Text(content.isEmpty ? placeholder : content)
-                .font(.system(size: fontSize, design: .monospaced))
-                .foregroundStyle(content.isEmpty ? .secondary : .primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .padding(Spacing.sm)
-        }
-        .background(Color(NSColor.textBackgroundColor))
-    }
-}
-
-// MARK: - Error Banner
-
-struct ErrorBanner: View {
-    let message: String
-    let onDismiss: (() -> Void)?
-
-    init(_ message: String, onDismiss: (() -> Void)? = nil) {
-        self.message = message
-        self.onDismiss = onDismiss
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-                .font(.system(size: 11))
-
-            Text(message)
-                .font(.codeSmall)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let onDismiss {
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(Spacing.sm)
-        .background(Color.red.opacity(0.08))
-        .overlay(
-            Rectangle()
-                .fill(Color.red.opacity(0.3))
-                .frame(width: 3),
-            alignment: .leading
-        )
-    }
-}
-
 // MARK: - Empty State View
 
 struct EmptyStateView: View {
@@ -305,16 +269,16 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: Spacing.sm) {
             Image(systemName: icon)
-                .font(.system(size: 32, weight: .ultraLight))
+                .font(.system(size: 28, weight: .ultraLight))
                 .foregroundStyle(.tertiary)
 
             Text(message)
-                .font(.callout)
+                .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
 
             if let hint {
                 Text(hint)
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.quaternary)
             }
         }
@@ -322,26 +286,196 @@ struct EmptyStateView: View {
     }
 }
 
-// MARK: - Stats Overlay
+// MARK: - Stats Badge (cleaner design)
 
-struct StatsOverlay: View {
+struct StatsBadge: View {
     let fps: Double
     let frameTime: Double
-    let droppedFrames: Int
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(String(format: "%.1f fps", fps))
-            Text(String(format: "%.2f ms", frameTime))
-            if droppedFrames > 0 {
-                Text("\(droppedFrames) dropped")
-                    .foregroundStyle(.red)
-            }
+        HStack(spacing: Spacing.sm) {
+            StatItem(value: String(format: "%.0f", fps), label: "FPS")
+            StatItem(value: String(format: "%.1f", frameTime), label: "MS")
         }
-        .font(.statsOverlay)
-        .foregroundStyle(.white.opacity(0.85))
         .padding(.horizontal, Spacing.sm)
         .padding(.vertical, Spacing.xs)
-        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct StatItem: View {
+    let value: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: Spacing.xxs) {
+            Text(value)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.primary)
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - Compilation Error View
+
+struct CompilationErrorView: View {
+    let error: CompilationError
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Location header
+            if let location = error.location {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                    Text("Line \(location.line), column \(location.column)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, Spacing.sm)
+                .padding(.top, Spacing.sm)
+                .padding(.bottom, Spacing.xs)
+            }
+
+            // Code context
+            if !error.codeContext.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(error.codeContext, id: \.lineNumber) { line in
+                            HStack(spacing: 0) {
+                                Text("\(line.lineNumber)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 24, alignment: .trailing)
+                                    .padding(.trailing, Spacing.sm)
+
+                                if line.isErrorLine {
+                                    Text("> ")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.red)
+                                } else {
+                                    Text("  ")
+                                        .font(.system(size: 10, design: .monospaced))
+                                }
+
+                                Text(line.content)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(line.isErrorLine ? .primary : .secondary)
+                            }
+
+                            // Caret line
+                            if line.isErrorLine, let col = error.location?.column {
+                                HStack(spacing: 0) {
+                                    Text("")
+                                        .frame(width: 24)
+                                        .padding(.trailing, Spacing.sm)
+                                    Text("  ")
+                                        .font(.system(size: 10, design: .monospaced))
+                                    Text(String(repeating: " ", count: max(0, col - 1)) + "^")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.red)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, Spacing.sm)
+                    .padding(.vertical, Spacing.xs)
+                }
+                .background(Color(NSColor.textBackgroundColor))
+            }
+
+            // Error message
+            Text(error.message)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .padding(Spacing.sm)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.red.opacity(0.08))
+        }
+    }
+}
+
+// MARK: - Compilation Error Model
+
+struct CompilationError {
+    struct Location {
+        let line: Int
+        let column: Int
+    }
+
+    struct CodeLine {
+        let lineNumber: Int
+        let content: String
+        let isErrorLine: Bool
+    }
+
+    let message: String
+    let location: Location?
+    let codeContext: [CodeLine]
+
+    /// Parse an Ohm.js error message into structured form
+    static func parse(from errorString: String, source: String) -> CompilationError {
+        // Ohm errors look like:
+        // "Line 2, col 42: expected..."
+        // or just raw error text
+
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        // Try to extract line/col from error
+        let lineColPattern = /[Ll]ine\s+(\d+),?\s*[Cc]ol(?:umn)?\s+(\d+)/
+        var location: Location? = nil
+        var message = errorString
+
+        if let match = errorString.firstMatch(of: lineColPattern) {
+            if let line = Int(match.1), let col = Int(match.2) {
+                location = Location(line: line, column: col)
+            }
+        }
+
+        // Also check for "at position X" style
+        if location == nil {
+            let posPattern = /at position (\d+)/
+            if let match = errorString.firstMatch(of: posPattern), let pos = Int(match.1) {
+                // Convert position to line/col
+                var charCount = 0
+                for (i, line) in lines.enumerated() {
+                    if charCount + line.count >= pos {
+                        location = Location(line: i + 1, column: pos - charCount + 1)
+                        break
+                    }
+                    charCount += line.count + 1 // +1 for newline
+                }
+            }
+        }
+
+        // Extract just the error description (after the colon if present)
+        if let colonRange = errorString.range(of: ": ") {
+            message = String(errorString[colonRange.upperBound...])
+        }
+
+        // Build code context (1 line before, error line, 1 line after)
+        var codeContext: [CodeLine] = []
+        if let loc = location {
+            let errorLineIndex = loc.line - 1
+            let startIndex = max(0, errorLineIndex - 1)
+            let endIndex = min(lines.count - 1, errorLineIndex + 1)
+
+            for i in startIndex...endIndex {
+                if i < lines.count {
+                    codeContext.append(CodeLine(
+                        lineNumber: i + 1,
+                        content: lines[i],
+                        isErrorLine: i == errorLineIndex
+                    ))
+                }
+            }
+        }
+
+        return CompilationError(message: message, location: location, codeContext: codeContext)
     }
 }

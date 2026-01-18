@@ -6,11 +6,9 @@ import SWeftLib
 
 struct ContentView: View {
     @StateObject private var viewModel = WeftViewModel()
-    @State private var showInspector = true
     @State private var showGraph = true
     @State private var showErrors = true
     @State private var showStats = true
-    @State private var inspectorTab: InspectorTab = .ir
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +19,6 @@ struct ContentView: View {
         .onAppear {
             viewModel.loadExample(.gradient)
         }
-        .focusedSceneValue(\.showInspector, $showInspector)
         .focusedSceneValue(\.showGraph, $showGraph)
         .focusedSceneValue(\.showErrors, $showErrors)
         .focusedSceneValue(\.showStats, $showStats)
@@ -30,9 +27,9 @@ struct ContentView: View {
     // MARK: - Toolbar
 
     private var toolbar: some View {
-        HStack(spacing: Spacing.md) {
+        HStack(spacing: Spacing.sm) {
             // Status
-            HStack(spacing: Spacing.sm) {
+            HStack(spacing: Spacing.xs) {
                 StatusIndicator(status: viewModel.hasError ? .error : (viewModel.isRunning ? .running : .stopped))
                 Text(viewModel.statusText)
                     .font(.panelTitle)
@@ -67,43 +64,32 @@ struct ContentView: View {
             }
 
             Divider()
-                .frame(height: 14)
-                .padding(.horizontal, Spacing.xs)
+                .frame(height: 12)
 
             // Panel toggles
-            HStack(spacing: 2) {
+            HStack(spacing: Spacing.xxs) {
                 ToolbarIconButton("speedometer", label: "Stats (⌥⌘S)", isActive: showStats) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
                         showStats.toggle()
                     }
                 }
 
                 ToolbarIconButton("exclamationmark.triangle", label: "Errors (⇧⌘E)", isActive: showErrors && viewModel.hasError) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
                         showErrors.toggle()
                     }
                 }
                 .opacity(viewModel.hasError ? 1 : 0.4)
 
-                Divider()
-                    .frame(height: 14)
-                    .padding(.horizontal, Spacing.xs)
-
-                ToolbarIconButton("rectangle.bottomthird.inset.filled", label: "Graph (⇧⌘G)", isActive: showGraph) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                ToolbarIconButton("point.3.connected.trianglepath.dotted", label: "Graph (⇧⌘G)", isActive: showGraph) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
                         showGraph.toggle()
-                    }
-                }
-
-                ToolbarIconButton("sidebar.trailing", label: "Inspector (⌥⌘I)", isActive: showInspector) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showInspector.toggle()
                     }
                 }
             }
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm)
+        .padding(.horizontal, Spacing.sm)
+        .padding(.vertical, Spacing.xs)
         .background(Color.panelHeaderBackground)
     }
 
@@ -113,17 +99,11 @@ struct ContentView: View {
         HSplitView {
             // Left: Editor + Errors
             editorSection
-                .frame(minWidth: 280, idealWidth: 360)
+                .frame(minWidth: 300, idealWidth: 400)
 
-            // Center: Canvas + Graph
+            // Right: Canvas + Graph
             canvasSection
-                .frame(minWidth: 320)
-
-            // Right: Inspector
-            if showInspector {
-                inspectorSection
-                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 400)
-            }
+                .frame(minWidth: 400)
         }
     }
 
@@ -131,14 +111,10 @@ struct ContentView: View {
 
     private var editorSection: some View {
         VStack(spacing: 0) {
-            Panel(showSeparator: true) {
-                PanelHeader("Editor", icon: "doc.text")
-            } content: {
-                CodeEditor(text: $viewModel.sourceCode)
-                    .onChange(of: viewModel.sourceCode) { _, _ in
-                        viewModel.hasError = false
-                    }
-            }
+            CodeEditor(text: $viewModel.sourceCode)
+                .onChange(of: viewModel.sourceCode) { _, _ in
+                    viewModel.hasError = false
+                }
 
             // Error panel
             if viewModel.hasError && showErrors {
@@ -147,30 +123,35 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: viewModel.hasError && showErrors)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.hasError && showErrors)
     }
 
     private var errorPanel: some View {
         VStack(spacing: 0) {
-            PanelHeader("Errors", icon: "exclamationmark.triangle") {
+            HStack(spacing: Spacing.xs) {
+                Text("Error")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
                 Button {
-                    withAnimation {
-                        showErrors = false
-                    }
+                    withAnimation { showErrors = false }
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
             }
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+            .background(Color.panelHeaderBackground)
 
             SubtleDivider(.horizontal)
 
             ScrollView {
-                ErrorBanner(viewModel.errorMessage)
+                CompilationErrorView(error: viewModel.compilationError)
             }
-            .frame(height: 80)
+            .frame(maxHeight: 140)
         }
     }
 
@@ -181,26 +162,27 @@ struct ContentView: View {
     private var canvasSection: some View {
         VStack(spacing: 0) {
             // Canvas
-            Panel(showSeparator: true) {
-                PanelHeader("Canvas", icon: "square.on.square")
-            } content: {
-                canvasContent
-            }
+            canvasContent
 
-            // Graph
+            // Graph (or collapsed header)
+            SubtleDivider(.horizontal)
             if showGraph {
-                SubtleDivider(.horizontal)
                 graphPanel
-                    .frame(minHeight: 120, idealHeight: 160)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .frame(minHeight: 100, idealHeight: 140)
+                    .transition(.asymmetric(
+                        insertion: .push(from: .bottom),
+                        removal: .push(from: .top)
+                    ))
+            } else {
+                collapsedGraphHeader
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: showGraph)
+        .animation(.easeInOut(duration: 0.15), value: showGraph)
     }
 
     private var canvasContent: some View {
         GeometryReader { geo in
-            let aspectRatio: CGFloat = 4.0 / 3.0
+            let aspectRatio: CGFloat = 16.0 / 10.0
             let availableWidth = geo.size.width
             let availableHeight = geo.size.height
             let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
@@ -214,16 +196,12 @@ struct ContentView: View {
                         WeftMetalView(coordinator: viewModel.coordinator)
 
                         if showStats {
-                            StatsOverlay(
-                                fps: renderStats.fps,
-                                frameTime: renderStats.frameTime,
-                                droppedFrames: renderStats.droppedFrames
-                            )
-                            .padding(Spacing.sm)
-                            .transition(.opacity)
+                            StatsBadge(fps: renderStats.fps, frameTime: renderStats.frameTime)
+                                .padding(Spacing.sm)
+                                .transition(.opacity)
                         }
                     } else {
-                        EmptyStateView("play.circle", message: "Press ⌘Return to run", hint: "or write some WEFT code")
+                        EmptyStateView("play.circle", message: "Press ⌘Return to run")
                     }
                 }
                 .frame(width: fittedWidth, height: fittedHeight)
@@ -231,73 +209,44 @@ struct ContentView: View {
         }
     }
 
+    private var collapsedGraphHeader: some View {
+        CollapsedPanelHeader(title: "Graph", icon: "point.3.connected.trianglepath.dotted") {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                showGraph = true
+            }
+        }
+    }
+
     private var graphPanel: some View {
-        Panel(showSeparator: false) {
-            PanelHeader("Graph", icon: "point.3.connected.trianglepath.dotted") {
+        VStack(spacing: 0) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Text("Graph")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
                         showGraph = false
                     }
                 } label: {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
             }
-        } content: {
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+            .background(Color.panelHeaderBackground)
+
             SubtleDivider(.horizontal)
+
             GraphView(coordinator: viewModel.coordinator)
         }
     }
-
-    // MARK: - Inspector Section
-
-    private var inspectorSection: some View {
-        Panel(showSeparator: true) {
-            PanelHeader("Inspector", icon: "sidebar.right") {
-                Picker("", selection: $inspectorTab) {
-                    ForEach(InspectorTab.allCases) { tab in
-                        Text(tab.rawValue).tag(tab)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.mini)
-                .fixedSize()
-            }
-        } content: {
-            VStack(spacing: 0) {
-                let content = inspectorTab == .ir ? viewModel.irOutput : viewModel.astOutput
-                CodeBlockView(content)
-
-                SubtleDivider(.horizontal)
-
-                HStack {
-                    Spacer()
-                    Button {
-                        let content = inspectorTab == .ir ? viewModel.irOutput : viewModel.astOutput
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(content, forType: .string)
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
-                }
-                .padding(Spacing.sm)
-            }
-        }
-    }
-}
-
-// MARK: - Inspector Tab
-
-enum InspectorTab: String, CaseIterable, Identifiable {
-    case ir = "IR"
-    case ast = "AST"
-
-    var id: Self { self }
 }
 
 // MARK: - Graph View
@@ -317,7 +266,7 @@ struct GraphView: View {
     private func drawGraph(context: GraphicsContext, size: CGSize) {
         guard coordinator.swatchGraph != nil, let program = coordinator.program else {
             let text = Text("No graph")
-                .font(.system(size: 12, weight: .regular))
+                .font(.system(size: 11))
                 .foregroundColor(Color(NSColor.tertiaryLabelColor))
             context.draw(text, at: CGPoint(x: size.width / 2, y: size.height / 2), anchor: .center)
             return
@@ -361,11 +310,11 @@ struct GraphView: View {
             layerGroups[layer]?.sort()
         }
 
-        let nodeWidth: CGFloat = 80
-        let nodeHeight: CGFloat = 28
-        let layerSpacing: CGFloat = 120
-        let nodeSpacing: CGFloat = 10
-        let padding: CGFloat = 24
+        let nodeWidth: CGFloat = 72
+        let nodeHeight: CGFloat = 24
+        let layerSpacing: CGFloat = 100
+        let nodeSpacing: CGFloat = 8
+        let padding: CGFloat = 16
 
         // Calculate positions
         var positions: [String: CGPoint] = [:]
@@ -402,7 +351,7 @@ struct GraphView: View {
                 context.stroke(path, with: .color(edgeColor), lineWidth: 1)
 
                 // Arrowhead
-                let arrowSize: CGFloat = 5
+                let arrowSize: CGFloat = 4
                 let arrowPath = Path { p in
                     p.move(to: CGPoint(x: endX, y: toPos.y))
                     p.addLine(to: CGPoint(x: endX - arrowSize, y: toPos.y - arrowSize / 2))
@@ -421,11 +370,11 @@ struct GraphView: View {
             let isPlay = name == "play"
             let color: Color = isDisplay ? .nodeVisual : (isPlay ? .nodeAudio : .nodeCompute)
 
-            context.fill(Path(roundedRect: rect, cornerRadius: 6), with: .color(color.opacity(0.15)))
-            context.stroke(Path(roundedRect: rect, cornerRadius: 6), with: .color(color.opacity(0.6)), lineWidth: 1)
+            context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(color.opacity(0.12)))
+            context.stroke(Path(roundedRect: rect, cornerRadius: 5), with: .color(color.opacity(0.5)), lineWidth: 1)
 
             let textColor = Color(NSColor.labelColor)
-            let text = Text(name).font(.system(size: 10, weight: .medium)).foregroundColor(textColor)
+            let text = Text(name).font(.system(size: 9, weight: .medium)).foregroundColor(textColor)
             context.draw(text, at: pos, anchor: .center)
         }
     }
@@ -513,8 +462,7 @@ class WeftViewModel: ObservableObject {
     @Published var sourceCode = ""
     @Published var statusText = "Ready"
     @Published var errorMessage = ""
-    @Published var irOutput = ""
-    @Published var astOutput = ""
+    @Published var compilationError = CompilationError(message: "", location: nil, codeContext: [])
     @Published var hasVisual = false
     @Published var hasAudio = false
     @Published var isAudioPlaying = false
@@ -548,19 +496,17 @@ class WeftViewModel: ObservableObject {
         hasAudio = false
         isRunning = false
         statusText = "Stopped"
+        RenderStats.shared.reset()
     }
 
     func compileAndRun() {
         errorMessage = ""
         hasError = false
         statusText = "Compiling..."
+        RenderStats.shared.reset()
 
         do {
-            let astString = try jsCompiler.parseToAST(sourceCode)
-            astOutput = formatJSON(astString)
-
             let jsonString = try jsCompiler.compileToJSON(sourceCode)
-            irOutput = formatJSON(jsonString)
 
             guard let data = jsonString.data(using: .utf8) else {
                 throw WeftCompileError.jsonParseError("Could not encode JSON")
@@ -586,11 +532,13 @@ class WeftViewModel: ObservableObject {
             hasError = true
             isRunning = false
             errorMessage = error.errorDescription ?? "Unknown compile error"
+            compilationError = CompilationError.parse(from: errorMessage, source: sourceCode)
             statusText = "Error"
         } catch {
             hasError = true
             isRunning = false
             errorMessage = error.localizedDescription
+            compilationError = CompilationError.parse(from: errorMessage, source: sourceCode)
             statusText = "Error"
         }
     }
@@ -607,19 +555,6 @@ class WeftViewModel: ObservableObject {
                 errorMessage = "Audio error: \(error.localizedDescription)"
             }
         }
-    }
-
-    private func formatJSON(_ json: String) -> String {
-        guard let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
-              let prettyString = String(data: prettyData, encoding: .utf8) else {
-            return json
-        }
-        if prettyString.count > 2000 {
-            return String(prettyString.prefix(2000)) + "\n... (truncated)"
-        }
-        return prettyString
     }
 }
 
@@ -642,7 +577,7 @@ struct CodeEditor: NSViewRepresentable {
         textView.backgroundColor = NSColor.textBackgroundColor
         textView.insertionPointColor = NSColor.textColor
 
-        textView.textContainerInset = NSSize(width: 10, height: 12)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
