@@ -6,32 +6,17 @@ import SWeftLib
 
 struct ContentView: View {
     @StateObject private var viewModel = WeftViewModel()
-    @State private var showDebugPanel = true
-    @State private var showGraphPanel = true
+    @State private var showInspector = true
+    @State private var showGraph = true
+    @State private var showErrors = true
     @State private var showStats = true
-    @State private var inspectorSelection: InspectorTab = .ir
+    @State private var inspectorTab: InspectorTab = .ir
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbarView
-                .background(.bar)
-
-            Divider()
-
-            HSplitView {
-                // Editor
-                editorPanel
-                    .frame(minWidth: 300)
-
-                // Inspector
-                if showDebugPanel {
-                    inspectorPanel
-                        .frame(minWidth: 250, idealWidth: 320, maxWidth: 450)
-                }
-
-                // Canvas + Graph
-                canvasPanel
-            }
+            toolbar
+            SubtleDivider(.horizontal)
+            mainContent
         }
         .onAppear {
             viewModel.loadExample(.gradient)
@@ -40,187 +25,234 @@ struct ContentView: View {
 
     // MARK: - Toolbar
 
-    private var toolbarView: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(viewModel.hasError ? .red : (viewModel.isRunning ? .green : .gray))
-                    .frame(width: 8, height: 8)
+    private var toolbar: some View {
+        HStack(spacing: Spacing.md) {
+            // Status
+            HStack(spacing: Spacing.sm) {
+                StatusIndicator(status: viewModel.hasError ? .error : (viewModel.isRunning ? .running : .stopped))
                 Text(viewModel.statusText)
+                    .font(.panelTitle)
                     .foregroundStyle(.secondary)
             }
-            .font(.callout)
 
             Spacer()
 
-            Button("Stop", systemImage: "stop.fill") {
-                viewModel.stop()
-            }
-            .disabled(!viewModel.isRunning)
-            .keyboardShortcut(".", modifiers: .command)
+            // Transport controls
+            HStack(spacing: Spacing.xs) {
+                Button {
+                    viewModel.stop()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.borderless)
+                .disabled(!viewModel.isRunning)
+                .keyboardShortcut(".", modifiers: .command)
+                .help("Stop (⌘.)")
 
-            Button("Run", systemImage: "play.fill") {
-                viewModel.compileAndRun()
+                Button {
+                    viewModel.compileAndRun()
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Run (⌘Return)")
             }
-            .keyboardShortcut(.return, modifiers: .command)
 
             Divider()
-                .frame(height: 16)
+                .frame(height: 14)
+                .padding(.horizontal, Spacing.xs)
 
-            Toggle(isOn: $showStats) {
-                Label("Stats", systemImage: "speedometer")
-            }
-            .toggleStyle(.button)
-            .labelStyle(.titleOnly)
-
-            Toggle(isOn: $showDebugPanel) {
-                Label("Inspector", systemImage: "sidebar.left")
-            }
-            .toggleStyle(.button)
-            .labelStyle(.titleOnly)
-
-            Toggle(isOn: $showGraphPanel) {
-                Label("Graph", systemImage: "chart.line.text.clipboard")
-            }
-            .toggleStyle(.button)
-            .labelStyle(.titleOnly)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    // MARK: - Editor Panel
-
-    private var editorPanel: some View {
-        VStack(spacing: 0) {
-            CodeEditor(text: $viewModel.sourceCode)
-                .onChange(of: viewModel.sourceCode) { _, _ in
-                    viewModel.hasError = false
+            // Panel toggles
+            HStack(spacing: 2) {
+                ToolbarIconButton("speedometer", label: "Toggle Stats", isActive: showStats) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showStats.toggle()
+                    }
                 }
 
-            if !viewModel.errorMessage.isEmpty {
+                ToolbarIconButton("exclamationmark.triangle", label: "Toggle Errors", isActive: showErrors && viewModel.hasError) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showErrors.toggle()
+                    }
+                }
+                .opacity(viewModel.hasError ? 1 : 0.4)
+
                 Divider()
-                ScrollView {
-                    Text(viewModel.errorMessage)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .textSelection(.enabled)
+                    .frame(height: 14)
+                    .padding(.horizontal, Spacing.xs)
+
+                ToolbarIconButton("rectangle.bottomthird.inset.filled", label: "Toggle Graph", isActive: showGraph) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showGraph.toggle()
+                    }
                 }
-                .frame(height: 80)
-                .background(.red.opacity(0.05))
+
+                ToolbarIconButton("sidebar.trailing", label: "Toggle Inspector", isActive: showInspector) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showInspector.toggle()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+        .background(Color.panelHeaderBackground)
+    }
+
+    // MARK: - Main Content
+
+    private var mainContent: some View {
+        HSplitView {
+            // Left: Editor + Errors
+            editorSection
+                .frame(minWidth: 280, idealWidth: 360)
+
+            // Center: Canvas + Graph
+            canvasSection
+                .frame(minWidth: 320)
+
+            // Right: Inspector
+            if showInspector {
+                inspectorSection
+                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 400)
             }
         }
     }
 
-    // MARK: - Canvas Panel
+    // MARK: - Editor Section
+
+    private var editorSection: some View {
+        VStack(spacing: 0) {
+            Panel(showSeparator: true) {
+                PanelHeader("Editor", icon: "doc.text")
+            } content: {
+                CodeEditor(text: $viewModel.sourceCode)
+                    .onChange(of: viewModel.sourceCode) { _, _ in
+                        viewModel.hasError = false
+                    }
+            }
+
+            // Error panel
+            if viewModel.hasError && showErrors {
+                SubtleDivider(.horizontal)
+                errorPanel
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.hasError && showErrors)
+    }
+
+    private var errorPanel: some View {
+        VStack(spacing: 0) {
+            PanelHeader("Errors", icon: "exclamationmark.triangle") {
+                Button {
+                    withAnimation {
+                        showErrors = false
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            SubtleDivider(.horizontal)
+
+            ScrollView {
+                ErrorBanner(viewModel.errorMessage)
+            }
+            .frame(height: 80)
+        }
+    }
+
+    // MARK: - Canvas Section
 
     @ObservedObject private var renderStats = RenderStats.shared
 
-    private var canvasPanel: some View {
+    private var canvasSection: some View {
         VStack(spacing: 0) {
-            // Top bar
-            HStack {
-                Text("Canvas")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
+            // Canvas
+            Panel(showSeparator: true) {
+                PanelHeader("Canvas", icon: "square.on.square")
+            } content: {
+                canvasContent
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.bar)
 
-            Divider()
+            // Graph
+            if showGraph {
+                SubtleDivider(.horizontal)
+                graphPanel
+                    .frame(minHeight: 120, idealHeight: 160)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: showGraph)
+    }
 
-            // Canvas with letterboxing
-            GeometryReader { geo in
-                let aspectRatio: CGFloat = 800.0 / 600.0
-                let availableWidth = geo.size.width
-                let availableHeight = geo.size.height
-                let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
-                let fittedHeight = fittedWidth / aspectRatio
+    private var canvasContent: some View {
+        GeometryReader { geo in
+            let aspectRatio: CGFloat = 4.0 / 3.0
+            let availableWidth = geo.size.width
+            let availableHeight = geo.size.height
+            let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
+            let fittedHeight = fittedWidth / aspectRatio
 
-                ZStack {
-                    Color.black
+            ZStack {
+                Color.canvasBackground
 
-                    ZStack(alignment: .topTrailing) {
-                        if viewModel.hasVisual {
-                            WeftMetalView(coordinator: viewModel.coordinator)
+                ZStack(alignment: .topTrailing) {
+                    if viewModel.hasVisual {
+                        WeftMetalView(coordinator: viewModel.coordinator)
 
-                            if showStats {
-                                statsOverlay
-                                    .padding(8)
-                            }
-                        } else {
-                            emptyCanvasPlaceholder
+                        if showStats {
+                            StatsOverlay(
+                                fps: renderStats.fps,
+                                frameTime: renderStats.frameTime,
+                                droppedFrames: renderStats.droppedFrames
+                            )
+                            .padding(Spacing.sm)
+                            .transition(.opacity)
                         }
+                    } else {
+                        EmptyStateView("play.circle", message: "Press ⌘Return to run", hint: "or write some WEFT code")
                     }
-                    .frame(width: fittedWidth, height: fittedHeight)
                 }
+                .frame(width: fittedWidth, height: fittedHeight)
             }
+        }
+    }
 
-            Divider()
-
-            // Graph area
-            if showGraphPanel {
-                HStack {
-                    Text("Graph")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+    private var graphPanel: some View {
+        Panel(showSeparator: false) {
+            PanelHeader("Graph", icon: "point.3.connected.trianglepath.dotted") {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showGraph = false
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(.bar)
-
-                Divider()
-
-                GraphView(coordinator: viewModel.coordinator)
-            } else {
-                Spacer()
-                    .background(.background)
+                .buttonStyle(.plain)
             }
+        } content: {
+            SubtleDivider(.horizontal)
+            GraphView(coordinator: viewModel.coordinator)
         }
-        .frame(minWidth: 400)
     }
 
-    private var statsOverlay: some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(String(format: "%.1f fps", renderStats.fps))
-            Text(String(format: "%.2f ms", renderStats.frameTime))
-            if renderStats.droppedFrames > 0 {
-                Text("\(renderStats.droppedFrames) dropped")
-                    .foregroundStyle(.red)
-            }
-        }
-        .font(.caption.monospaced())
-        .foregroundStyle(.white.opacity(0.8))
-        .padding(6)
-        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-    }
+    // MARK: - Inspector Section
 
-    private var emptyCanvasPlaceholder: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "play.circle")
-                .font(.system(size: 40, weight: .thin))
-            Text("Press \u{2318}Return to run")
-                .font(.callout)
-        }
-        .foregroundStyle(.tertiary)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Inspector Panel
-
-    private var inspectorPanel: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Inspector")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Picker("", selection: $inspectorSelection) {
+    private var inspectorSection: some View {
+        Panel(showSeparator: true) {
+            PanelHeader("Inspector", icon: "sidebar.right") {
+                Picker("", selection: $inspectorTab) {
                     ForEach(InspectorTab.allCases) { tab in
                         Text(tab.rawValue).tag(tab)
                     }
@@ -230,36 +262,27 @@ struct ContentView: View {
                 .controlSize(.mini)
                 .fixedSize()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.bar)
+        } content: {
+            VStack(spacing: 0) {
+                let content = inspectorTab == .ir ? viewModel.irOutput : viewModel.astOutput
+                CodeBlockView(content)
 
-            Divider()
+                SubtleDivider(.horizontal)
 
-            ScrollView {
-                let content = inspectorSelection == .ir ? viewModel.irOutput : viewModel.astOutput
-                Text(content.isEmpty ? "No output" : content)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(content.isEmpty ? .secondary : .primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(8)
-            }
-            .background(Color(NSColor.textBackgroundColor))
-
-            Divider()
-
-            HStack {
-                Spacer()
-                Button("Copy", systemImage: "doc.on.doc") {
-                    let content = inspectorSelection == .ir ? viewModel.irOutput : viewModel.astOutput
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(content, forType: .string)
+                HStack {
+                    Spacer()
+                    Button {
+                        let content = inspectorTab == .ir ? viewModel.irOutput : viewModel.astOutput
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(content, forType: .string)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
-                .font(.caption)
+                .padding(Spacing.sm)
             }
-            .padding(6)
         }
     }
 }
@@ -273,8 +296,7 @@ enum InspectorTab: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-
-// MARK: - Graph View (placeholder for Metal rendering)
+// MARK: - Graph View
 
 struct GraphView: View {
     let coordinator: Coordinator
@@ -290,7 +312,9 @@ struct GraphView: View {
 
     private func drawGraph(context: GraphicsContext, size: CGSize) {
         guard coordinator.swatchGraph != nil, let program = coordinator.program else {
-            let text = Text("No graph").font(.system(size: 14)).foregroundColor(.gray)
+            let text = Text("No graph")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundColor(Color(NSColor.tertiaryLabelColor))
             context.draw(text, at: CGPoint(x: size.width / 2, y: size.height / 2), anchor: .center)
             return
         }
@@ -333,11 +357,11 @@ struct GraphView: View {
             layerGroups[layer]?.sort()
         }
 
-        let nodeWidth: CGFloat = 90
-        let nodeHeight: CGFloat = 32
-        let layerSpacing: CGFloat = 140
-        let nodeSpacing: CGFloat = 12
-        let padding: CGFloat = 30
+        let nodeWidth: CGFloat = 80
+        let nodeHeight: CGFloat = 28
+        let layerSpacing: CGFloat = 120
+        let nodeSpacing: CGFloat = 10
+        let padding: CGFloat = 24
 
         // Calculate positions
         var positions: [String: CGPoint] = [:]
@@ -369,17 +393,19 @@ struct GraphView: View {
                     control1: CGPoint(x: midX, y: fromPos.y),
                     control2: CGPoint(x: midX, y: toPos.y)
                 )
-                context.stroke(path, with: .color(.white.opacity(0.3)), lineWidth: 1.5)
+
+                let edgeColor = Color(NSColor.tertiaryLabelColor)
+                context.stroke(path, with: .color(edgeColor), lineWidth: 1)
 
                 // Arrowhead
-                let arrowSize: CGFloat = 6
+                let arrowSize: CGFloat = 5
                 let arrowPath = Path { p in
                     p.move(to: CGPoint(x: endX, y: toPos.y))
                     p.addLine(to: CGPoint(x: endX - arrowSize, y: toPos.y - arrowSize / 2))
                     p.addLine(to: CGPoint(x: endX - arrowSize, y: toPos.y + arrowSize / 2))
                     p.closeSubpath()
                 }
-                context.fill(arrowPath, with: .color(.white.opacity(0.3)))
+                context.fill(arrowPath, with: .color(edgeColor))
             }
         }
 
@@ -389,12 +415,13 @@ struct GraphView: View {
 
             let isDisplay = name == "display"
             let isPlay = name == "play"
-            let color: Color = isDisplay ? .blue : (isPlay ? .green : .orange)
+            let color: Color = isDisplay ? .nodeVisual : (isPlay ? .nodeAudio : .nodeCompute)
 
-            context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(color.opacity(0.25)))
-            context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(color.opacity(0.8)), lineWidth: 1.5)
+            context.fill(Path(roundedRect: rect, cornerRadius: 6), with: .color(color.opacity(0.15)))
+            context.stroke(Path(roundedRect: rect, cornerRadius: 6), with: .color(color.opacity(0.6)), lineWidth: 1)
 
-            let text = Text(name).font(.system(size: 11, weight: .medium)).foregroundColor(.white)
+            let textColor = Color(NSColor.labelColor)
+            let text = Text(name).font(.system(size: 10, weight: .medium)).foregroundColor(textColor)
             context.draw(text, at: pos, anchor: .center)
         }
     }
@@ -501,7 +528,6 @@ class WeftViewModel: ObservableObject {
     }
 
     func loadExample(_ example: WeftExample) {
-        // Stop any running audio before switching
         stop()
         sourceCode = example.source
         errorMessage = ""
@@ -526,11 +552,9 @@ class WeftViewModel: ObservableObject {
         statusText = "Compiling..."
 
         do {
-            // Get AST
             let astString = try jsCompiler.parseToAST(sourceCode)
             astOutput = formatJSON(astString)
 
-            // Get IR
             let jsonString = try jsCompiler.compileToJSON(sourceCode)
             irOutput = formatJSON(jsonString)
 
@@ -614,7 +638,7 @@ struct CodeEditor: NSViewRepresentable {
         textView.backgroundColor = NSColor.textBackgroundColor
         textView.insertionPointColor = NSColor.textColor
 
-        textView.textContainerInset = NSSize(width: 8, height: 10)
+        textView.textContainerInset = NSSize(width: 10, height: 12)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -639,7 +663,6 @@ struct CodeEditor: NSViewRepresentable {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = NSColor.textBackgroundColor
 
-        // Configure text view to fill scroll view
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -699,13 +722,11 @@ struct CodeEditor: NSViewRepresentable {
     }
 }
 
-// Custom NSTextView that properly accepts first responder
 class FocusableTextView: NSTextView {
     override var acceptsFirstResponder: Bool { true }
 
     override func becomeFirstResponder() -> Bool {
-        let result = super.becomeFirstResponder()
-        return result
+        super.becomeFirstResponder()
     }
 
     override func mouseDown(with event: NSEvent) {

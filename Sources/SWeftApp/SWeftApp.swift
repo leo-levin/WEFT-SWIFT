@@ -10,10 +10,11 @@ struct SWeftApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .navigationTitle("WEFT 0.2.1")
+                .navigationTitle("WEFT")
         }
         .windowStyle(.automatic)
-        .defaultSize(width: 1400, height: 800)
+        .defaultSize(width: 1200, height: 700)
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { }
         }
