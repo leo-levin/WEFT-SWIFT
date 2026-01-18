@@ -10,15 +10,13 @@ public class MetalCompiledUnit: CompiledUnit {
     public let swatchId: UUID
     public let pipelineState: MTLComputePipelineState
     public let shaderSource: String
-    public let needsCamera: Bool
-    public let needsMicrophone: Bool
+    public let usedInputs: Set<String>
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, needsCamera: Bool = false, needsMicrophone: Bool = false) {
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = []) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
-        self.needsCamera = needsCamera
-        self.needsMicrophone = needsMicrophone
+        self.usedInputs = usedInputs
     }
 }
 
@@ -37,8 +35,26 @@ public class MetalBackend: Backend {
     public static let ownedBuiltins: Set<String> = ["camera", "texture", "load"]
     public static let externalBuiltins: Set<String> = ["camera", "texture"]
     public static let statefulBuiltins: Set<String> = []
-    public static let outputSinkName: String? = "display"
     public static let coordinateFields = ["x", "y", "t", "w", "h"]
+
+    public static let bindings: [BackendBinding] = [
+        // Inputs
+        .input(InputBinding(
+            builtinName: "camera",
+            shaderParam: "texture2d<float, access::sample> cameraTexture [[texture(1)]]",
+            textureIndex: 1
+        )),
+        .input(InputBinding(
+            builtinName: "texture",
+            shaderParam: nil,  // Dynamic: texture{N} [[texture(3+N)]]
+            textureIndex: 3    // Base index
+        )),
+        // Output
+        .output(OutputBinding(
+            bundleName: "display",
+            kernelName: "displayKernel"
+        ))
+    ]
 
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
@@ -102,8 +118,7 @@ public class MetalBackend: Backend {
     public func compile(swatch: Swatch, ir: IRProgram) throws -> CompiledUnit {
         let codegen = MetalCodeGen(program: ir, swatch: swatch)
         let shaderSource = try codegen.generate()
-        let needsCamera = codegen.usesCamera()
-        let needsMicrophone = codegen.usesMicrophone()
+        let usedInputs = codegen.usedInputs()
 
         // Debug: print generated shader
         print("Generated Metal shader:")
@@ -132,8 +147,7 @@ public class MetalBackend: Backend {
             swatchId: swatch.id,
             pipelineState: pipelineState,
             shaderSource: shaderSource,
-            needsCamera: needsCamera,
-            needsMicrophone: needsMicrophone
+            usedInputs: usedInputs
         )
     }
 
@@ -211,22 +225,28 @@ public class MetalBackend: Backend {
         computeEncoder.setTexture(texture, index: 0)
         computeEncoder.setBuffer(uniformBuffer, offset: 0, index: 0)
 
-        // Bind camera texture if needed
-        if metalUnit.needsCamera {
-            if let camTex = cameraTexture {
-                computeEncoder.setTexture(camTex, index: 1)
+        // Bind textures for used inputs (derived from bindings)
+        for binding in MetalBackend.bindings {
+            if case .input(let input) = binding, metalUnit.usedInputs.contains(input.builtinName) {
+                if let textureIndex = input.textureIndex {
+                    switch input.builtinName {
+                    case "camera":
+                        if let camTex = cameraTexture {
+                            computeEncoder.setTexture(camTex, index: textureIndex)
+                        }
+                    case "microphone":
+                        if let audioTex = audioBufferTexture {
+                            computeEncoder.setTexture(audioTex, index: 2) // microphone uses index 2
+                        }
+                    default:
+                        break
+                    }
+                }
             }
         }
 
-        // Bind audio buffer texture if needed
-        if metalUnit.needsMicrophone {
-            if let audioTex = audioBufferTexture {
-                computeEncoder.setTexture(audioTex, index: 2)
-            }
-        }
-
-        // Bind sampler if any texture is used
-        if metalUnit.needsCamera || metalUnit.needsMicrophone {
+        // Bind sampler if any input texture is used
+        if !metalUnit.usedInputs.isEmpty {
             if let sampler = samplerState {
                 computeEncoder.setSamplerState(sampler, index: 0)
             }

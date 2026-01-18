@@ -131,12 +131,12 @@ public class Coordinator: CameraCaptureDelegate {
                 let unit = try metalBackend!.compile(swatch: swatch, ir: program)
                 compiledUnits[swatch.id] = unit
 
-                // Check if this unit needs camera or microphone
+                // Check if this unit needs camera or microphone (from usedInputs)
                 if let metalUnit = unit as? MetalCompiledUnit {
-                    if metalUnit.needsCamera {
+                    if metalUnit.usedInputs.contains("camera") {
                         needsCamera = true
                     }
-                    if metalUnit.needsMicrophone {
+                    if metalUnit.usedInputs.contains("microphone") {
                         needsMicrophone = true
                     }
                 }

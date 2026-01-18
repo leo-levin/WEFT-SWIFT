@@ -22,8 +22,21 @@ public class AudioBackend: Backend {
     public static let ownedBuiltins: Set<String> = ["microphone"]
     public static let externalBuiltins: Set<String> = ["microphone"]
     public static let statefulBuiltins: Set<String> = []
-    public static let outputSinkName: String? = "play"
     public static let coordinateFields = ["i", "t", "sampleRate"]
+
+    public static let bindings: [BackendBinding] = [
+        // Input
+        .input(InputBinding(
+            builtinName: "microphone",
+            shaderParam: nil,
+            textureIndex: nil  // CPU callback, no GPU texture
+        )),
+        // Output
+        .output(OutputBinding(
+            bundleName: "play",
+            kernelName: "audioCallback"
+        ))
+    ]
 
     private var audioEngine: AVAudioEngine?
     private var sourceNode: AVAudioSourceNode?

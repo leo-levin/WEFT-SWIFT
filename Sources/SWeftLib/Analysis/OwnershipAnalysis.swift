@@ -10,13 +10,6 @@ public enum BackendDomain: String, Hashable, CaseIterable {
     case none  // Pure computation, no domain-specific builtins
 }
 
-// MARK: - Output Sinks
-
-public enum OutputSink: String, Hashable {
-    case display  // Visual output
-    case play     // Audio output
-}
-
 // MARK: - Ownership Analysis
 
 public class OwnershipAnalysis {
@@ -26,8 +19,9 @@ public class OwnershipAnalysis {
     /// Map from bundle name to its backend domain
     public private(set) var ownership: [String: BackendDomain] = [:]
 
-    /// Map from bundle name to output sink (if it is one)
-    public private(set) var sinks: [String: OutputSink] = [:]
+    /// Map from bundle name to backend identifier (for sink bundles only)
+    /// e.g., "display" -> "visual", "play" -> "audio"
+    public private(set) var sinks: [String: String] = [:]
 
     public init(registry: BackendRegistry = .shared) {
         self.registry = registry
@@ -40,22 +34,14 @@ public class OwnershipAnalysis {
 
         // Get owned builtins from registry
         let ownedBuiltins = registry.allOwnedBuiltins
-        let outputSinkNames = registry.outputSinks
+        let outputBindings = registry.allOutputBindings
 
         // First pass: determine direct ownership from builtins
         for (bundleName, bundle) in program.bundles {
-            // Check if this is an output sink
-            if let backendId = outputSinkNames[bundleName] {
-                if bundleName == "display" {
-                    sinks[bundleName] = .display
-                    ownership[bundleName] = .visual
-                } else if bundleName == "play" {
-                    sinks[bundleName] = .play
-                    ownership[bundleName] = .audio
-                } else {
-                    // Generic handling for future backends
-                    ownership[bundleName] = backendId == "visual" ? .visual : (backendId == "audio" ? .audio : BackendDomain.none)
-                }
+            // Check if this is an output sink (via registry lookup)
+            if let (backendId, _) = outputBindings[bundleName] {
+                sinks[bundleName] = backendId
+                ownership[bundleName] = backendIdToDomain(backendId)
                 continue
             }
 
@@ -66,7 +52,7 @@ public class OwnershipAnalysis {
 
                 for builtin in builtins {
                     if let backendId = ownedBuiltins[builtin] {
-                        let builtinDomain: BackendDomain = backendId == "visual" ? .visual : (backendId == "audio" ? .audio : .none)
+                        let builtinDomain = backendIdToDomain(backendId)
                         if domain == .none {
                             domain = builtinDomain
                         } else if domain != builtinDomain {
@@ -162,8 +148,13 @@ public class OwnershipAnalysis {
         Set(ownership.filter { $0.value == domain }.keys)
     }
 
-    /// Get the output sink bundles
-    public func outputBundles() -> [String: OutputSink] {
+    /// Get the output sink bundles (bundleName -> backendId)
+    public func outputBundles() -> [String: String] {
         sinks
+    }
+
+    /// Convert backend identifier to domain enum
+    private func backendIdToDomain(_ backendId: String) -> BackendDomain {
+        BackendDomain(rawValue: backendId) ?? .none
     }
 }

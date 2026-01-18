@@ -162,14 +162,6 @@ public class CacheManager {
         case .index(_, let indexExpr):
             findCacheNodes(expr: indexExpr, bundleName: bundleName, strandIndex: strandIndex, program: program)
 
-        case .texture(_, let u, let v, _):
-            findCacheNodes(expr: u, bundleName: bundleName, strandIndex: strandIndex, program: program)
-            findCacheNodes(expr: v, bundleName: bundleName, strandIndex: strandIndex, program: program)
-
-        case .camera(let u, let v, _):
-            findCacheNodes(expr: u, bundleName: bundleName, strandIndex: strandIndex, program: program)
-            findCacheNodes(expr: v, bundleName: bundleName, strandIndex: strandIndex, program: program)
-
         default:
             break
         }
