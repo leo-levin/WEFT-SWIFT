@@ -213,6 +213,10 @@ public class Partitioner {
         case .extract(let call, _):
             return collectBundleReferences(expr: call)
 
+        case .cacheRead:
+            // cacheRead doesn't reference bundles directly
+            return []
+
         case .remap(let base, let substitutions):
             var refs = collectBundleReferences(expr: base)
             for (_, subExpr) in substitutions {

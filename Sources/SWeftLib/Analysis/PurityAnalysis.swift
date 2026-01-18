@@ -130,6 +130,10 @@ public class PurityAnalysis {
                 result = max(result, classifyExpression(expr: subExpr, bundleName: bundleName, program: program))
             }
             return result
+
+        case .cacheRead:
+            // Reading from cache is stateful
+            return .stateful
         }
     }
 
@@ -198,6 +202,10 @@ public class PurityAnalysis {
                 refs.formUnion(collectBundleReferences(expr: subExpr))
             }
             return refs
+
+        case .cacheRead:
+            // cacheRead doesn't reference bundles directly
+            return []
         }
     }
 

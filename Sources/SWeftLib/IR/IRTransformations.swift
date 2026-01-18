@@ -77,6 +77,10 @@ public enum IRTransformations {
                 base: substituteParams(in: base, substitutions: substitutions),
                 substitutions: newRemapSubs
             )
+
+        case .cacheRead:
+            // cacheRead has no params to substitute
+            return expr
         }
     }
 
@@ -231,6 +235,10 @@ public enum IRTransformations {
                 inlinedSubs[key] = try inlineExpression(value, program: program)
             }
             return applyRemap(to: inlinedBase, substitutions: inlinedSubs)
+
+        case .cacheRead:
+            // cacheRead is already resolved
+            return expr
         }
     }
 
@@ -324,6 +332,10 @@ public enum IRTransformations {
                 base: applyRemap(to: base, substitutions: substitutions),
                 substitutions: composedSubs
             )
+
+        case .cacheRead:
+            // cacheRead has no coordinates to remap
+            return expr
         }
     }
 }
