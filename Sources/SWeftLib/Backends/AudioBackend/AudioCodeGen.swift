@@ -90,6 +90,37 @@ public class AudioCodeGen {
                 }
             }
 
+            // Check if this index refers to a cache location - if so, return cache read to break cycle
+            let cacheKey: String
+            if case .param(let field) = indexExpr {
+                cacheKey = "\(bundle).\(field)"
+            } else if case .num(let idx) = indexExpr {
+                cacheKey = "\(bundle).\(Int(idx))"
+            } else {
+                cacheKey = ""
+            }
+
+            // Look for matching cache descriptor
+            if !cacheKey.isEmpty {
+                for descriptor in cacheDescriptors {
+                    let descKey1 = "\(descriptor.bundleName).\(descriptor.strandIndex)"
+                    // Also check by strand name
+                    if let targetBundle = program.bundles[descriptor.bundleName],
+                       let strand = targetBundle.strands.first(where: { $0.index == descriptor.strandIndex }) {
+                        let descKey2 = "\(descriptor.bundleName).\(strand.name)"
+                        if cacheKey == descKey1 || cacheKey == descKey2 {
+                            // This is a reference to a cache location - return cache read
+                            let manager = self.cacheManager
+                            let tapIndex = min(descriptor.tapIndex, descriptor.historySize - 1)
+                            return { _ in
+                                guard let mgr = manager else { return 0.0 }
+                                return mgr.readAudioCache(descriptor: descriptor, tapIndex: tapIndex)
+                            }
+                        }
+                    }
+                }
+            }
+
             // Access another bundle
             if let targetBundle = program.bundles[bundle] {
                 if case .num(let idx) = indexExpr {

@@ -179,6 +179,34 @@ public class MetalCodeGen {
                 throw BackendError.unsupportedExpression("Dynamic me index")
             }
 
+            // Check if this index refers to a cache location - if so, emit cacheRead to break cycle
+            let cacheKey: String
+            if case .param(let field) = indexExpr {
+                cacheKey = "\(bundle).\(field)"
+            } else if case .num(let idx) = indexExpr {
+                cacheKey = "\(bundle).\(Int(idx))"
+            } else {
+                cacheKey = ""
+            }
+
+            // Look for matching cache descriptor
+            if !cacheKey.isEmpty {
+                for (cacheIndex, descriptor) in cacheDescriptors.enumerated() {
+                    let descKey1 = "\(descriptor.bundleName).\(descriptor.strandIndex)"
+                    // Also check by strand name
+                    if let targetBundle = program.bundles[descriptor.bundleName],
+                       let strand = targetBundle.strands.first(where: { $0.index == descriptor.strandIndex }) {
+                        let descKey2 = "\(descriptor.bundleName).\(strand.name)"
+                        if cacheKey == descKey1 || cacheKey == descKey2 {
+                            // This is a reference to a cache location - emit buffer read
+                            let historySize = descriptor.historySize
+                            let tapIndex = min(descriptor.tapIndex, historySize - 1)
+                            return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(tapIndex)]"
+                        }
+                    }
+                }
+            }
+
             // Access another bundle's strand
             if let targetBundle = program.bundles[bundle] {
                 if case .num(let idx) = indexExpr {
