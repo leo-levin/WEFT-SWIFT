@@ -177,7 +177,7 @@ struct BundleRow: View {
             Button(action: onToggle) {
                 HStack(spacing: Spacing.xs) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.tertiary)
                         .frame(width: 10)
 
@@ -240,7 +240,7 @@ struct SpindleRow: View {
             Button(action: onToggle) {
                 HStack(spacing: Spacing.xs) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.tertiary)
                         .frame(width: 10)
 
@@ -267,7 +267,7 @@ struct SpindleRow: View {
                     // Local bundles
                     if !spindle.locals.isEmpty {
                         Text("Locals:")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.tertiary)
                         ForEach(spindle.locals, id: \.name) { local in
                             Text("  \(local.name) = ...")
@@ -278,7 +278,7 @@ struct SpindleRow: View {
 
                     // Returns
                     Text("Returns:")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
                     ForEach(Array(spindle.returns.enumerated()), id: \.offset) { idx, expr in
                         Text("  [\(idx)] = \(expr.description)")
@@ -356,7 +356,7 @@ struct AnalysisView: View {
                             if !ownership.sinks.isEmpty {
                                 Divider()
                                 Text("Sinks")
-                                    .font(.system(size: 9, weight: .medium))
+                                    .font(.system(size: 10, weight: .medium))
                                     .foregroundStyle(.tertiary)
                                 ForEach(ownership.sinks.keys.sorted(), id: \.self) { bundle in
                                     HStack {
@@ -394,7 +394,7 @@ struct AnalysisView: View {
                             if !purity.selfReferencing.isEmpty {
                                 Divider()
                                 Text("Self-Referencing (Feedback)")
-                                    .font(.system(size: 9, weight: .medium))
+                                    .font(.system(size: 10, weight: .medium))
                                     .foregroundStyle(.tertiary)
                                 Text(purity.selfReferencing.sorted().joined(separator: ", "))
                                     .font(.system(size: 10, design: .monospaced))
@@ -404,7 +404,7 @@ struct AnalysisView: View {
                             if !purity.usesCache.isEmpty {
                                 Divider()
                                 Text("Uses Cache")
-                                    .font(.system(size: 9, weight: .medium))
+                                    .font(.system(size: 10, weight: .medium))
                                     .foregroundStyle(.tertiary)
                                 Text(purity.usesCache.sorted().joined(separator: ", "))
                                     .font(.system(size: 10, design: .monospaced))
@@ -464,14 +464,14 @@ struct AnalysisView: View {
                                     }
                                     HStack(spacing: Spacing.sm) {
                                         Text("History: \(desc.historySize)")
-                                            .font(.system(size: 9, design: .monospaced))
+                                            .font(.system(size: 10, design: .monospaced))
                                             .foregroundStyle(.secondary)
                                         Text("Tap: \(desc.tapIndex)")
-                                            .font(.system(size: 9, design: .monospaced))
+                                            .font(.system(size: 10, design: .monospaced))
                                             .foregroundStyle(.secondary)
                                         if desc.hasSelfReference {
                                             Text("Self-Ref")
-                                                .font(.system(size: 9, weight: .medium))
+                                                .font(.system(size: 10, weight: .medium))
                                                 .foregroundStyle(.orange)
                                         }
                                     }
@@ -543,7 +543,7 @@ struct SwatchesView: View {
 
                                         if swatch.isSink {
                                             Text("SINK")
-                                                .font(.system(size: 8, weight: .bold))
+                                                .font(.system(size: 9, weight: .bold))
                                                 .foregroundStyle(.white)
                                                 .padding(.horizontal, 4)
                                                 .padding(.vertical, 1)
@@ -578,7 +578,7 @@ struct SwatchRow: View {
             Button(action: onToggle) {
                 HStack(spacing: Spacing.xs) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.tertiary)
                         .frame(width: 10)
 
@@ -592,7 +592,7 @@ struct SwatchRow: View {
 
                     if swatch.isSink {
                         Text("SINK")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
@@ -608,20 +608,20 @@ struct SwatchRow: View {
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     HStack {
                         Text("ID:")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.tertiary)
                         Text(swatch.id.uuidString.prefix(8) + "...")
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
 
                     if !swatch.inputBuffers.isEmpty {
                         HStack(alignment: .top) {
                             Text("Inputs:")
-                                .font(.system(size: 9, weight: .medium))
+                                .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(.tertiary)
                             Text(swatch.inputBuffers.sorted().joined(separator: ", "))
-                                .font(.system(size: 9, design: .monospaced))
+                                .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.blue)
                         }
                     }
@@ -629,10 +629,10 @@ struct SwatchRow: View {
                     if !swatch.outputBuffers.isEmpty {
                         HStack(alignment: .top) {
                             Text("Outputs:")
-                                .font(.system(size: 9, weight: .medium))
+                                .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(.tertiary)
                             Text(swatch.outputBuffers.sorted().joined(separator: ", "))
-                                .font(.system(size: 9, design: .monospaced))
+                                .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.green)
                         }
                     }
@@ -695,7 +695,7 @@ struct DomainBadge: View {
 
     var body: some View {
         Text(domain.rawValue.uppercased())
-            .font(.system(size: 8, weight: .bold))
+            .font(.system(size: 9, weight: .bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -717,7 +717,7 @@ struct PurityBadge: View {
 
     var body: some View {
         Text(purityText)
-            .font(.system(size: 8, weight: .medium))
+            .font(.system(size: 9, weight: .medium))
             .foregroundStyle(purityColor)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -747,7 +747,7 @@ struct CacheDomainBadge: View {
 
     var body: some View {
         Text(domainText)
-            .font(.system(size: 8, weight: .bold))
+            .font(.system(size: 9, weight: .bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
