@@ -6,7 +6,7 @@ import AppKit
 
 enum TokenType {
     // Keywords
-    case keyword           // me, spindle, display, camera, play, microphone, return
+    case keyword           // spindle, display, camera, play, microphone, return
 
     // Bundle & Strand
     case bundleName        // identifier when followed by . or [
@@ -57,7 +57,7 @@ class WeftTokenizer {
     private var nsOffset: Int  // track NSRange offset
 
     private static let keywords: Set<String> = [
-        "me", "spindle", "display", "camera", "play", "microphone", "return"
+        "spindle", "display", "camera", "play", "microphone", "return"
     ]
 
     init(source: String) {
@@ -447,9 +447,9 @@ extension NSColor {
     static let weftNumber = NSColor(hex: "#b5cea8")        // light green
     static let weftComment = NSColor(hex: "#6a9955")       // green
     static let weftIdentifier = NSColor(hex: "#9cdcfe")    // light blue
-    static let weftBundle = NSColor(hex: "#4ec9b0")        // teal
-    static let weftStrand = NSColor(hex: "#3fb8a0")        // darker teal
-    static let weftChain = NSColor(hex: "#4fc1ff")         // blue
+    static let weftBundle = NSColor(hex: "#569cd6")        // blue
+    static let weftStrand = NSColor(hex: "#9cdcfe")        // lighter blue
+    static let weftChain = NSColor(hex: "#4fc1ff")         // cyan blue
     static let weftOperator = NSColor(hex: "#d4d4d4")      // light gray
 }
 
