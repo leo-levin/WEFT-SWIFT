@@ -1040,7 +1040,7 @@
   var BUILTINS = new Set([
     'sin', 'cos', 'tan', 'abs', 'floor', 'ceil', 'sqrt', 'pow',
     'min', 'max', 'lerp', 'clamp', 'step', 'smoothstep', 'fract', 'mod',
-    'osc'
+    'osc', 'cache'
   ]);
 
   var ME_STRANDS = {

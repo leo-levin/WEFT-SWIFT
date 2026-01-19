@@ -11,6 +11,9 @@ public class MetalCodeGen {
     /// Cache descriptors for visual domain (provided by CacheManager)
     private var cacheDescriptors: [CacheNodeDescriptor] = []
 
+    /// Track which cache we're currently generating valueExpr for (to handle self-references)
+    private var currentlyGeneratingCacheIndex: Int? = nil
+
     public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = []) {
         self.program = program
         self.swatch = swatch
@@ -137,6 +140,36 @@ public class MetalCodeGen {
                 uint pixelIndex = gid.y * uint(uniforms.width) + gid.x;
 
             """
+
+            // Pre-compute all cache operations as separate statements (MSL doesn't support lambdas)
+            for (cacheIdx, descriptor) in cacheDescriptors.enumerated() {
+                // Track which cache we're generating so self-references return buffer reads
+                currentlyGeneratingCacheIndex = cacheIdx
+                let valueCode = try generateExpression(descriptor.valueExpr)
+                currentlyGeneratingCacheIndex = nil
+                let signalCode = try generateExpression(descriptor.signalExpr)
+                let historySize = descriptor.historySize
+                let tapIndex = min(descriptor.tapIndex, historySize - 1)
+
+                cacheHelpers += """
+
+                    // Cache \(cacheIdx): \(descriptor.id)
+                    float cache\(cacheIdx)_value = \(valueCode);
+                    float cache\(cacheIdx)_signal_val = \(signalCode);
+                    uint cache\(cacheIdx)_historyBase = pixelIndex * \(historySize);
+                    float cache\(cacheIdx)_prevSignal = cache\(cacheIdx)_signal[pixelIndex];
+                    bool cache\(cacheIdx)_shouldTick = isnan(cache\(cacheIdx)_prevSignal) || cache\(cacheIdx)_prevSignal != cache\(cacheIdx)_signal_val;
+                    if (cache\(cacheIdx)_shouldTick) {
+                        cache\(cacheIdx)_signal[pixelIndex] = cache\(cacheIdx)_signal_val;
+                        for (int j = \(historySize - 1); j > 0; j--) {
+                            cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j] = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j - 1];
+                        }
+                        cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase] = cache\(cacheIdx)_value;
+                    }
+                    float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + \(tapIndex)];
+
+                """
+            }
         }
 
         return """
@@ -179,7 +212,7 @@ public class MetalCodeGen {
                 throw BackendError.unsupportedExpression("Dynamic me index")
             }
 
-            // Check if this index refers to a cache location - if so, emit cacheRead to break cycle
+            // Check if this index refers to a cache location - return precomputed result
             let cacheKey: String
             if case .param(let field) = indexExpr {
                 cacheKey = "\(bundle).\(field)"
@@ -189,7 +222,8 @@ public class MetalCodeGen {
                 cacheKey = ""
             }
 
-            // Look for matching cache descriptor
+            // Look for matching cache descriptor - return the precomputed result variable
+            // UNLESS we're currently generating this cache's valueExpr (then we need to expand)
             if !cacheKey.isEmpty {
                 for (cacheIndex, descriptor) in cacheDescriptors.enumerated() {
                     let descKey1 = "\(descriptor.bundleName).\(descriptor.strandIndex)"
@@ -198,10 +232,16 @@ public class MetalCodeGen {
                        let strand = targetBundle.strands.first(where: { $0.index == descriptor.strandIndex }) {
                         let descKey2 = "\(descriptor.bundleName).\(strand.name)"
                         if cacheKey == descKey1 || cacheKey == descKey2 {
-                            // This is a reference to a cache location - emit buffer read
-                            let historySize = descriptor.historySize
-                            let tapIndex = min(descriptor.tapIndex, historySize - 1)
-                            return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(tapIndex)]"
+                            // If we're generating this cache's valueExpr, DON'T return cache_result
+                            // (it's not defined yet). Instead, fall through to expand the strand.
+                            // The strand's expression contains the cache builtin, which will be
+                            // handled by generateCacheAccess with the self-reference check.
+                            if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
+                                // Fall through to expand the strand expression
+                                break
+                            }
+                            // Reference to a cache output - return the precomputed result
+                            return "cache\(cacheIndex)_result"
                         }
                     }
                 }
@@ -287,18 +327,25 @@ public class MetalCodeGen {
             return try generateExpression(remapped)
 
         case .cacheRead(let cacheId, let tapIndex):
-            // Read from cache history buffer (used to break cycles)
-            // Find the descriptor for this cacheId
+            // cacheRead is used to break cycles - but only return buffer read when
+            // generating a cache's valueExpr (self-reference). Otherwise return the
+            // precomputed result.
             guard let (cacheIndex, descriptor) = cacheDescriptors.enumerated().first(where: { (_, desc) in
                 desc.id == cacheId
             }) else {
                 // Fallback: return 0 if no descriptor found
                 return "0.0"
             }
-            let historySize = descriptor.historySize
-            let clampedTap = min(tapIndex, historySize - 1)
-            // Read from history buffer at the appropriate offset
-            return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(clampedTap)]"
+
+            // Only return buffer read if generating THIS cache's valueExpr (self-reference)
+            if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
+                let historySize = descriptor.historySize
+                let clampedTap = min(tapIndex, historySize - 1)
+                return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(clampedTap)]"
+            }
+
+            // Otherwise return the precomputed result
+            return "cache\(cacheIndex)_result"
         }
     }
 
@@ -466,7 +513,7 @@ public class MetalCodeGen {
         }
     }
 
-    /// Generate cache access code with tick logic
+    /// Generate cache access code - returns reference to precomputed variable or buffer read for self-references
     private func generateCacheAccess(args: [IRExpr]) throws -> String {
         // cache(value, history_size, tap_index, signal)
         guard args.count >= 4 else {
@@ -474,7 +521,6 @@ public class MetalCodeGen {
         }
 
         // Find matching descriptor by comparing value and signal expressions
-        // This is more robust than relying on traversal order
         guard let (cacheIndex, descriptor) = cacheDescriptors.enumerated().first(where: { (_, desc) in
             desc.valueExpr == args[0] && desc.signalExpr == args[3]
         }) else {
@@ -482,36 +528,18 @@ public class MetalCodeGen {
             return try generateExpression(args[0])
         }
 
-        // Generate code for value and signal expressions
-        let valueCode = try generateExpression(args[0])
-        let signalCode = try generateExpression(args[3])
+        // If we're currently generating the valueExpr for THIS cache, return buffer read
+        // (self-reference: need previous frame's value, which is at position 0 before shift)
+        if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
+            let historySize = descriptor.historySize
+            // Always read from position 0 for self-reference - this is the most recent
+            // stored value (from previous frame), before the current frame's shift
+            return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + 0]"
+        }
 
-        let historySize = descriptor.historySize
-        let tapIndex = min(descriptor.tapIndex, historySize - 1)
-
-        // Generate inline cache tick logic using IIFE pattern for expression context
-        // This creates a lambda that is immediately invoked
-        return """
-        [&]() -> float {
-                float cacheValue = \(valueCode);
-                float cacheSignal = \(signalCode);
-                uint historyBase = pixelIndex * \(historySize);
-
-                float prevSignal = cache\(cacheIndex)_signal[pixelIndex];
-                bool shouldTick = isnan(prevSignal) || prevSignal != cacheSignal;
-
-                if (shouldTick) {
-                    cache\(cacheIndex)_signal[pixelIndex] = cacheSignal;
-                    // Shift history (newest at index 0)
-                    for (int i = \(historySize - 1); i > 0; i--) {
-                        cache\(cacheIndex)_history[historyBase + i] = cache\(cacheIndex)_history[historyBase + i - 1];
-                    }
-                    cache\(cacheIndex)_history[historyBase] = cacheValue;
-                }
-
-                return cache\(cacheIndex)_history[historyBase + \(tapIndex)];
-            }()
-        """
+        // Return reference to the precomputed result variable
+        // (cache tick logic is generated in generateDisplayKernel's cacheHelpers)
+        return "cache\(cacheIndex)_result"
     }
 
     /// Format a number for Metal code

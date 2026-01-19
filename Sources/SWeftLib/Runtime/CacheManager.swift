@@ -235,17 +235,14 @@ public class CacheManager {
         var cacheLocations: [String: (cacheId: String, tapIndex: Int)] = [:]
 
         for descriptor in descriptors {
-            // A strand whose expression IS a cache builtin - the strand itself is the cache
-            // We need to identify if the strand expression is directly a cache
-            if let bundle = program.bundles[descriptor.bundleName] {
-                for strand in bundle.strands where strand.index == descriptor.strandIndex {
-                    // Check if this strand's expression is a cache
-                    if case .builtin(let name, _) = strand.expr, name == "cache" {
-                        // Map both by index and by name
-                        cacheLocations["\(descriptor.bundleName).\(strand.index)"] = (descriptor.id, descriptor.tapIndex)
-                        cacheLocations["\(descriptor.bundleName).\(strand.name)"] = (descriptor.id, descriptor.tapIndex)
-                    }
-                }
+            // Map the strand that CONTAINS this cache (even if nested inside other expressions)
+            // This allows breaking self-reference cycles like: combined.val = max(x, cache(combined.val, ...))
+            cacheLocations["\(descriptor.bundleName).\(descriptor.strandIndex)"] = (descriptor.id, descriptor.tapIndex)
+
+            // Also map by strand name if we can find it
+            if let bundle = program.bundles[descriptor.bundleName],
+               let strand = bundle.strands.first(where: { $0.index == descriptor.strandIndex }) {
+                cacheLocations["\(descriptor.bundleName).\(strand.name)"] = (descriptor.id, descriptor.tapIndex)
             }
         }
 
@@ -267,28 +264,11 @@ public class CacheManager {
             program.bundles[bundleName] = IRBundle(name: bundleName, strands: modifiedStrands)
         }
 
-        // Also update the descriptors' valueExpr to use transformed expressions
-        for i in 0..<descriptors.count {
-            let transformedValueExpr = breakCacheCycles(
-                in: descriptors[i].valueExpr,
-                cacheLocations: cacheLocations,
-                program: program,
-                visited: []
-            )
-            // Recreate descriptor with transformed valueExpr
-            descriptors[i] = CacheNodeDescriptor(
-                id: descriptors[i].id,
-                bundleName: descriptors[i].bundleName,
-                strandIndex: descriptors[i].strandIndex,
-                historySize: descriptors[i].historySize,
-                tapIndex: descriptors[i].tapIndex,
-                valueExpr: transformedValueExpr,
-                signalExpr: descriptors[i].signalExpr,
-                domain: descriptors[i].domain,
-                historyBufferIndex: descriptors[i].historyBufferIndex,
-                signalBufferIndex: descriptors[i].signalBufferIndex
-            )
-        }
+        // NOTE: We intentionally do NOT transform descriptor.valueExpr here.
+        // The valueExpr might be a simple index like `combined.val` that needs to be
+        // EXPANDED during codegen to get the full expression. Transforming it here
+        // would lose that expansion. The codegen handles self-references by tracking
+        // which cache is currently being generated.
     }
 
     /// Recursively transform expression to replace cache back-references with cacheRead

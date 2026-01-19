@@ -136,15 +136,16 @@ public class Coordinator: CameraCaptureDelegate {
                 if metalBackend == nil {
                     metalBackend = try MetalBackend()
                     bufferManager = BufferManager(metalDevice: metalBackend?.device)
+                }
 
-                    // Allocate cache buffers now that we have a Metal device
-                    if let device = metalBackend?.device {
-                        cacheManager.allocateBuffers(
-                            device: device,
-                            width: outputWidth,
-                            height: outputHeight
-                        )
-                    }
+                // Always (re)allocate cache buffers when we have cache descriptors
+                // This handles both initial load and recompiles with new cache nodes
+                if let device = metalBackend?.device, !cacheManager.getDescriptors().isEmpty {
+                    cacheManager.allocateBuffers(
+                        device: device,
+                        width: outputWidth,
+                        height: outputHeight
+                    )
                 }
 
                 // Pass cache descriptors to codegen via backend
