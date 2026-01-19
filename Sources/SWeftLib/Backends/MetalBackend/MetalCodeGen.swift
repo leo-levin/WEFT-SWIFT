@@ -8,9 +8,17 @@ public class MetalCodeGen {
     private let program: IRProgram
     private let swatch: Swatch
 
-    public init(program: IRProgram, swatch: Swatch) {
+    /// Cache descriptors for visual domain (provided by CacheManager)
+    private var cacheDescriptors: [CacheNodeDescriptor] = []
+
+    /// Track which cache we're currently generating valueExpr for (to handle self-references)
+    private var currentlyGeneratingCacheIndex: Int? = nil
+
+    public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = []) {
         self.program = program
         self.swatch = swatch
+        // Filter to only visual domain caches
+        self.cacheDescriptors = cacheDescriptors.filter { $0.domain == .visual }
     }
 
     /// Generate complete Metal shader source
@@ -28,42 +36,56 @@ public class MetalCodeGen {
 
         """
 
-        // Generate compute kernel for display output
-        if swatch.bundles.contains("display") {
-            code += try generateDisplayKernel()
+        // Get output bundle name from bindings
+        let outputBundleName = MetalBackend.bindings.compactMap { binding -> String? in
+            if case .output(let output) = binding { return output.bundleName }
+            return nil
+        }.first
+
+        // Generate compute kernel for output
+        if let bundleName = outputBundleName, swatch.bundles.contains(bundleName) {
+            code += try generateDisplayKernel(bundleName: bundleName)
         }
 
         return code
     }
 
-    /// Check if program uses camera
-    public func usesCamera() -> Bool {
-        for (_, bundle) in program.bundles {
-            for strand in bundle.strands {
-                if strand.expr.usesBuiltin("camera") {
-                    return true
+    /// Get set of used input builtin names from this swatch
+    public func usedInputs() -> Set<String> {
+        // Get input binding names from MetalBackend
+        let inputNames = Set(MetalBackend.bindings.compactMap { binding -> String? in
+            if case .input(let input) = binding { return input.builtinName }
+            return nil
+        })
+
+        // Collect all builtins used in the swatch's bundles
+        var usedBuiltins = Set<String>()
+        for bundleName in swatch.bundles {
+            if let bundle = program.bundles[bundleName] {
+                for strand in bundle.strands {
+                    usedBuiltins.formUnion(strand.expr.allBuiltins())
                 }
             }
         }
-        return false
+
+        // Return intersection of input bindings and used builtins
+        return usedBuiltins.intersection(inputNames)
     }
 
-    /// Check if program uses microphone
-    public func usesMicrophone() -> Bool {
-        for (_, bundle) in program.bundles {
-            for strand in bundle.strands {
-                if strand.expr.usesBuiltin("microphone") {
-                    return true
-                }
-            }
-        }
-        return false
+    /// Check if program uses cache
+    public func usesCache() -> Bool {
+        return !cacheDescriptors.isEmpty
+    }
+
+    /// Get the number of cache buffer pairs needed
+    public func cacheBufferCount() -> Int {
+        return cacheDescriptors.count * 2  // history + signal per cache
     }
 
     /// Generate display compute kernel
-    private func generateDisplayKernel() throws -> String {
-        guard let displayBundle = program.bundles["display"] else {
-            throw BackendError.missingResource("display bundle not found")
+    private func generateDisplayKernel(bundleName: String) throws -> String {
+        guard let displayBundle = program.bundles[bundleName] else {
+            throw BackendError.missingResource("\(bundleName) bundle not found")
         }
 
         // Collect expressions for each strand (r, g, b)
@@ -78,20 +100,76 @@ public class MetalCodeGen {
             colorExprs.append("0.0")
         }
 
-        // Check if we need camera or microphone textures
-        let needsCamera = usesCamera()
-        let needsMicrophone = usesMicrophone()
-        let needsSampler = needsCamera || needsMicrophone
-
+        // Build shader params from used input bindings
+        let usedInputNames = usedInputs()
         var extraParams = ""
-        if needsCamera {
-            extraParams += "\n    texture2d<float, access::sample> cameraTexture [[texture(1)]],"
+        var needsSampler = false
+
+        for binding in MetalBackend.bindings {
+            if case .input(let input) = binding, usedInputNames.contains(input.builtinName) {
+                if let shaderParam = input.shaderParam {
+                    extraParams += "\n    \(shaderParam),"
+                    needsSampler = true
+                }
+                // Special case for microphone which uses audioBuffer texture at index 2
+                if input.builtinName == "microphone" {
+                    extraParams += "\n    texture2d<float, access::sample> audioBuffer [[texture(2)]],"
+                    needsSampler = true
+                }
+            }
         }
-        if needsMicrophone {
-            extraParams += "\n    texture2d<float, access::sample> audioBuffer [[texture(2)]],"
-        }
+
         if needsSampler {
             extraParams += "\n    sampler textureSampler [[sampler(0)]],"
+        }
+
+        // Add cache buffer parameters
+        for (i, _) in cacheDescriptors.enumerated() {
+            let historyIdx = CacheNodeDescriptor.shaderHistoryBufferIndex(cachePosition: i)
+            let signalIdx = CacheNodeDescriptor.shaderSignalBufferIndex(cachePosition: i)
+            extraParams += "\n    device float* cache\(i)_history [[buffer(\(historyIdx))]],"
+            extraParams += "\n    device float* cache\(i)_signal [[buffer(\(signalIdx))]],"
+        }
+
+        // Generate cache helper code if needed
+        var cacheHelpers = ""
+        if !cacheDescriptors.isEmpty {
+            cacheHelpers = """
+
+                // Pixel index for cache buffer access
+                uint pixelIndex = gid.y * uint(uniforms.width) + gid.x;
+
+            """
+
+            // Pre-compute all cache operations as separate statements (MSL doesn't support lambdas)
+            for (cacheIdx, descriptor) in cacheDescriptors.enumerated() {
+                // Track which cache we're generating so self-references return buffer reads
+                currentlyGeneratingCacheIndex = cacheIdx
+                let valueCode = try generateExpression(descriptor.valueExpr)
+                currentlyGeneratingCacheIndex = nil
+                let signalCode = try generateExpression(descriptor.signalExpr)
+                let historySize = descriptor.historySize
+                let tapIndex = min(descriptor.tapIndex, historySize - 1)
+
+                cacheHelpers += """
+
+                    // Cache \(cacheIdx): \(descriptor.id)
+                    float cache\(cacheIdx)_value = \(valueCode);
+                    float cache\(cacheIdx)_signal_val = \(signalCode);
+                    uint cache\(cacheIdx)_historyBase = pixelIndex * \(historySize);
+                    float cache\(cacheIdx)_prevSignal = cache\(cacheIdx)_signal[pixelIndex];
+                    bool cache\(cacheIdx)_shouldTick = isnan(cache\(cacheIdx)_prevSignal) || cache\(cacheIdx)_prevSignal != cache\(cacheIdx)_signal_val;
+                    if (cache\(cacheIdx)_shouldTick) {
+                        cache\(cacheIdx)_signal[pixelIndex] = cache\(cacheIdx)_signal_val;
+                        for (int j = \(historySize - 1); j > 0; j--) {
+                            cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j] = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j - 1];
+                        }
+                        cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase] = cache\(cacheIdx)_value;
+                    }
+                    float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + \(tapIndex)];
+
+                """
+            }
         }
 
         return """
@@ -105,7 +183,7 @@ public class MetalCodeGen {
             float t = uniforms.time;
             float w = uniforms.width;
             float h = uniforms.height;
-
+        \(cacheHelpers)
             float r = \(colorExprs[0]);
             float g = \(colorExprs[1]);
             float b = \(colorExprs.count > 2 ? colorExprs[2] : "0.0");
@@ -132,6 +210,41 @@ public class MetalCodeGen {
                     return field
                 }
                 throw BackendError.unsupportedExpression("Dynamic me index")
+            }
+
+            // Check if this index refers to a cache location - return precomputed result
+            let cacheKey: String
+            if case .param(let field) = indexExpr {
+                cacheKey = "\(bundle).\(field)"
+            } else if case .num(let idx) = indexExpr {
+                cacheKey = "\(bundle).\(Int(idx))"
+            } else {
+                cacheKey = ""
+            }
+
+            // Look for matching cache descriptor - return the precomputed result variable
+            // UNLESS we're currently generating this cache's valueExpr (then we need to expand)
+            if !cacheKey.isEmpty {
+                for (cacheIndex, descriptor) in cacheDescriptors.enumerated() {
+                    let descKey1 = "\(descriptor.bundleName).\(descriptor.strandIndex)"
+                    // Also check by strand name
+                    if let targetBundle = program.bundles[descriptor.bundleName],
+                       let strand = targetBundle.strands.first(where: { $0.index == descriptor.strandIndex }) {
+                        let descKey2 = "\(descriptor.bundleName).\(strand.name)"
+                        if cacheKey == descKey1 || cacheKey == descKey2 {
+                            // If we're generating this cache's valueExpr, DON'T return cache_result
+                            // (it's not defined yet). Instead, fall through to expand the strand.
+                            // The strand's expression contains the cache builtin, which will be
+                            // handled by generateCacheAccess with the self-reference check.
+                            if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
+                                // Fall through to expand the strand expression
+                                break
+                            }
+                            // Reference to a cache output - return the precomputed result
+                            return "cache\(cacheIndex)_result"
+                        }
+                    }
+                }
             }
 
             // Access another bundle's strand
@@ -176,7 +289,7 @@ public class MetalCodeGen {
                 }
             }
             // Inline the first return with substitutions
-            let inlined = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
             return try generateExpression(inlined)
 
         case .builtin(let name, let args):
@@ -201,7 +314,7 @@ public class MetalCodeGen {
                 }
             }
             // Inline the specific return with substitutions
-            let inlined = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
             return try generateExpression(inlined)
 
         case .remap(let base, let substitutions):
@@ -209,31 +322,30 @@ public class MetalCodeGen {
             // without recursively inlining its dependencies.
             // e.g., bar.x(me.y ~ me.y-5) only affects me.y in bar.x's direct expression,
             // not in foo.x if bar.x references foo.x
-            let directExpr = try getDirectExpression(base)
-            let remapped = applyRemap(to: directExpr, substitutions: substitutions)
+            let directExpr = IRTransformations.getDirectExpression(base, program: program)
+            let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try generateExpression(remapped)
 
-        case .texture(let resourceId, let u, let v, let channel):
-            // Sample from texture
-            let uCode = try generateExpression(u)
-            let vCode = try generateExpression(v)
-            let channelNames = ["r", "g", "b", "a"]
-            let channelName = channel < channelNames.count ? channelNames[channel] : "r"
-            return "texture\(resourceId).sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
+        case .cacheRead(let cacheId, let tapIndex):
+            // cacheRead is used to break cycles - but only return buffer read when
+            // generating a cache's valueExpr (self-reference). Otherwise return the
+            // precomputed result.
+            guard let (cacheIndex, descriptor) = cacheDescriptors.enumerated().first(where: { (_, desc) in
+                desc.id == cacheId
+            }) else {
+                // Fallback: return 0 if no descriptor found
+                return "0.0"
+            }
 
-        case .camera(let u, let v, let channel):
-            // Sample from camera texture (treated as texture0)
-            let uCode = try generateExpression(u)
-            let vCode = try generateExpression(v)
-            let channelNames = ["r", "g", "b", "a"]
-            let channelName = channel < channelNames.count ? channelNames[channel] : "r"
-            return "cameraTexture.sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
+            // Only return buffer read if generating THIS cache's valueExpr (self-reference)
+            if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
+                let historySize = descriptor.historySize
+                let clampedTap = min(tapIndex, historySize - 1)
+                return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(clampedTap)]"
+            }
 
-        case .microphone(let offset, let channel):
-            // Sample from audio buffer texture (1D texture, x = time, channels = L/R)
-            let offsetCode = try generateExpression(offset)
-            let channelName = channel == 0 ? "r" : "g"
-            return "audioBuffer.sample(textureSampler, float2(\(offsetCode), 0.5)).\(channelName)"
+            // Otherwise return the precomputed result
+            return "cache\(cacheIndex)_result"
         }
     }
 
@@ -298,6 +410,11 @@ public class MetalCodeGen {
             }
         }
 
+        // Handle cache specially - need to generate inline tick logic
+        if name == "cache" {
+            return try generateCacheAccess(args: args)
+        }
+
         let argCodes = try args.map { try generateExpression($0) }
 
         switch name {
@@ -333,16 +450,96 @@ public class MetalCodeGen {
         // Noise (simplified - would need actual implementation)
         case "noise": return "fract(sin(dot(float2(\(argCodes[0]), \(argCodes.count > 1 ? argCodes[1] : "0.0")), float2(12.9898, 78.233))) * 43758.5453)"
 
-        // Cache builtin (for feedback effects)
-        case "cache":
-            // cache(value, history_size, tap_index, signal)
-            // For now, just return the value (stateless approximation)
-            // Real implementation needs texture history buffer
-            return argCodes[0]
+        // Hardware inputs - now handled as builtins
+        case "camera":
+            // camera(u, v, channel)
+            guard args.count >= 3 else {
+                throw BackendError.unsupportedExpression("camera requires 3 arguments: u, v, channel")
+            }
+            let uCode = argCodes[0]
+            let vCode = argCodes[1]
+            let channel = args[2]
+            let channelNames = ["r", "g", "b", "a"]
+            let channelIdx: Int
+            if case .num(let ch) = channel {
+                channelIdx = Int(ch)
+            } else {
+                channelIdx = 0
+            }
+            let channelName = channelIdx < channelNames.count ? channelNames[channelIdx] : "r"
+            return "cameraTexture.sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
+
+        case "texture":
+            // texture(resourceId, u, v, channel)
+            guard args.count >= 4 else {
+                throw BackendError.unsupportedExpression("texture requires 4 arguments: resourceId, u, v, channel")
+            }
+            let resourceId: Int
+            if case .num(let rid) = args[0] {
+                resourceId = Int(rid)
+            } else {
+                resourceId = 0
+            }
+            let uCode = argCodes[1]
+            let vCode = argCodes[2]
+            let channel = args[3]
+            let texChannelNames = ["r", "g", "b", "a"]
+            let texChannelIdx: Int
+            if case .num(let ch) = channel {
+                texChannelIdx = Int(ch)
+            } else {
+                texChannelIdx = 0
+            }
+            let texChannelName = texChannelIdx < texChannelNames.count ? texChannelNames[texChannelIdx] : "r"
+            return "texture\(resourceId).sample(textureSampler, float2(\(uCode), \(vCode))).\(texChannelName)"
+
+        case "microphone":
+            // microphone(offset, channel)
+            guard args.count >= 2 else {
+                throw BackendError.unsupportedExpression("microphone requires 2 arguments: offset, channel")
+            }
+            let offsetCode = argCodes[0]
+            let channel = args[1]
+            let micChannelName: String
+            if case .num(let ch) = channel {
+                micChannelName = Int(ch) == 0 ? "r" : "g"
+            } else {
+                micChannelName = "r"
+            }
+            return "audioBuffer.sample(textureSampler, float2(\(offsetCode), 0.5)).\(micChannelName)"
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")
         }
+    }
+
+    /// Generate cache access code - returns reference to precomputed variable or buffer read for self-references
+    private func generateCacheAccess(args: [IRExpr]) throws -> String {
+        // cache(value, history_size, tap_index, signal)
+        guard args.count >= 4 else {
+            throw BackendError.unsupportedExpression("cache requires 4 arguments")
+        }
+
+        // Find matching descriptor by comparing value and signal expressions
+        guard let (cacheIndex, descriptor) = cacheDescriptors.enumerated().first(where: { (_, desc) in
+            desc.valueExpr == args[0] && desc.signalExpr == args[3]
+        }) else {
+            // Fallback: no descriptor available, just return value
+            return try generateExpression(args[0])
+        }
+
+        // If we're currently generating the valueExpr for THIS cache, return buffer read
+        // (self-reference: need previous frame's value, which is at position 0 before shift)
+        if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
+            let historySize = descriptor.historySize
+            // Always read from position 0 for self-reference - this is the most recent
+            // stored value (from previous frame), before the current frame's shift
+            return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + 0]"
+        }
+
+        // Return reference to the precomputed result variable
+        // (cache tick logic is generated in generateDisplayKernel's cacheHelpers)
+        return "cache\(cacheIndex)_result"
     }
 
     /// Format a number for Metal code
@@ -351,370 +548,5 @@ public class MetalCodeGen {
             return "\(Int(value)).0"
         }
         return String(format: "%.6f", value)
-    }
-
-    /// Get the direct expression for a bundle reference WITHOUT recursively inlining dependencies.
-    /// This is used for remap so that substitutions only affect the immediate expression.
-    private func getDirectExpression(_ expr: IRExpr) throws -> IRExpr {
-        switch expr {
-        case .index(let bundle, let indexExpr):
-            if bundle == "me" {
-                // me.x, me.y etc are primitives
-                return expr
-            }
-            // Get the bundle's direct expression without further inlining
-            if let targetBundle = program.bundles[bundle] {
-                if case .num(let idx) = indexExpr {
-                    let strandIdx = Int(idx)
-                    if strandIdx < targetBundle.strands.count {
-                        return targetBundle.strands[strandIdx].expr
-                    }
-                } else if case .param(let field) = indexExpr {
-                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
-                        return strand.expr
-                    }
-                }
-            }
-            return expr
-
-        case .extract(let callExpr, let index):
-            // Extract from spindle call: inline the spindle but don't recurse into bundle refs
-            guard case .call(let spindle, let args) = callExpr else {
-                return expr
-            }
-            guard let spindleDef = program.spindles[spindle] else {
-                return expr
-            }
-            guard index < spindleDef.returns.count else {
-                return expr
-            }
-            // Substitute params but don't inline bundle refs
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            return substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
-
-        case .call(let spindle, let args):
-            // Spindle call: inline the spindle but don't recurse into bundle refs
-            guard let spindleDef = program.spindles[spindle] else {
-                return expr
-            }
-            guard !spindleDef.returns.isEmpty else {
-                return expr
-            }
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            return substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
-
-        default:
-            return expr
-        }
-    }
-
-    /// Inline bundle references to their actual expressions (at IR level, no code generation)
-    /// This resolves bundle.strand references to their defining expressions
-    private func inlineExpression(_ expr: IRExpr) throws -> IRExpr {
-        switch expr {
-        case .num, .param:
-            return expr
-
-        case .index(let bundle, let indexExpr):
-            if bundle == "me" {
-                // me.x, me.y etc are primitives, don't inline
-                return expr
-            }
-
-            // Inline the bundle's strand expression
-            if let targetBundle = program.bundles[bundle] {
-                if case .num(let idx) = indexExpr {
-                    let strandIdx = Int(idx)
-                    if strandIdx < targetBundle.strands.count {
-                        return try inlineExpression(targetBundle.strands[strandIdx].expr)
-                    }
-                } else if case .param(let field) = indexExpr {
-                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
-                        return try inlineExpression(strand.expr)
-                    }
-                }
-            }
-            // Can't inline, return as-is
-            return expr
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: try inlineExpression(left),
-                right: try inlineExpression(right)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(op: op, operand: try inlineExpression(operand))
-
-        case .call(let spindle, let args):
-            // Inline spindle call
-            guard let spindleDef = program.spindles[spindle] else {
-                return expr
-            }
-            guard !spindleDef.returns.isEmpty else {
-                return expr
-            }
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = try inlineExpression(args[i])
-                }
-            }
-            let inlined = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
-            return try inlineExpression(inlined)
-
-        case .builtin(let name, let args):
-            return .builtin(name: name, args: try args.map { try inlineExpression($0) })
-
-        case .extract(let callExpr, let index):
-            guard case .call(let spindle, let args) = callExpr else {
-                return expr
-            }
-            guard let spindleDef = program.spindles[spindle] else {
-                return expr
-            }
-            guard index < spindleDef.returns.count else {
-                return expr
-            }
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = try inlineExpression(args[i])
-                }
-            }
-            let inlined = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
-            return try inlineExpression(inlined)
-
-        case .remap(let base, let substitutions):
-            // Inline the base, then apply remap
-            let inlinedBase = try inlineExpression(base)
-            // Also inline the substitution values
-            var inlinedSubs: [String: IRExpr] = [:]
-            for (key, value) in substitutions {
-                inlinedSubs[key] = try inlineExpression(value)
-            }
-            return applyRemap(to: inlinedBase, substitutions: inlinedSubs)
-
-        case .texture(let resourceId, let u, let v, let channel):
-            return .texture(
-                resourceId: resourceId,
-                u: try inlineExpression(u),
-                v: try inlineExpression(v),
-                channel: channel
-            )
-
-        case .camera(let u, let v, let channel):
-            return .camera(
-                u: try inlineExpression(u),
-                v: try inlineExpression(v),
-                channel: channel
-            )
-
-        case .microphone(let offset, let channel):
-            return .microphone(offset: try inlineExpression(offset), channel: channel)
-        }
-    }
-
-    /// Substitute parameter references with actual argument expressions
-    private func substituteParams(in expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
-        switch expr {
-        case .num:
-            return expr
-
-        case .param(let name):
-            // Replace parameter with its substituted value
-            return substitutions[name] ?? expr
-
-        case .index(let bundle, let indexExpr):
-            // Check if bundle is a parameter
-            if let subst = substitutions[bundle] {
-                // If substituted to another bundle reference, reconstruct
-                if case .index(let newBundle, _) = subst {
-                    return .index(bundle: newBundle, indexExpr: substituteParams(in: indexExpr, substitutions: substitutions))
-                }
-            }
-            return .index(bundle: bundle, indexExpr: substituteParams(in: indexExpr, substitutions: substitutions))
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: substituteParams(in: left, substitutions: substitutions),
-                right: substituteParams(in: right, substitutions: substitutions)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(
-                op: op,
-                operand: substituteParams(in: operand, substitutions: substitutions)
-            )
-
-        case .call(let spindle, let args):
-            return .call(
-                spindle: spindle,
-                args: args.map { substituteParams(in: $0, substitutions: substitutions) }
-            )
-
-        case .builtin(let name, let args):
-            return .builtin(
-                name: name,
-                args: args.map { substituteParams(in: $0, substitutions: substitutions) }
-            )
-
-        case .extract(let call, let index):
-            return .extract(
-                call: substituteParams(in: call, substitutions: substitutions),
-                index: index
-            )
-
-        case .remap(let base, let remapSubs):
-            var newRemapSubs: [String: IRExpr] = [:]
-            for (key, value) in remapSubs {
-                newRemapSubs[key] = substituteParams(in: value, substitutions: substitutions)
-            }
-            return .remap(
-                base: substituteParams(in: base, substitutions: substitutions),
-                substitutions: newRemapSubs
-            )
-
-        case .texture(let resourceId, let u, let v, let channel):
-            return .texture(
-                resourceId: resourceId,
-                u: substituteParams(in: u, substitutions: substitutions),
-                v: substituteParams(in: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .camera(let u, let v, let channel):
-            return .camera(
-                u: substituteParams(in: u, substitutions: substitutions),
-                v: substituteParams(in: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .microphone(let offset, let channel):
-            return .microphone(
-                offset: substituteParams(in: offset, substitutions: substitutions),
-                channel: channel
-            )
-        }
-    }
-
-    /// Apply remap substitutions to an expression (coordinate remapping)
-    /// Substitution keys are in "bundle.field" format (e.g., "me.x", "me.y")
-    private func applyRemap(to expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
-        switch expr {
-        case .num:
-            return expr
-
-        case .param(let name):
-            // Replace coordinate parameter with remapped expression
-            // Try both bare name and "me.name" format for compatibility
-            if let remapped = substitutions[name] {
-                return remapped
-            }
-            if let remapped = substitutions["me.\(name)"] {
-                return remapped
-            }
-            return expr
-
-        case .index(let bundle, let indexExpr):
-            // Check if this coordinate is being remapped
-            // Try multiple key formats since JS uses numeric indices but expressions use field names
-            var keysToTry: [String] = []
-
-            if case .param(let field) = indexExpr {
-                keysToTry.append("\(bundle).\(field)")
-                // For "me" bundle, also try numeric index
-                if bundle == "me" {
-                    let meIndices = ["x": 0, "y": 1, "u": 2, "v": 3, "w": 4, "h": 5, "t": 6]
-                    if let idx = meIndices[field] {
-                        keysToTry.append("\(bundle).\(idx)")
-                    }
-                }
-            } else if case .num(let idx) = indexExpr {
-                keysToTry.append("\(bundle).\(Int(idx))")
-            }
-
-            for key in keysToTry {
-                if let remapped = substitutions[key] {
-                    return remapped
-                }
-            }
-            return .index(bundle: bundle, indexExpr: applyRemap(to: indexExpr, substitutions: substitutions))
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: applyRemap(to: left, substitutions: substitutions),
-                right: applyRemap(to: right, substitutions: substitutions)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(
-                op: op,
-                operand: applyRemap(to: operand, substitutions: substitutions)
-            )
-
-        case .call(let spindle, let args):
-            return .call(
-                spindle: spindle,
-                args: args.map { applyRemap(to: $0, substitutions: substitutions) }
-            )
-
-        case .builtin(let name, let args):
-            return .builtin(
-                name: name,
-                args: args.map { applyRemap(to: $0, substitutions: substitutions) }
-            )
-
-        case .extract(let call, let index):
-            return .extract(
-                call: applyRemap(to: call, substitutions: substitutions),
-                index: index
-            )
-
-        case .remap(let base, let innerSubs):
-            // Compose remaps: apply outer substitutions to inner ones
-            var composedSubs: [String: IRExpr] = [:]
-            for (key, value) in innerSubs {
-                composedSubs[key] = applyRemap(to: value, substitutions: substitutions)
-            }
-            return .remap(
-                base: applyRemap(to: base, substitutions: substitutions),
-                substitutions: composedSubs
-            )
-
-        case .texture(let resourceId, let u, let v, let channel):
-            return .texture(
-                resourceId: resourceId,
-                u: applyRemap(to: u, substitutions: substitutions),
-                v: applyRemap(to: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .camera(let u, let v, let channel):
-            return .camera(
-                u: applyRemap(to: u, substitutions: substitutions),
-                v: applyRemap(to: v, substitutions: substitutions),
-                channel: channel
-            )
-
-        case .microphone(let offset, let channel):
-            return .microphone(
-                offset: applyRemap(to: offset, substitutions: substitutions),
-                channel: channel
-            )
-        }
     }
 }

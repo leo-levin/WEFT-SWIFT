@@ -14,7 +14,10 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var purityAnalysis: PurityAnalysis?
     public private(set) var swatchGraph: SwatchGraph?
 
-    // Backends
+    // Backend registry
+    public let registry: BackendRegistry
+
+    // Backend instances (lazily initialized)
     public private(set) var metalBackend: MetalBackend?
     public private(set) var audioBackend: AudioBackend?
 
@@ -37,7 +40,12 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var time: Double = 0
     public private(set) var isRunning = false
 
-    public init() {
+    // Default output dimensions
+    private var outputWidth: Int = 512
+    private var outputHeight: Int = 512
+
+    public init(registry: BackendRegistry = .shared) {
+        self.registry = registry
         self.bufferManager = BufferManager()
         self.cacheManager = CacheManager()
     }
@@ -57,13 +65,13 @@ public class Coordinator: CameraCaptureDelegate {
         graph.build(from: program)
         self.dependencyGraph = graph
 
-        // Analyze ownership
-        let ownership = OwnershipAnalysis()
+        // Analyze ownership (using registry for backend metadata)
+        let ownership = OwnershipAnalysis(registry: registry)
         ownership.analyze(program: program)
         self.ownershipAnalysis = ownership
 
-        // Analyze purity
-        let purity = PurityAnalysis()
+        // Analyze purity (using registry for backend metadata)
+        let purity = PurityAnalysis(registry: registry)
         purity.analyze(program: program)
         self.purityAnalysis = purity
 
@@ -77,8 +85,14 @@ public class Coordinator: CameraCaptureDelegate {
         let swatches = partitioner.partition()
         self.swatchGraph = swatches
 
-        // Analyze cache nodes
-        cacheManager.analyze(program: program)
+        // Analyze cache nodes (pass ownership for domain classification)
+        cacheManager.analyze(program: program, ownership: ownership)
+
+        // Transform program to break cache cycles (replace back-references with cacheRead)
+        if var mutableProgram = self.program {
+            cacheManager.transformProgramForCaches(program: &mutableProgram)
+            self.program = mutableProgram
+        }
 
         // Print analysis
         print("=== WEFT IR Loaded ===")
@@ -124,15 +138,30 @@ public class Coordinator: CameraCaptureDelegate {
                     bufferManager = BufferManager(metalDevice: metalBackend?.device)
                 }
 
-                let unit = try metalBackend!.compile(swatch: swatch, ir: program)
+                // Always (re)allocate cache buffers when we have cache descriptors
+                // This handles both initial load and recompiles with new cache nodes
+                if let device = metalBackend?.device, !cacheManager.getDescriptors().isEmpty {
+                    cacheManager.allocateBuffers(
+                        device: device,
+                        width: outputWidth,
+                        height: outputHeight
+                    )
+                }
+
+                // Pass cache descriptors to codegen via backend
+                let unit = try metalBackend!.compile(
+                    swatch: swatch,
+                    ir: program,
+                    cacheDescriptors: cacheManager.getDescriptors()
+                )
                 compiledUnits[swatch.id] = unit
 
-                // Check if this unit needs camera or microphone
+                // Check if this unit needs camera or microphone (from usedInputs)
                 if let metalUnit = unit as? MetalCompiledUnit {
-                    if metalUnit.needsCamera {
+                    if metalUnit.usedInputs.contains("camera") {
                         needsCamera = true
                     }
-                    if metalUnit.needsMicrophone {
+                    if metalUnit.usedInputs.contains("microphone") {
                         needsMicrophone = true
                     }
                 }
@@ -143,7 +172,12 @@ public class Coordinator: CameraCaptureDelegate {
                     audioBackend = AudioBackend()
                 }
 
-                let unit = try audioBackend!.compile(swatch: swatch, ir: program)
+                // Pass cache manager to audio backend for shared buffer access
+                let unit = try audioBackend!.compile(
+                    swatch: swatch,
+                    ir: program,
+                    cacheManager: cacheManager
+                )
                 compiledUnits[swatch.id] = unit
 
             case .none:
@@ -247,10 +281,19 @@ public class Coordinator: CameraCaptureDelegate {
         // Update audio texture each frame
         updateAudioTexture()
 
+        // Resize cache buffers if needed (drawable size might differ from default)
+        let newWidth = drawable.texture.width
+        let newHeight = drawable.texture.height
+        if newWidth != outputWidth || newHeight != outputHeight {
+            outputWidth = newWidth
+            outputHeight = newHeight
+            cacheManager.resizeBuffers(width: newWidth, height: newHeight)
+        }
+
         // Find visual sink swatch
         for swatch in swatches where swatch.backend == .visual && swatch.isSink {
             if let unit = compiledUnits[swatch.id] {
-                metalBackend?.render(unit: unit, to: drawable, time: time)
+                metalBackend?.render(unit: unit, to: drawable, time: time, cacheManager: cacheManager)
                 return
             }
         }

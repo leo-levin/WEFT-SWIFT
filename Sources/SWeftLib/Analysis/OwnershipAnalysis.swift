@@ -10,47 +10,38 @@ public enum BackendDomain: String, Hashable, CaseIterable {
     case none  // Pure computation, no domain-specific builtins
 }
 
-// MARK: - Output Sinks
-
-public enum OutputSink: String, Hashable {
-    case display  // Visual output
-    case play     // Audio output
-}
-
 // MARK: - Ownership Analysis
 
 public class OwnershipAnalysis {
-    /// Builtins that belong to visual domain
-    public static let visualBuiltins: Set<String> = ["camera", "texture", "load"]
-
-    /// Builtins that belong to audio domain
-    public static let audioBuiltins: Set<String> = ["microphone"]
-
-    /// Output sink bundle names
-    public static let outputSinks: [String: OutputSink] = [
-        "display": .display,
-        "play": .play
-    ]
+    /// Registry for backend metadata
+    private let registry: BackendRegistry
 
     /// Map from bundle name to its backend domain
     public private(set) var ownership: [String: BackendDomain] = [:]
 
-    /// Map from bundle name to output sink (if it is one)
-    public private(set) var sinks: [String: OutputSink] = [:]
+    /// Map from bundle name to backend identifier (for sink bundles only)
+    /// e.g., "display" -> "visual", "play" -> "audio"
+    public private(set) var sinks: [String: String] = [:]
 
-    public init() {}
+    public init(registry: BackendRegistry = .shared) {
+        self.registry = registry
+    }
 
     /// Analyze backend ownership for all bundles
     public func analyze(program: IRProgram) {
         ownership = [:]
         sinks = [:]
 
+        // Get owned builtins from registry
+        let ownedBuiltins = registry.allOwnedBuiltins
+        let outputBindings = registry.allOutputBindings
+
         // First pass: determine direct ownership from builtins
         for (bundleName, bundle) in program.bundles {
-            // Check if this is an output sink
-            if let sink = Self.outputSinks[bundleName] {
-                sinks[bundleName] = sink
-                ownership[bundleName] = sink == .display ? .visual : .audio
+            // Check if this is an output sink (via registry lookup)
+            if let (backendId, _) = outputBindings[bundleName] {
+                sinks[bundleName] = backendId
+                ownership[bundleName] = backendIdToDomain(backendId)
                 continue
             }
 
@@ -59,15 +50,15 @@ public class OwnershipAnalysis {
             for strand in bundle.strands {
                 let builtins = strand.expr.allBuiltins()
 
-                if !builtins.isDisjoint(with: Self.visualBuiltins) {
-                    domain = .visual
-                }
-                if !builtins.isDisjoint(with: Self.audioBuiltins) {
-                    if domain == .visual {
-                        // Cross-domain - will be handled by coordinator
-                        // For now, mark as visual (display takes precedence for rendering)
-                    } else {
-                        domain = .audio
+                for builtin in builtins {
+                    if let backendId = ownedBuiltins[builtin] {
+                        let builtinDomain = backendIdToDomain(backendId)
+                        if domain == .none {
+                            domain = builtinDomain
+                        } else if domain != builtinDomain {
+                            // Cross-domain - visual takes precedence for rendering
+                            domain = .visual
+                        }
                     }
                 }
             }
@@ -88,21 +79,21 @@ public class OwnershipAnalysis {
             changed = false
 
             for (bundleName, bundle) in program.bundles {
-                guard ownership[bundleName] == .none else { continue }
+                guard ownership[bundleName] == BackendDomain.none else { continue }
 
                 // Check if any dependency has a domain
                 for strand in bundle.strands {
                     let refs = collectBundleReferences(expr: strand.expr)
 
                     for ref in refs {
-                        if let depDomain = ownership[ref], depDomain != .none {
+                        if let depDomain = ownership[ref], depDomain != BackendDomain.none {
                             // Inherit domain from dependency
                             ownership[bundleName] = depDomain
                             changed = true
                             break
                         }
                     }
-                    if ownership[bundleName] != .none {
+                    if ownership[bundleName] != BackendDomain.none {
                         break
                     }
                 }
@@ -143,23 +134,16 @@ public class OwnershipAnalysis {
         case .extract(let call, _):
             return collectBundleReferences(expr: call)
 
+        case .cacheRead:
+            // cacheRead doesn't reference bundles directly
+            return []
+
         case .remap(let base, let substitutions):
             var refs = collectBundleReferences(expr: base)
             for (_, subExpr) in substitutions {
                 refs.formUnion(collectBundleReferences(expr: subExpr))
             }
             return refs
-
-        case .texture(_, let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .camera(let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .microphone(let offset, _):
-            return collectBundleReferences(expr: offset)
         }
     }
 
@@ -168,8 +152,13 @@ public class OwnershipAnalysis {
         Set(ownership.filter { $0.value == domain }.keys)
     }
 
-    /// Get the output sink bundles
-    public func outputBundles() -> [String: OutputSink] {
+    /// Get the output sink bundles (bundleName -> backendId)
+    public func outputBundles() -> [String: String] {
         sinks
+    }
+
+    /// Convert backend identifier to domain enum
+    private func backendIdToDomain(_ backendId: String) -> BackendDomain {
+        BackendDomain(rawValue: backendId) ?? .none
     }
 }

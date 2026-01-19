@@ -94,23 +94,16 @@ public class DependencyGraph {
         case .extract(let call, _):
             return collectBundleReferences(expr: call, program: program)
 
+        case .cacheRead:
+            // cacheRead doesn't reference bundles directly
+            return []
+
         case .remap(let base, let substitutions):
             var refs = collectBundleReferences(expr: base, program: program)
             for (_, subExpr) in substitutions {
                 refs.formUnion(collectBundleReferences(expr: subExpr, program: program))
             }
             return refs
-
-        case .texture(_, let u, let v, _):
-            return collectBundleReferences(expr: u, program: program)
-                .union(collectBundleReferences(expr: v, program: program))
-
-        case .camera(let u, let v, _):
-            return collectBundleReferences(expr: u, program: program)
-                .union(collectBundleReferences(expr: v, program: program))
-
-        case .microphone(let offset, _):
-            return collectBundleReferences(expr: offset, program: program)
         }
     }
 

@@ -83,9 +83,8 @@ public indirect enum IRExpr: Codable, Equatable {
     case builtin(name: String, args: [IRExpr])
     case extract(call: IRExpr, index: Int)
     case remap(base: IRExpr, substitutions: [String: IRExpr])
-    case texture(resourceId: Int, u: IRExpr, v: IRExpr, channel: Int)
-    case camera(u: IRExpr, v: IRExpr, channel: Int)
-    case microphone(offset: IRExpr, channel: Int)
+    /// Read from cache history buffer (used to break cycles in feedback effects)
+    case cacheRead(cacheId: String, tapIndex: Int)
 
     // MARK: - Codable
 
@@ -93,6 +92,7 @@ public indirect enum IRExpr: Codable, Equatable {
         case type, value, name, bundle, field, indexExpr, op, left, right, operand
         case spindle, args, call, index, base, substitutions
         case resourceId, u, v, channel, offset
+        case cacheId, tapIndex
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,22 +155,30 @@ public indirect enum IRExpr: Codable, Equatable {
             self = .remap(base: base, substitutions: substitutions)
 
         case "texture":
+            // Convert legacy format to builtin: texture(resourceId, u, v, channel)
             let resourceId = try container.decode(Int.self, forKey: .resourceId)
             let u = try container.decode(IRExpr.self, forKey: .u)
             let v = try container.decode(IRExpr.self, forKey: .v)
             let channel = try container.decode(Int.self, forKey: .channel)
-            self = .texture(resourceId: resourceId, u: u, v: v, channel: channel)
+            self = .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
 
         case "camera":
+            // Convert legacy format to builtin: camera(u, v, channel)
             let u = try container.decode(IRExpr.self, forKey: .u)
             let v = try container.decode(IRExpr.self, forKey: .v)
             let channel = try container.decode(Int.self, forKey: .channel)
-            self = .camera(u: u, v: v, channel: channel)
+            self = .builtin(name: "camera", args: [u, v, .num(Double(channel))])
 
         case "microphone":
+            // Convert legacy format to builtin: microphone(offset, channel)
             let offset = try container.decode(IRExpr.self, forKey: .offset)
             let channel = try container.decode(Int.self, forKey: .channel)
-            self = .microphone(offset: offset, channel: channel)
+            self = .builtin(name: "microphone", args: [offset, .num(Double(channel))])
+
+        case "cacheRead":
+            let cacheId = try container.decode(String.self, forKey: .cacheId)
+            let tapIndex = try container.decode(Int.self, forKey: .tapIndex)
+            self = .cacheRead(cacheId: cacheId, tapIndex: tapIndex)
 
         default:
             throw DecodingError.dataCorruptedError(
@@ -229,23 +237,10 @@ public indirect enum IRExpr: Codable, Equatable {
             try container.encode(base, forKey: .base)
             try container.encode(substitutions, forKey: .substitutions)
 
-        case .texture(let resourceId, let u, let v, let channel):
-            try container.encode("texture", forKey: .type)
-            try container.encode(resourceId, forKey: .resourceId)
-            try container.encode(u, forKey: .u)
-            try container.encode(v, forKey: .v)
-            try container.encode(channel, forKey: .channel)
-
-        case .camera(let u, let v, let channel):
-            try container.encode("camera", forKey: .type)
-            try container.encode(u, forKey: .u)
-            try container.encode(v, forKey: .v)
-            try container.encode(channel, forKey: .channel)
-
-        case .microphone(let offset, let channel):
-            try container.encode("microphone", forKey: .type)
-            try container.encode(offset, forKey: .offset)
-            try container.encode(channel, forKey: .channel)
+        case .cacheRead(let cacheId, let tapIndex):
+            try container.encode("cacheRead", forKey: .type)
+            try container.encode(cacheId, forKey: .cacheId)
+            try container.encode(tapIndex, forKey: .tapIndex)
         }
     }
 }
@@ -289,19 +284,15 @@ extension IRExpr {
                 vars.formUnion(expr.freeVars())
             }
             return vars
-        case .texture(_, let u, let v, _):
-            return u.freeVars().union(v.freeVars())
-        case .camera(let u, let v, _):
-            return u.freeVars().union(v.freeVars())
-        case .microphone(let offset, _):
-            return offset.freeVars()
+        case .cacheRead:
+            return []  // cacheRead is a terminal - no bundle references
         }
     }
 
     /// Check if expression uses a specific builtin
     public func usesBuiltin(_ name: String) -> Bool {
         switch self {
-        case .num, .param:
+        case .num, .param, .cacheRead:
             return false
         case .index(_, let indexExpr):
             return indexExpr.usesBuiltin(name)
@@ -317,19 +308,13 @@ extension IRExpr {
             return call.usesBuiltin(name)
         case .remap(let base, let substitutions):
             return base.usesBuiltin(name) || substitutions.values.contains { $0.usesBuiltin(name) }
-        case .texture:
-            return name == "texture"
-        case .camera:
-            return name == "camera"
-        case .microphone(let offset, _):
-            return name == "microphone" || offset.usesBuiltin(name)
         }
     }
 
     /// Get all builtins used in this expression
     public func allBuiltins() -> Set<String> {
         switch self {
-        case .num, .param:
+        case .num, .param, .cacheRead:
             return []
         case .index(_, let indexExpr):
             return indexExpr.allBuiltins()
@@ -353,12 +338,6 @@ extension IRExpr {
                 builtins.formUnion(expr.allBuiltins())
             }
             return builtins
-        case .texture:
-            return ["texture"]
-        case .camera:
-            return ["camera"]
-        case .microphone(let offset, _):
-            return Set(["microphone"]).union(offset.allBuiltins())
         }
     }
 }
@@ -390,12 +369,8 @@ extension IRExpr: CustomStringConvertible {
         case .remap(let base, let substitutions):
             let subs = substitutions.map { "\($0.key) ~ \($0.value)" }.joined(separator: ", ")
             return "\(base)[\(subs)]"
-        case .texture(let resourceId, let u, let v, let channel):
-            return "texture(\(resourceId), \(u), \(v)).\(channel)"
-        case .camera(let u, let v, let channel):
-            return "camera(\(u), \(v)).\(channel)"
-        case .microphone(let offset, let channel):
-            return "microphone(\(offset)).\(channel)"
+        case .cacheRead(let cacheId, let tapIndex):
+            return "cacheRead(\(cacheId), \(tapIndex))"
         }
     }
 }

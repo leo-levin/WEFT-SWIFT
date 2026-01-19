@@ -13,11 +13,11 @@ public enum Purity: String, Hashable {
 // MARK: - Purity Analysis
 
 public class PurityAnalysis {
-    /// External input builtins (hardware/outside world)
-    public static let externalBuiltins: Set<String> = ["camera", "microphone", "texture"]
+    /// Registry for backend metadata
+    private let registry: BackendRegistry
 
-    /// Stateful builtins
-    public static let statefulBuiltins: Set<String> = ["cache"]
+    /// Global stateful builtins (not backend-specific)
+    private static let globalStatefulBuiltins: Set<String> = ["cache"]
 
     /// Map from bundle name to purity classification
     public private(set) var purity: [String: Purity] = [:]
@@ -28,7 +28,19 @@ public class PurityAnalysis {
     /// Bundles that use cache
     public private(set) var usesCache: Set<String> = []
 
-    public init() {}
+    public init(registry: BackendRegistry = .shared) {
+        self.registry = registry
+    }
+
+    /// Combined external builtins from all backends
+    private var externalBuiltins: Set<String> {
+        registry.allExternalBuiltins
+    }
+
+    /// Combined stateful builtins from all backends plus global ones
+    private var statefulBuiltins: Set<String> {
+        registry.allStatefulBuiltins.union(Self.globalStatefulBuiltins)
+    }
 
     /// Analyze purity for all bundles
     public func analyze(program: IRProgram) {
@@ -95,9 +107,9 @@ public class PurityAnalysis {
             // Check builtin classification
             var result: Purity = .pure
 
-            if Self.externalBuiltins.contains(name) {
+            if externalBuiltins.contains(name) {
                 result = .external
-            } else if Self.statefulBuiltins.contains(name) {
+            } else if statefulBuiltins.contains(name) {
                 result = .stateful
                 usesCache.insert(bundleName)
             }
@@ -119,14 +131,9 @@ public class PurityAnalysis {
             }
             return result
 
-        case .texture:
-            return .external
-
-        case .camera:
-            return .external
-
-        case .microphone:
-            return .external
+        case .cacheRead:
+            // Reading from cache is stateful
+            return .stateful
         }
     }
 
@@ -196,16 +203,9 @@ public class PurityAnalysis {
             }
             return refs
 
-        case .texture(_, let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .camera(let u, let v, _):
-            return collectBundleReferences(expr: u)
-                .union(collectBundleReferences(expr: v))
-
-        case .microphone(let offset, _):
-            return collectBundleReferences(expr: offset)
+        case .cacheRead:
+            // cacheRead doesn't reference bundles directly
+            return []
         }
     }
 
