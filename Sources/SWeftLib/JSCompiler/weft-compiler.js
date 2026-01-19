@@ -292,6 +292,12 @@
   }
   PatternOutput.prototype.deconstruct = function() { return [this.type, this.value]; };
 
+  function RangeExpr(start, end) {
+    this.start = start;  // null for open start
+    this.end = end;      // null for open end
+  }
+  RangeExpr.prototype.deconstruct = function() { return [this.start, this.end]; };
+
   var AST = {
     Program: Program,
     BundleDecl: BundleDecl,
@@ -313,7 +319,8 @@
     ChainExpr: ChainExpr,
     RemapArg: RemapArg,
     PatternBlock: PatternBlock,
-    PatternOutput: PatternOutput
+    PatternOutput: PatternOutput,
+    RangeExpr: RangeExpr
   };
 
   // ========== IR Classes ==========
@@ -695,6 +702,7 @@
     | SpindleCall            -- call\n\
     | BundleLit              -- bundleLit\n\
     | stringLit              -- string\n\
+    | RangeExpr              -- range\n\
     | Number                 -- number\n\
     | ident                  -- ident\n\
 \n\
@@ -721,6 +729,12 @@
   RemapArg\n\
     = StrandAccess "~" Expr\n\
 \n\
+  RangeExpr\n\
+    = signedInt ".." signedInt  -- bounded\n\
+    | signedInt ".."            -- from\n\
+    | ".." signedInt            -- to\n\
+    | ".."                      -- all\n\
+\n\
   BundleLit\n\
     = "[" ExprList "]"\n\
 \n\
@@ -737,11 +751,7 @@
     = PatternOutput ("," PatternOutput)*\n\
 \n\
   PatternOutput\n\
-    = signedInt ".." signedInt  -- range\n\
-    | signedInt ".."            -- rangeFrom\n\
-    | ".." signedInt            -- rangeTo\n\
-    | ".."                      -- rangeAll\n\
-    | Expr                      -- expr\n\
+    = Expr                      -- expr\n\
 \n\
   SpindleDef\n\
     = "spindle" ident "(" IdentList? ")" "{" Body "}"\n\
@@ -925,6 +935,10 @@
         return str.toAST();
       },
 
+      PrimaryExpr_range: function(range) {
+        return range.toAST();
+      },
+
       stringLit: function(_open, chars, _close) {
         return new StringLit(chars.sourceString);
       },
@@ -973,6 +987,22 @@
         return new RemapArg(coord.toAST(), expr.toAST());
       },
 
+      RangeExpr_bounded: function(start, _dots, end) {
+        return new RangeExpr(start.toAST(), end.toAST());
+      },
+
+      RangeExpr_from: function(start, _dots) {
+        return new RangeExpr(start.toAST(), null);
+      },
+
+      RangeExpr_to: function(_dots, end) {
+        return new RangeExpr(null, end.toAST());
+      },
+
+      RangeExpr_all: function(_dots) {
+        return new RangeExpr(null, null);
+      },
+
       BundleLit: function(_lb, exprs, _rb) {
         return new BundleLit(exprs.toAST());
       },
@@ -991,22 +1021,6 @@
 
       PatternOutputList: function(first, _commas, rest) {
         return [first.toAST()].concat(rest.toAST());
-      },
-
-      PatternOutput_range: function(start, _dots, end) {
-        return new PatternOutput('range', { start: start.toAST(), end: end.toAST() });
-      },
-
-      PatternOutput_rangeFrom: function(start, _dots) {
-        return new PatternOutput('range', { start: start.toAST(), end: null });
-      },
-
-      PatternOutput_rangeTo: function(_dots, end) {
-        return new PatternOutput('range', { start: null, end: end.toAST() });
-      },
-
-      PatternOutput_rangeAll: function(_dots) {
-        return new PatternOutput('range', { start: null, end: null });
       },
 
       PatternOutput_expr: function(expr) {
@@ -1235,6 +1249,10 @@
         return new IRExtract(irCall, idx);
       },
 
+      inst(RangeExpr, _, _), function(_start, _end) {
+        self.error('Range expressions (0..3) are only valid inside pattern blocks');
+      },
+
       inst(RemapExpr, _, _), function(base, remaps) {
         var irBase;
         if (base.bundle === null) {
@@ -1329,6 +1347,232 @@
     );
   };
 
+  // Find all RangeExpr nodes in an expression tree
+  // Returns array of { range: RangeExpr, inExprAccessor: boolean, bundleName: string|null }
+  LoweringContext.prototype.findRanges = function(expr) {
+    var self = this;
+    var ranges = [];
+
+    function visit(node, inExprAccessor, bundleName) {
+      if (node instanceof RangeExpr) {
+        ranges.push({ range: node, inExprAccessor: inExprAccessor, bundleName: bundleName });
+        return;
+      }
+
+      if (node instanceof StrandAccess) {
+        // Check if accessor is ExprAccessor containing a RangeExpr
+        if (node.accessor instanceof ExprAccessor) {
+          var bundle = node.bundle;
+          var bundleStr = (typeof bundle === 'string') ? bundle : null;
+          visit(node.accessor.value, true, bundleStr);
+        }
+        // Also check BundleLit bundles
+        if (node.bundle instanceof BundleLit) {
+          node.bundle.elements.forEach(function(el) { visit(el, false, null); });
+        }
+        return;
+      }
+
+      if (node instanceof BinaryOp) {
+        visit(node.left, false, null);
+        visit(node.right, false, null);
+        return;
+      }
+
+      if (node instanceof UnaryOp) {
+        visit(node.operand, false, null);
+        return;
+      }
+
+      if (node instanceof SpindleCall) {
+        node.args.forEach(function(arg) { visit(arg, false, null); });
+        return;
+      }
+
+      if (node instanceof CallExtract) {
+        visit(node.call, false, null);
+        return;
+      }
+
+      if (node instanceof RemapExpr) {
+        visit(node.base, false, null);
+        node.remappings.forEach(function(r) { visit(r.expr, false, null); });
+        return;
+      }
+
+      if (node instanceof BundleLit) {
+        node.elements.forEach(function(el) { visit(el, false, null); });
+        return;
+      }
+
+      if (node instanceof ChainExpr) {
+        visit(node.base, false, null);
+        // Don't descend into pattern blocks - they have their own context
+        return;
+      }
+    }
+
+    visit(expr, false, null);
+    return ranges;
+  };
+
+  // Compute the size of a range given the default width for open-ended ranges
+  LoweringContext.prototype.computeRangeSize = function(rangeInfo, defaultWidth) {
+    var range = rangeInfo.range;
+    var start = range.start;
+    var end = range.end;
+
+    // For ranges inside ExprAccessor with a bundle name, use bundle width for open ends
+    var width = defaultWidth;
+    if (rangeInfo.inExprAccessor && rangeInfo.bundleName) {
+      var info = this.getBundleInfo(rangeInfo.bundleName);
+      width = info.width;
+    }
+
+    // Resolve open-ended bounds
+    if (start === null) start = 0;
+    if (end === null) end = width;
+
+    // Handle negative indices
+    if (start < 0) start = width + start;
+    if (end < 0) end = width + end;
+
+    return { start: start, end: end, size: end - start };
+  };
+
+  // Expand an expression by substituting RangeExprs at a given iteration number
+  // iterNum is the 0-based iteration (0, 1, 2, ...)
+  // defaultWidth is used to resolve open-ended ranges for bare strand accessors
+  LoweringContext.prototype.expandRangeExpr = function(expr, iterNum, defaultWidth) {
+    var self = this;
+
+    // Helper to compute actual index for a range at this iteration
+    function computeIndex(range, bundleName) {
+      var start = range.start;
+      var end = range.end;
+
+      // Get width for open-ended resolution
+      var width = defaultWidth;
+      if (bundleName) {
+        var info = self.getBundleInfo(bundleName);
+        width = info.width;
+      }
+
+      // Resolve open-ended bounds
+      if (start === null) start = 0;
+      if (end === null) end = width;
+
+      // Handle negative indices
+      if (start < 0) start = width + start;
+      if (end < 0) end = width + end;
+
+      return start + iterNum;
+    }
+
+    function substitute(node, bundleContext) {
+      if (node instanceof RangeExpr) {
+        // Standalone range - replace with bare strand accessor
+        var idx = computeIndex(node, bundleContext);
+        return new StrandAccess(null, new IndexAccessor(idx));
+      }
+
+      if (node instanceof StrandAccess) {
+        // Check if accessor is ExprAccessor containing a RangeExpr
+        if (node.accessor instanceof ExprAccessor && node.accessor.value instanceof RangeExpr) {
+          // Replace ExprAccessor(RangeExpr) with IndexAccessor
+          var bundleName = (typeof node.bundle === 'string') ? node.bundle : null;
+          var idx2 = computeIndex(node.accessor.value, bundleName);
+          return new StrandAccess(node.bundle, new IndexAccessor(idx2));
+        }
+        // Recursively handle BundleLit bundles and ExprAccessor with non-range content
+        var newBundle = node.bundle;
+        var newAccessor = node.accessor;
+        if (node.bundle instanceof BundleLit) {
+          newBundle = new BundleLit(node.bundle.elements.map(function(el) { return substitute(el, null); }));
+        }
+        if (node.accessor instanceof ExprAccessor) {
+          newAccessor = new ExprAccessor(substitute(node.accessor.value, null));
+        }
+        if (newBundle !== node.bundle || newAccessor !== node.accessor) {
+          return new StrandAccess(newBundle, newAccessor);
+        }
+        return node;
+      }
+
+      if (node instanceof BinaryOp) {
+        var newLeft = substitute(node.left, null);
+        var newRight = substitute(node.right, null);
+        if (newLeft !== node.left || newRight !== node.right) {
+          return new BinaryOp(newLeft, node.op, newRight);
+        }
+        return node;
+      }
+
+      if (node instanceof UnaryOp) {
+        var newOperand = substitute(node.operand, null);
+        if (newOperand !== node.operand) {
+          return new UnaryOp(node.op, newOperand);
+        }
+        return node;
+      }
+
+      if (node instanceof SpindleCall) {
+        var newArgs = node.args.map(function(a) { return substitute(a, null); });
+        var changed = newArgs.some(function(a, i) { return a !== node.args[i]; });
+        if (changed) {
+          return new SpindleCall(node.name, newArgs);
+        }
+        return node;
+      }
+
+      if (node instanceof CallExtract) {
+        var newCall = substitute(node.call, null);
+        if (newCall !== node.call) {
+          return new CallExtract(newCall, node.index);
+        }
+        return node;
+      }
+
+      if (node instanceof RemapExpr) {
+        var newBase = substitute(node.base, null);
+        var newRemappings = node.remappings.map(function(r) {
+          var newExpr = substitute(r.expr, null);
+          if (newExpr !== r.expr) {
+            return new RemapArg(r.domain, newExpr);
+          }
+          return r;
+        });
+        var remapChanged = newRemappings.some(function(r, i) { return r !== node.remappings[i]; });
+        if (newBase !== node.base || remapChanged) {
+          return new RemapExpr(newBase, newRemappings);
+        }
+        return node;
+      }
+
+      if (node instanceof BundleLit) {
+        var newElements = node.elements.map(function(el) { return substitute(el, null); });
+        var changed2 = newElements.some(function(e, i) { return e !== node.elements[i]; });
+        if (changed2) {
+          return new BundleLit(newElements);
+        }
+        return node;
+      }
+
+      // ChainExpr - only substitute in base, not in pattern blocks
+      if (node instanceof ChainExpr) {
+        var newBase2 = substitute(node.base, null);
+        if (newBase2 !== node.base) {
+          return new ChainExpr(newBase2, node.patterns);
+        }
+        return node;
+      }
+
+      return node;
+    }
+
+    return substitute(expr, null);
+  };
+
   LoweringContext.prototype.lowerChainExpr = function(chain, expectedWidth) {
     var self = this;
     var exprs = this.lowerToStrands(chain.base, this.inferWidth(chain.base));
@@ -1339,21 +1583,44 @@
 
       pattern.outputs.forEach(function(out) {
         match(out,
-          inst(PatternOutput, 'range', _), function(range) {
-            var start = range.start ?? 0;
-            var end = range.end ?? prev.length;
-            if (start < 0) start += prev.length;
-            if (end < 0) end += prev.length;
-            if (start < 0 || end > prev.length || start > end) {
-              self.error('Invalid range ' + range.start + '..' + range.end);
-            }
-            for (var i = start; i < end; i++) exprs.push(prev[i]);
-          },
-
           inst(PatternOutput, 'expr', _), function(value) {
-            var w = self.inferWidth(value);
-            if (w === 1) exprs.push(self.lowerExpr(value, prev));
-            else exprs.push.apply(exprs, self.lowerToStrands(value, w, prev));
+            // Check for ranges in the expression
+            var ranges = self.findRanges(value);
+
+            if (ranges.length === 0) {
+              // No ranges - process normally
+              var w = self.inferWidth(value);
+              if (w === 1) exprs.push(self.lowerExpr(value, prev));
+              else exprs.push.apply(exprs, self.lowerToStrands(value, w, prev));
+            } else {
+              // Has ranges - expand the expression
+              // Compute sizes for all ranges
+              var sizes = ranges.map(function(r) {
+                return self.computeRangeSize(r, prev.length);
+              });
+
+              // Verify all ranges have the same size and validate bounds
+              var firstSize = sizes[0].size;
+              for (var i = 0; i < sizes.length; i++) {
+                if (i > 0 && sizes[i].size !== firstSize) {
+                  self.error('Range size mismatch: found ranges of size ' + firstSize + ' and ' + sizes[i].size + ' in expression');
+                }
+                // Validate this range's bounds
+                if (sizes[i].start < 0 || sizes[i].size < 0) {
+                  self.error('Invalid range ' + ranges[i].range.start + '..' + ranges[i].range.end);
+                }
+              }
+
+              // Expand the expression for each iteration of the range
+              // All ranges have the same size, so iterate that many times
+              var rangeSize = sizes[0].size;
+              for (var iterNum = 0; iterNum < rangeSize; iterNum++) {
+                var expandedExpr = self.expandRangeExpr(value, iterNum, prev.length);
+                var w2 = self.inferWidth(expandedExpr);
+                if (w2 === 1) exprs.push(self.lowerExpr(expandedExpr, prev));
+                else exprs.push.apply(exprs, self.lowerToStrands(expandedExpr, w2, prev));
+              }
+            }
           },
 
           _, function(_n) { self.error('Unknown pattern type'); }
@@ -1699,6 +1966,9 @@
     } else if (node instanceof PatternOutput) {
       result.outputType = node.type;
       result.value = astToJSON(node.value);
+    } else if (node instanceof RangeExpr) {
+      result.start = node.start;
+      result.end = node.end;
     }
 
     return result;
