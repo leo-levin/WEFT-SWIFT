@@ -2,6 +2,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 @main
 struct SWeftApp: App {
@@ -10,16 +11,53 @@ struct SWeftApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .navigationTitle("WEFT")
         }
         .windowStyle(.automatic)
         .defaultSize(width: 1100, height: 700)
         .windowResizability(.contentMinSize)
         .commands {
-            CommandGroup(replacing: .newItem) { }
+            FileCommands()
             PanelCommands()
         }
     }
+}
+
+// MARK: - File Commands (File Menu)
+
+struct FileCommands: Commands {
+    @FocusedValue(\.viewModel) var viewModel
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New") {
+                viewModel?.newFile()
+            }
+            .keyboardShortcut("n", modifiers: .command)
+
+            Button("Open...") {
+                viewModel?.openFile()
+            }
+            .keyboardShortcut("o", modifiers: .command)
+        }
+
+        CommandGroup(replacing: .saveItem) {
+            Button("Save") {
+                viewModel?.saveFile()
+            }
+            .keyboardShortcut("s", modifiers: .command)
+
+            Button("Save As...") {
+                viewModel?.saveFileAs()
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+        }
+    }
+}
+
+// MARK: - Focused Value Key for ViewModel
+
+struct ViewModelKey: FocusedValueKey {
+    typealias Value = WeftViewModel
 }
 
 // MARK: - Panel Commands (View Menu)
@@ -69,6 +107,11 @@ struct ShowStatsKey: FocusedValueKey {
 }
 
 extension FocusedValues {
+    var viewModel: WeftViewModel? {
+        get { self[ViewModelKey.self] }
+        set { self[ViewModelKey.self] = newValue }
+    }
+
     var showGraph: Binding<Bool>? {
         get { self[ShowGraphKey.self] }
         set { self[ShowGraphKey.self] = newValue }
