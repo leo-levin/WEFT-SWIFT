@@ -566,7 +566,7 @@ class WeftSyntaxHighlighter {
         case .number:
             return .weftNumber
         case .rangeNumber:
-            return .weftChain
+            return .weftStrand
         case .string:
             return .weftString
         case .comment:
