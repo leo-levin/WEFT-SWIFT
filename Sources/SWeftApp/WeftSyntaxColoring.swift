@@ -17,6 +17,7 @@ enum TokenType {
     // Literals
     case identifier        // standalone identifier
     case number            // 42, 0.5
+    case rangeNumber       // numbers in range expressions like 0..3
     case string            // "..."
     case comment           // // to end of line
 
@@ -327,6 +328,62 @@ class WeftTokenizer {
 /// Post-processes tokens to handle context-dependent token types
 class WeftTokenProcessor {
     func process(_ tokens: [Token]) -> [Token] {
+        // First pass: handle strands and accessors
+        let firstPass = processStrandsAndAccessors(tokens)
+        // Second pass: handle range numbers
+        return processRangeNumbers(firstPass)
+    }
+
+    private func processRangeNumbers(_ tokens: [Token]) -> [Token] {
+        var result: [Token] = []
+
+        for i in 0..<tokens.count {
+            let token = tokens[i]
+
+            if token.type == .number {
+                // Check if this number is adjacent to a range operator
+                let prevNonWhitespace = findPrevNonWhitespace(tokens, before: i)
+                let nextNonWhitespace = findNextNonWhitespace(tokens, after: i)
+
+                let isAfterRange = prevNonWhitespace?.type == .range
+                let isBeforeRange = nextNonWhitespace?.type == .range
+
+                if isAfterRange || isBeforeRange {
+                    result.append(Token(type: .rangeNumber, text: token.text, range: token.range))
+                } else {
+                    result.append(token)
+                }
+            } else {
+                result.append(token)
+            }
+        }
+
+        return result
+    }
+
+    private func findPrevNonWhitespace(_ tokens: [Token], before index: Int) -> Token? {
+        var i = index - 1
+        while i >= 0 {
+            if tokens[i].type != .whitespace && tokens[i].type != .newline {
+                return tokens[i]
+            }
+            i -= 1
+        }
+        return nil
+    }
+
+    private func findNextNonWhitespace(_ tokens: [Token], after index: Int) -> Token? {
+        var i = index + 1
+        while i < tokens.count {
+            if tokens[i].type != .whitespace && tokens[i].type != .newline {
+                return tokens[i]
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private func processStrandsAndAccessors(_ tokens: [Token]) -> [Token] {
         var result: [Token] = []
         var i = 0
 
@@ -508,6 +565,8 @@ class WeftSyntaxHighlighter {
             return .weftIdentifier
         case .number:
             return .weftNumber
+        case .rangeNumber:
+            return .weftChain
         case .string:
             return .weftString
         case .comment:
