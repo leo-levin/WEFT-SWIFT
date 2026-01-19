@@ -1,6 +1,6 @@
 # WEFT
 
-WEFT is a media-agnostic creative coding language.
+WEFT is a domain-agnostic multimedia programming language.
 
 See [weft.notion.site](https://weft.notion.site) for docs.
 
