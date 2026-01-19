@@ -624,6 +624,11 @@ struct CodeEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.string = text
 
+        // Apply initial syntax highlighting
+        DispatchQueue.main.async {
+            context.coordinator.applyHighlighting(to: textView)
+        }
+
         // Set up scroll view
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -650,6 +655,8 @@ struct CodeEditor: NSViewRepresentable {
             let selectedRanges = textView.selectedRanges
             textView.string = text
             textView.selectedRanges = selectedRanges
+            // Apply syntax highlighting after text update
+            context.coordinator.applyHighlighting(to: textView)
         }
     }
 
@@ -660,6 +667,7 @@ struct CodeEditor: NSViewRepresentable {
     class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CodeEditor
         var isEditing = false
+        private let highlighter = WeftSyntaxHighlighter()
 
         init(_ parent: CodeEditor) {
             self.parent = parent
@@ -676,6 +684,17 @@ struct CodeEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+            applyHighlighting(to: textView)
+        }
+
+        func applyHighlighting(to textView: NSTextView) {
+            guard let textStorage = textView.textStorage else { return }
+            // Save selection
+            let selectedRanges = textView.selectedRanges
+            // Apply highlighting
+            highlighter.highlight(textStorage)
+            // Restore selection
+            textView.selectedRanges = selectedRanges
         }
     }
 }
