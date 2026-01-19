@@ -492,14 +492,10 @@ class WeftViewModel: ObservableObject {
         return isDirty ? "\(filename) \u{2022}" : filename
     }
 
-    private let jsCompiler = WeftJSCompiler()
+    private let compiler = WeftCompiler()
 
     init() {
-        do {
-            try jsCompiler.initialize()
-        } catch {
-            print("Failed to initialize JS compiler: \(error)")
-        }
+        // Native Swift compiler - no initialization needed
     }
 
     // MARK: - File Operations
@@ -617,14 +613,8 @@ class WeftViewModel: ObservableObject {
         RenderStats.shared.reset()
 
         do {
-            let jsonString = try jsCompiler.compileToJSON(sourceCode)
-
-            guard let data = jsonString.data(using: .utf8) else {
-                throw WeftCompileError.jsonParseError("Could not encode JSON")
-            }
-
-            let parser = IRParser()
-            let program = try parser.parse(data: data)
+            // Use native Swift compiler
+            let program = try compiler.compile(sourceCode)
 
             try coordinator.load(program: program)
 

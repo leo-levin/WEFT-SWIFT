@@ -84,6 +84,125 @@ public enum IRTransformations {
         }
     }
 
+    // MARK: - Spindle Substitution Builder
+
+    /// Build complete substitution map for inlining a spindle call.
+    /// Includes both parameter substitutions and local bundle resolutions.
+    /// Locals are processed in definition order, so later locals can reference earlier ones.
+    public static func buildSpindleSubstitutions(
+        spindleDef: IRSpindle,
+        args: [IRExpr]
+    ) -> [String: IRExpr] {
+        // Start with parameter substitutions
+        var substitutions: [String: IRExpr] = [:]
+        for (i, param) in spindleDef.params.enumerated() {
+            if i < args.count {
+                substitutions[param] = args[i]
+            }
+        }
+
+        // Process local bundles - add their strand expressions to substitutions
+        // Locals are processed in order, so later locals can reference earlier ones
+        for local in spindleDef.locals {
+            for strand in local.strands {
+                // Substitute params in the local's expression first
+                let localExpr = substituteParams(in: strand.expr, substitutions: substitutions)
+                // Now substitute any references to earlier locals
+                let fullyInlined = substituteIndexRefs(in: localExpr, substitutions: substitutions)
+                // Add to substitutions using both index and name formats
+                substitutions["\(local.name).\(strand.index)"] = fullyInlined
+                substitutions["\(local.name).\(strand.name)"] = fullyInlined
+            }
+        }
+
+        return substitutions
+    }
+
+    // MARK: - Index Reference Substitution
+
+    /// Substitute .index expressions where the bundle.strand key exists in substitutions.
+    /// Used when inlining spindle calls that have local bundles.
+    /// For example, if substitutions contains "diff.y" -> someExpr,
+    /// then .index(bundle: "diff", indexExpr: .param("y")) will be replaced with someExpr.
+    public static func substituteIndexRefs(
+        in expr: IRExpr,
+        substitutions: [String: IRExpr]
+    ) -> IRExpr {
+        switch expr {
+        case .num:
+            return expr
+
+        case .param:
+            return expr
+
+        case .index(let bundle, let indexExpr):
+            // Try to look up this index reference in substitutions
+            var keysToTry: [String] = []
+
+            if case .param(let field) = indexExpr {
+                keysToTry.append("\(bundle).\(field)")
+            } else if case .num(let idx) = indexExpr {
+                keysToTry.append("\(bundle).\(Int(idx))")
+            }
+
+            for key in keysToTry {
+                if let replacement = substitutions[key] {
+                    return replacement
+                }
+            }
+
+            // No substitution found, recurse into indexExpr
+            return .index(
+                bundle: bundle,
+                indexExpr: substituteIndexRefs(in: indexExpr, substitutions: substitutions)
+            )
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: substituteIndexRefs(in: left, substitutions: substitutions),
+                right: substituteIndexRefs(in: right, substitutions: substitutions)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: substituteIndexRefs(in: operand, substitutions: substitutions)
+            )
+
+        case .call(let spindle, let args):
+            return .call(
+                spindle: spindle,
+                args: args.map { substituteIndexRefs(in: $0, substitutions: substitutions) }
+            )
+
+        case .builtin(let name, let args):
+            return .builtin(
+                name: name,
+                args: args.map { substituteIndexRefs(in: $0, substitutions: substitutions) }
+            )
+
+        case .extract(let call, let index):
+            return .extract(
+                call: substituteIndexRefs(in: call, substitutions: substitutions),
+                index: index
+            )
+
+        case .remap(let base, let remapSubs):
+            var newRemapSubs: [String: IRExpr] = [:]
+            for (key, value) in remapSubs {
+                newRemapSubs[key] = substituteIndexRefs(in: value, substitutions: substitutions)
+            }
+            return .remap(
+                base: substituteIndexRefs(in: base, substitutions: substitutions),
+                substitutions: newRemapSubs
+            )
+
+        case .cacheRead:
+            return expr
+        }
+    }
+
     // MARK: - Direct Expression
 
     /// Get the direct expression for a bundle reference WITHOUT recursively inlining dependencies.
@@ -121,13 +240,10 @@ public enum IRTransformations {
             guard index < spindleDef.returns.count else {
                 return expr
             }
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            return substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            let substitutions = buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var result = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            result = substituteIndexRefs(in: result, substitutions: substitutions)
+            return result
 
         case .call(let spindle, let args):
             guard let spindleDef = program.spindles[spindle] else {
@@ -136,13 +252,10 @@ public enum IRTransformations {
             guard !spindleDef.returns.isEmpty else {
                 return expr
             }
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            return substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            let substitutions = buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var result = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            result = substituteIndexRefs(in: result, substitutions: substitutions)
+            return result
 
         default:
             return expr
@@ -197,14 +310,12 @@ public enum IRTransformations {
             guard !spindleDef.returns.isEmpty else {
                 return expr
             }
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = try inlineExpression(args[i], program: program)
-                }
-            }
-            let inlined = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
-            return try inlineExpression(inlined, program: program)
+            // Inline args first, then build substitutions including locals
+            let inlinedArgs = try args.map { try inlineExpression($0, program: program) }
+            let substitutions = buildSpindleSubstitutions(spindleDef: spindleDef, args: inlinedArgs)
+            var result = substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            result = substituteIndexRefs(in: result, substitutions: substitutions)
+            return try inlineExpression(result, program: program)
 
         case .builtin(let name, let args):
             return .builtin(name: name, args: try args.map { try inlineExpression($0, program: program) })
@@ -219,14 +330,12 @@ public enum IRTransformations {
             guard index < spindleDef.returns.count else {
                 return expr
             }
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = try inlineExpression(args[i], program: program)
-                }
-            }
-            let inlined = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
-            return try inlineExpression(inlined, program: program)
+            // Inline args first, then build substitutions including locals
+            let inlinedArgs = try args.map { try inlineExpression($0, program: program) }
+            let substitutions = buildSpindleSubstitutions(spindleDef: spindleDef, args: inlinedArgs)
+            var result = substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            result = substituteIndexRefs(in: result, substitutions: substitutions)
+            return try inlineExpression(result, program: program)
 
         case .remap(let base, let substitutions):
             let inlinedBase = try inlineExpression(base, program: program)

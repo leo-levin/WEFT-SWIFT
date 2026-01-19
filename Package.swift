@@ -14,11 +14,7 @@ let package = Package(
         .target(
             name: "SWeftLib",
             dependencies: [],
-            path: "Sources/SWeftLib",
-            resources: [
-                .copy("JSCompiler/ohm.js"),
-                .copy("JSCompiler/weft-compiler.js")
-            ]
+            path: "Sources/SWeftLib"
         ),
         .executableTarget(
             name: "SWeftApp",
