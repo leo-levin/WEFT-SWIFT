@@ -473,7 +473,7 @@ class WeftViewModel: ObservableObject {
             }
         }
     }
-    @Published var statusText = "Ready"
+    @Published var statusText = "Ready (Swift)"
     @Published var errorMessage = ""
     @Published var compilationError = CompilationError(message: "", location: nil, codeContext: [])
     @Published var hasVisual = false
@@ -508,7 +508,7 @@ class WeftViewModel: ObservableObject {
         editorID = UUID()
         errorMessage = ""
         hasError = false
-        statusText = "Ready"
+        statusText = "Ready (Swift)"
     }
 
     func openFile() {
@@ -537,7 +537,7 @@ class WeftViewModel: ObservableObject {
             editorID = UUID()
             errorMessage = ""
             hasError = false
-            statusText = "Ready"
+            statusText = "Ready (Swift)"
         } catch {
             showFileError("Failed to open file: \(error.localizedDescription)")
         }
