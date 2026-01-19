@@ -501,7 +501,7 @@ extension NSColor {
     // WEFT syntax colors based on VS Code Dark Modern
     static let weftKeyword = NSColor(hex: "#c586c0")       // purple
     static let weftString = NSColor(hex: "#ce9178")        // orange
-    static let weftNumber = NSColor(hex: "#b4a7d6")        // light purple
+    static let weftNumber = NSColor(hex: "#d4d4d4")        // light gray (subtle)
     static let weftComment = NSColor(hex: "#6a9955")       // green
     static let weftIdentifier = NSColor(hex: "#dcdcaa")    // yellow/gold
     static let weftBundle = NSColor(hex: "#569cd6")        // blue
