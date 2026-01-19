@@ -88,6 +88,7 @@ struct PanelCommands: Commands {
     @FocusedBinding(\.showGraph) var showGraph
     @FocusedBinding(\.showErrors) var showErrors
     @FocusedBinding(\.showStats) var showStats
+    @FocusedBinding(\.showDevMode) var showDevMode
 
     var body: some Commands {
         CommandGroup(after: .toolbar) {
@@ -109,6 +110,14 @@ struct PanelCommands: Commands {
                     set: { showStats = $0 }
                 ))
                 .keyboardShortcut("s", modifiers: [.command, .option])
+
+                Divider()
+
+                Toggle("Dev Mode", isOn: Binding(
+                    get: { showDevMode ?? false },
+                    set: { showDevMode = $0 }
+                ))
+                .keyboardShortcut("d", modifiers: [.command, .shift])
             }
         }
     }
@@ -125,6 +134,10 @@ struct ShowErrorsKey: FocusedValueKey {
 }
 
 struct ShowStatsKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
+struct ShowDevModeKey: FocusedValueKey {
     typealias Value = Binding<Bool>
 }
 
@@ -147,6 +160,11 @@ extension FocusedValues {
     var showStats: Binding<Bool>? {
         get { self[ShowStatsKey.self] }
         set { self[ShowStatsKey.self] = newValue }
+    }
+
+    var showDevMode: Binding<Bool>? {
+        get { self[ShowDevModeKey.self] }
+        set { self[ShowDevModeKey.self] = newValue }
     }
 }
 
