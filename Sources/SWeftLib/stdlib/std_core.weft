@@ -1,0 +1,11 @@
+// WEFT Standard Library - Core
+// This is the main entry point for the standard library
+// It includes all standard modules
+
+#include "std_noise.weft"   // perlin3, simplex3, fbm3, cell3
+#include "std_ease.weft"    // ease_in, ease_out, bounce, elastic, etc.
+#include "std_maps.weft"    // remap, wrap, mirror, quantize, bias, gain
+#include "std_sdf.weft"     // sdf_circle, sdf_box, sdf_union, sdf_smooth_union, etc.
+#include "std_coord.weft"   // move, scale, rotate_x, rotate_y, polar conversions
+#include "std_blend.weft"   // blend modes, crossfade, mix
+#include "std_io.weft"  // mouse, keyboard io
