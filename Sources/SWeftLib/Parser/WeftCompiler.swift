@@ -33,6 +33,9 @@ public class WeftCompiler {
     // Singleton for convenience
     public static let shared = WeftCompiler()
 
+    /// Whether to prepend the standard library to user code
+    public var includeStdlib: Bool = true
+
     public init() {}
 
     // MARK: - Public API
@@ -40,8 +43,11 @@ public class WeftCompiler {
     /// Compile WEFT source code directly to IR
     public func compile(_ source: String) throws -> IRProgram {
         do {
+            // Prepend stdlib if enabled
+            let fullSource = includeStdlib ? (WeftStdlib.source + "\n" + source) : source
+
             // Tokenize
-            let tokenizer = WeftTokenizer(source: source)
+            let tokenizer = WeftTokenizer(source: fullSource)
             let tokens = try tokenizer.tokenize()
 
             // Parse

@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Personality
+You are an expert who double checks things, you are skeptical and you do research. I am not always right. Neither are you, but we both strive for accuracy.
+
 ## Project Overview
 
 SWeft is a Swift-based compiler and runtime for WEFT, a domain-agnostic creative coding language for visual graphics and audio synthesis. It bridges a JavaScript parser/compiler frontend with a native Swift backend using Metal for GPU graphics and CoreAudio for audio synthesis.
