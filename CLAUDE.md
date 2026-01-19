@@ -20,6 +20,9 @@ swift build -c release         # Release build
 swift test                     # Run all tests
 swift run                      # Run the app
 ./build-app.sh                 # Build macOS app bundle (WEFT.app)
+
+# Run a single test
+swift test --filter SWeftTests.IntegrationTests/testMetalCodeGeneration
 ```
 
 ## Architecture
@@ -95,11 +98,44 @@ Test programs in `Sources/SWeftApp/Resources/`:
 ## Adding New Functionality
 
 ### New Builtin Function
-1. Add to `MetalCodeGen.swift` (Metal implementation)
-2. Add to `AudioCodeGen.swift` (Swift implementation)
-3. Ensure same semantics in both backends
+1. Add to `BUILTINS` set in `weft-compiler.js` (~line 1054)
+2. Add Metal implementation in `MetalCodeGen.swift` (in `generateBuiltin` method)
+3. Add Swift implementation in `AudioCodeGen.swift` (in `generateBuiltin` method)
+4. Ensure same semantics in both backends
+
+Current builtins: `sin`, `cos`, `tan`, `abs`, `floor`, `ceil`, `sqrt`, `pow`, `min`, `max`, `lerp`, `clamp`, `step`, `smoothstep`, `fract`, `mod`, `osc`, `cache`
+
+Resource builtins (multi-strand output): `texture`, `camera`, `microphone`
 
 ### New Backend
 1. Implement `Backend` protocol in new directory under `Backends/`
 2. Register in `Coordinator.swift`
 3. Add ownership classification in `OwnershipAnalysis.swift`
+
+## WEFT Language Syntax
+
+```weft
+// Bundles with strand outputs
+img[r,g,b] = camera(1-me.x, me.y)
+brightness.val = img.r * 0.3 + img.g * 0.6 + img.b * 0.1
+
+// Spindle definitions
+spindle circle(cx, cy, radius) {
+    return.0 = step(radius, sqrt((me.x-cx)^2 + (me.y-cy)^2))
+}
+
+// Chain expressions with patterns
+display[r,g,b] = img -> {0..3 * brightness.val}
+
+// Cache for feedback effects (value, historySize, tapIndex, signal)
+trail.val = cache(max(dot.val, trail.val * 0.95), 2, 1, me.t)
+
+// Range expansion in patterns
+prev[r,g,b] = current -> {cache(0..3, 2, 1, me.t)}
+```
+
+## Known Issues / Technical Debt
+
+- Microphone input currently requires a `play` bundle even for visual-only programs (capture/playback coupling issue)
+- Audio backend may not have full feature parity with Metal backend (check cache support)
+- Multiple Claude instances have made patches; code organization could be improved

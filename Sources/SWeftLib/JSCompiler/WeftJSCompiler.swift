@@ -180,21 +180,21 @@ public class WeftJSCompiler {
 
     // MARK: - Private Methods
 
-    /// Get the Ohm.js source code
+    /// Get the Ohm.js source code (minified)
     private func getOhmSource() -> String {
         // Try Bundle.module (SPM resources)
-        if let url = Bundle.module.url(forResource: "ohm", withExtension: "js"),
+        if let url = Bundle.module.url(forResource: "ohm.min", withExtension: "js"),
            let source = try? String(contentsOf: url) {
             return source
         }
 
         // Try to load from main bundle
-        if let url = Bundle.main.url(forResource: "ohm", withExtension: "js"),
+        if let url = Bundle.main.url(forResource: "ohm.min", withExtension: "js"),
            let source = try? String(contentsOf: url) {
             return source
         }
 
-        print("Warning: Could not load ohm.js from bundle")
+        print("Warning: Could not load ohm.min.js from bundle")
         return ""
     }
 
