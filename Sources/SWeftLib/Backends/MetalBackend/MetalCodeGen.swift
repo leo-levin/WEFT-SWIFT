@@ -222,10 +222,13 @@ public class MetalCodeGen {
                 cacheKey = ""
             }
 
-            // Look for matching cache descriptor - return the precomputed result variable
-            // UNLESS we're currently generating this cache's valueExpr (then we need to expand)
+            // Look for matching cache descriptor with self-reference - return the precomputed result
+            // to break the cycle. For caches WITHOUT self-reference, let the expression expand normally.
             if !cacheKey.isEmpty {
                 for (cacheIndex, descriptor) in cacheDescriptors.enumerated() {
+                    // Only use cache_result shortcut for self-referential caches (cycle breaking)
+                    guard descriptor.hasSelfReference else { continue }
+
                     let descKey1 = "\(descriptor.bundleName).\(descriptor.strandIndex)"
                     // Also check by strand name
                     if let targetBundle = program.bundles[descriptor.bundleName],
@@ -281,15 +284,10 @@ public class MetalCodeGen {
             guard !spindleDef.returns.isEmpty else {
                 throw BackendError.unsupportedExpression("Spindle \(spindle) has no returns")
             }
-            // Build substitution map: param name -> arg expression
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            // Inline the first return with substitutions
-            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            // Build substitutions (params + locals) and inline the return expression
+            let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
             return try generateExpression(inlined)
 
         case .builtin(let name, let args):
@@ -306,15 +304,10 @@ public class MetalCodeGen {
             guard index < spindleDef.returns.count else {
                 throw BackendError.unsupportedExpression("Extract index \(index) out of bounds for spindle \(spindle)")
             }
-            // Build substitution map
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            // Inline the specific return with substitutions
-            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            // Build substitutions (params + locals) and inline the return expression
+            let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
             return try generateExpression(inlined)
 
         case .remap(let base, let substitutions):

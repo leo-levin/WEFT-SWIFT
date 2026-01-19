@@ -40,6 +40,10 @@ public struct CacheNodeDescriptor {
     /// Buffer index for previous signal tracking (CacheManager internal)
     public let signalBufferIndex: Int
 
+    /// Whether the cache value expression references the bundle/strand containing it
+    /// Only caches with self-references need cycle breaking
+    public let hasSelfReference: Bool
+
     // MARK: - Shader Buffer Index Calculation
 
     /// Base buffer index for cache buffers in shader (after uniforms at index 0)
@@ -110,6 +114,7 @@ public class CacheManager {
         descriptors = []
         nextBufferIndex = 0
 
+        // Scan bundle strand expressions, inlining spindle calls to find caches inside them
         for (bundleName, bundle) in program.bundles {
             for strand in bundle.strands {
                 findCacheNodes(
@@ -165,27 +170,41 @@ public class CacheManager {
                     domain = (bundleName == "play") ? .audio : .visual
                 }
 
-                // Allocate buffer indices
-                let historyBufferIndex = nextBufferIndex
-                nextBufferIndex += 1
-                let signalBufferIndex = nextBufferIndex
-                nextBufferIndex += 1
+                // Check for duplicates - same bundle/strand/value/signal means same cache
+                let isDuplicate = descriptors.contains { existing in
+                    existing.bundleName == bundleName &&
+                    existing.strandIndex == strandIndex &&
+                    existing.valueExpr == args[0] &&
+                    existing.signalExpr == args[3]
+                }
 
-                let id = "\(bundleName).\(strandIndex).\(descriptors.count)"
+                if !isDuplicate {
+                    // Allocate buffer indices
+                    let historyBufferIndex = nextBufferIndex
+                    nextBufferIndex += 1
+                    let signalBufferIndex = nextBufferIndex
+                    nextBufferIndex += 1
 
-                let descriptor = CacheNodeDescriptor(
-                    id: id,
-                    bundleName: bundleName,
-                    strandIndex: strandIndex,
-                    historySize: historySize,
-                    tapIndex: tapIndex,
-                    valueExpr: args[0],
-                    signalExpr: args[3],
-                    domain: domain,
-                    historyBufferIndex: historyBufferIndex,
-                    signalBufferIndex: signalBufferIndex
-                )
-                descriptors.append(descriptor)
+                    let id = "\(bundleName).\(strandIndex).\(descriptors.count)"
+
+                    // Check if this cache has a self-reference (value expr references the bundle containing it)
+                    let hasSelfReference = exprReferencesBundleStrand(args[0], bundleName: bundleName, strandIndex: strandIndex)
+
+                    let descriptor = CacheNodeDescriptor(
+                        id: id,
+                        bundleName: bundleName,
+                        strandIndex: strandIndex,
+                        historySize: historySize,
+                        tapIndex: tapIndex,
+                        valueExpr: args[0],
+                        signalExpr: args[3],
+                        domain: domain,
+                        historyBufferIndex: historyBufferIndex,
+                        signalBufferIndex: signalBufferIndex,
+                        hasSelfReference: hasSelfReference
+                    )
+                    descriptors.append(descriptor)
+                }
             }
             // Also check args recursively for nested caches
             for arg in args {
@@ -204,13 +223,35 @@ public class CacheManager {
                 findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
             }
 
-        case .call(_, let args):
+        case .call(let spindle, let args):
+            // Scan the args first
             for arg in args {
                 findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
             }
+            // Inline the spindle and scan for caches in the expanded expression
+            if let spindleDef = program.spindles[spindle], !spindleDef.returns.isEmpty {
+                let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+                var inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+                inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
+                findCacheNodes(expr: inlined, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+            }
 
-        case .extract(let call, _):
-            findCacheNodes(expr: call, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+        case .extract(let callExpr, let index):
+            // Scan the call expression args
+            if case .call(let spindle, let args) = callExpr {
+                for arg in args {
+                    findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                }
+                // Inline the spindle's specific return and scan for caches
+                if let spindleDef = program.spindles[spindle], index < spindleDef.returns.count {
+                    let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+                    var inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+                    inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
+                    findCacheNodes(expr: inlined, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                }
+            } else {
+                findCacheNodes(expr: callExpr, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+            }
 
         case .remap(let base, let subs):
             findCacheNodes(expr: base, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
@@ -226,15 +267,55 @@ public class CacheManager {
         }
     }
 
+    /// Check if an expression references a specific bundle/strand (used for self-reference detection)
+    private func exprReferencesBundleStrand(_ expr: IRExpr, bundleName: String, strandIndex: Int) -> Bool {
+        switch expr {
+        case .index(let bundle, let indexExpr):
+            if bundle == bundleName {
+                if case .num(let idx) = indexExpr, Int(idx) == strandIndex {
+                    return true
+                }
+            }
+            return exprReferencesBundleStrand(indexExpr, bundleName: bundleName, strandIndex: strandIndex)
+
+        case .binaryOp(_, let left, let right):
+            return exprReferencesBundleStrand(left, bundleName: bundleName, strandIndex: strandIndex) ||
+                   exprReferencesBundleStrand(right, bundleName: bundleName, strandIndex: strandIndex)
+
+        case .unaryOp(_, let operand):
+            return exprReferencesBundleStrand(operand, bundleName: bundleName, strandIndex: strandIndex)
+
+        case .builtin(_, let args):
+            return args.contains { exprReferencesBundleStrand($0, bundleName: bundleName, strandIndex: strandIndex) }
+
+        case .call(_, let args):
+            return args.contains { exprReferencesBundleStrand($0, bundleName: bundleName, strandIndex: strandIndex) }
+
+        case .extract(let call, _):
+            return exprReferencesBundleStrand(call, bundleName: bundleName, strandIndex: strandIndex)
+
+        case .remap(let base, let subs):
+            return exprReferencesBundleStrand(base, bundleName: bundleName, strandIndex: strandIndex) ||
+                   subs.values.contains { exprReferencesBundleStrand($0, bundleName: bundleName, strandIndex: strandIndex) }
+
+        default:
+            return false
+        }
+    }
+
     // MARK: - Cycle Breaking Transformation
 
     /// Transform the program to break cache cycles
     /// This replaces back-references to cache locations with cacheRead expressions
     public func transformProgramForCaches(program: inout IRProgram) {
         // Build map of cache locations: "bundleName.strandIndex" or "bundleName.strandName" -> (cacheId, tapIndex)
+        // Only include caches with self-references (those that need cycle breaking)
         var cacheLocations: [String: (cacheId: String, tapIndex: Int)] = [:]
 
         for descriptor in descriptors {
+            // Only break cycles for caches that reference themselves
+            guard descriptor.hasSelfReference else { continue }
+
             // Map the strand that CONTAINS this cache (even if nested inside other expressions)
             // This allows breaking self-reference cycles like: combined.val = max(x, cache(combined.val, ...))
             cacheLocations["\(descriptor.bundleName).\(descriptor.strandIndex)"] = (descriptor.id, descriptor.tapIndex)

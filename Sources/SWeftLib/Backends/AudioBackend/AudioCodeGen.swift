@@ -157,15 +157,10 @@ public class AudioCodeGen {
             guard !spindleDef.returns.isEmpty else {
                 throw BackendError.unsupportedExpression("Spindle \(spindle) has no returns")
             }
-            // Build substitution map
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            // Inline the first return with substitutions
-            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            // Build substitutions (params + locals) and inline the return expression
+            let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
             return try buildEvaluator(for: inlined)
 
         case .extract(let callExpr, let index):
@@ -179,15 +174,10 @@ public class AudioCodeGen {
             guard index < spindleDef.returns.count else {
                 throw BackendError.unsupportedExpression("Extract index \(index) out of bounds")
             }
-            // Build substitution map
-            var substitutions: [String: IRExpr] = [:]
-            for (i, param) in spindleDef.params.enumerated() {
-                if i < args.count {
-                    substitutions[param] = args[i]
-                }
-            }
-            // Inline the specific return with substitutions
-            let inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            // Build substitutions (params + locals) and inline the return expression
+            let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
             return try buildEvaluator(for: inlined)
 
         case .remap(let base, let substitutions):
