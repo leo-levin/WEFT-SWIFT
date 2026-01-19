@@ -3,6 +3,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import SWeftLib
 
 @main
 struct SWeftApp: App {
@@ -62,23 +63,15 @@ struct FileCommands: Commands {
     }
 
     private func revealStdlibInFinder() {
-        // Try to find stdlib in bundle resources
-        if let stdlibURL = Bundle.main.url(forResource: "stdlib", withExtension: nil) {
+        // Use the stdlib URL exposed by SWeftLib
+        if let stdlibURL = WeftStdlib.directoryURL {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: stdlibURL.path)
         } else {
-            // Fallback: try SWeftLib bundle (for when running from Xcode)
-            let bundleID = "com.example.SWeftLib"
-            if let bundle = Bundle(identifier: bundleID),
-               let stdlibURL = bundle.url(forResource: "stdlib", withExtension: nil) {
-                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: stdlibURL.path)
-            } else {
-                // Last resort: show an alert
-                let alert = NSAlert()
-                alert.messageText = "Stdlib Not Found"
-                alert.informativeText = "Could not locate the stdlib directory. It should be at Sources/SWeftLib/stdlib/ in the project."
-                alert.alertStyle = .warning
-                alert.runModal()
-            }
+            let alert = NSAlert()
+            alert.messageText = "Stdlib Not Found"
+            alert.informativeText = "Could not locate the stdlib directory in the bundle."
+            alert.alertStyle = .warning
+            alert.runModal()
         }
     }
 }

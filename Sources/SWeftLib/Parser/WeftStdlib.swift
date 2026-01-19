@@ -13,4 +13,9 @@ public enum WeftStdlib {
 // This file is automatically prepended to user code when includeStdlib is enabled
 #include "core.weft"
 """
+
+    /// URL to the stdlib directory in the bundle (for "View Stdlib" menu)
+    public static var directoryURL: URL? {
+        Bundle.module.url(forResource: "stdlib", withExtension: nil)
+    }
 }
