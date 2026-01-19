@@ -3,6 +3,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import SWeftLib
 
 @main
 struct SWeftApp: App {
@@ -50,6 +51,27 @@ struct FileCommands: Commands {
                 viewModel?.saveFileAs()
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+        }
+
+        CommandGroup(after: .saveItem) {
+            Divider()
+
+            Button("View Stdlib") {
+                revealStdlibInFinder()
+            }
+        }
+    }
+
+    private func revealStdlibInFinder() {
+        // Use the stdlib URL exposed by SWeftLib
+        if let stdlibURL = WeftStdlib.directoryURL {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: stdlibURL.path)
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Stdlib Not Found"
+            alert.informativeText = "Could not locate the stdlib directory in the bundle."
+            alert.alertStyle = .warning
+            alert.runModal()
         }
     }
 }

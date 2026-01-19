@@ -5,6 +5,7 @@ import Foundation
 // MARK: - Compiler Error
 
 public enum WeftCompileError: Error, LocalizedError {
+    case preprocessorFailed(PreprocessorError)
     case tokenizationFailed(TokenizerError)
     case parseFailed(ParseError)
     case loweringFailed(LoweringError)
@@ -12,6 +13,8 @@ public enum WeftCompileError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .preprocessorFailed(let error):
+            return "Preprocessor error: \(error.localizedDescription)"
         case .tokenizationFailed(let error):
             return "Tokenization error: \(error.localizedDescription)"
         case .parseFailed(let error):
@@ -36,18 +39,51 @@ public class WeftCompiler {
     /// Whether to prepend the standard library to user code
     public var includeStdlib: Bool = true
 
-    public init() {}
+    /// Additional search paths for #include directives
+    public var includePaths: [String] = []
+
+    /// The preprocessor used for #include handling
+    public private(set) var preprocessor: WeftPreprocessor
+
+    /// Last compilation's source map (for error location mapping)
+    public private(set) var lastSourceMap: SourceMap?
+
+    public init() {
+        self.preprocessor = WeftPreprocessor()
+        // Set up stdlib path from bundle resources if available
+        if let stdlibURL = Bundle.module.url(forResource: "stdlib", withExtension: nil) {
+            preprocessor.stdlibPath = stdlibURL.path
+        }
+    }
 
     // MARK: - Public API
 
     /// Compile WEFT source code directly to IR
-    public func compile(_ source: String) throws -> IRProgram {
+    /// - Parameters:
+    ///   - source: The WEFT source code
+    ///   - path: Optional source file path for #include resolution (default: "<string>")
+    public func compile(_ source: String, path: String = "<string>") throws -> IRProgram {
         do {
-            // Prepend stdlib if enabled
-            let fullSource = includeStdlib ? (WeftStdlib.source + "\n" + source) : source
+            // Update preprocessor search paths
+            preprocessor.searchPaths = includePaths
+
+            // Preprocess (handle #include directives)
+            let preprocessResult: PreprocessorResult
+            if includeStdlib {
+                preprocessResult = try preprocessor.preprocessWithStdlib(
+                    source,
+                    path: path,
+                    stdlibSource: WeftStdlib.source
+                )
+            } else {
+                preprocessResult = try preprocessor.preprocess(source, path: path)
+            }
+
+            // Store source map for error reporting
+            self.lastSourceMap = preprocessResult.sourceMap
 
             // Tokenize
-            let tokenizer = WeftTokenizer(source: fullSource)
+            let tokenizer = WeftTokenizer(source: preprocessResult.source)
             let tokens = try tokenizer.tokenize()
 
             // Parse
@@ -58,6 +94,8 @@ public class WeftCompiler {
             let lowering = WeftLowering()
             return try lowering.lower(ast)
 
+        } catch let error as PreprocessorError {
+            throw WeftCompileError.preprocessorFailed(error)
         } catch let error as TokenizerError {
             throw WeftCompileError.tokenizationFailed(error)
         } catch let error as ParseError {
@@ -124,12 +162,22 @@ extension WeftCompiler {
     /// Compile a WEFT file from disk
     public func compileFile(at path: String) throws -> IRProgram {
         let source = try String(contentsOfFile: path, encoding: .utf8)
-        return try compile(source)
+        let absolutePath = path.hasPrefix("/") ? path : FileManager.default.currentDirectoryPath + "/" + path
+        return try compile(source, path: absolutePath)
     }
 
     /// Compile a WEFT file from URL
     public func compileFile(at url: URL) throws -> IRProgram {
         let source = try String(contentsOf: url, encoding: .utf8)
-        return try compile(source)
+        return try compile(source, path: url.path)
+    }
+
+    /// Format an error message with original source location
+    /// Uses the source map from the last compilation to map back to original file:line
+    public func formatError(processedLine: Int, message: String) -> String {
+        guard let sourceMap = lastSourceMap else {
+            return "line \(processedLine): \(message)"
+        }
+        return sourceMap.formatError(processedLine: processedLine, message: message)
     }
 }

@@ -7,6 +7,7 @@ import AppKit
 enum TokenType {
     // Keywords
     case keyword           // spindle, display, camera, play, microphone, return
+    case preprocessor      // #include
 
     // Bundle & Strand
     case bundleName        // identifier when followed by . or [
@@ -121,6 +122,11 @@ class WeftTokenizer {
         if char.isNewline {
             advance()
             return makeToken(type: .newline, text: String(char), startOffset: startOffset)
+        }
+
+        // Preprocessor directive (#include)
+        if char == "#" {
+            return scanPreprocessor(startOffset: startOffset)
         }
 
         // Comment
@@ -245,6 +251,26 @@ class WeftTokenizer {
             advance()
         }
         return makeToken(type: .comment, text: text, startOffset: startOffset)
+    }
+
+    private func scanPreprocessor(startOffset: Int) -> Token {
+        var text = ""
+        // Consume # and the directive name (e.g., "include")
+        text.append(currentChar!) // #
+        advance()
+
+        // Consume letters for directive name
+        while let char = currentChar, char.isLetter {
+            text.append(char)
+            advance()
+        }
+
+        // Check if it's a known preprocessor directive
+        if text == "#include" {
+            return makeToken(type: .preprocessor, text: text, startOffset: startOffset)
+        } else {
+            return makeToken(type: .unknown, text: text, startOffset: startOffset)
+        }
     }
 
     private func scanString(startOffset: Int) -> Token {
@@ -555,7 +581,7 @@ class WeftSyntaxHighlighter {
 
     private func color(for tokenType: TokenType) -> NSColor? {
         switch tokenType {
-        case .keyword:
+        case .keyword, .preprocessor:
             return .weftKeyword
         case .bundleName, .strandDeclBracket:
             return .weftBundle
