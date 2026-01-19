@@ -1,0 +1,33 @@
+// WEFT Standard Library - Blending & Mixing
+// Functions for combining values/signals
+
+// ============================================================================
+// Basic Mixing
+// ============================================================================
+
+// spindle blend(a, b, t)           - linear blend (same as lerp/mix builtin)
+// spindle blend_smooth(a, b, t)    - smooth blend using smoothstep on t
+
+// ============================================================================
+// Blend Modes (Photoshop-style, for values in [0,1])
+// ============================================================================
+
+// spindle blend_multiply(a, b)     - a * b (darken)
+// spindle blend_screen(a, b)       - 1 - (1-a)*(1-b) (lighten)
+// spindle blend_overlay(a, b)      - multiply if a<0.5, screen if a>0.5
+// spindle blend_softlight(a, b)    - soft version of overlay
+// spindle blend_hardlight(a, b)    - overlay with a and b swapped
+
+// spindle blend_add(a, b)          - a + b (clamped or not?)
+// spindle blend_subtract(a, b)     - a - b
+// spindle blend_difference(a, b)   - abs(a - b)
+
+// spindle blend_min(a, b)          - darken: min(a, b)
+// spindle blend_max(a, b)          - lighten: max(a, b)
+
+// ============================================================================
+// Signal Combination
+// ============================================================================
+
+// spindle crossfade(a, b, t)       - equal-power crossfade (for audio)
+// spindle mix_add(a, b, mix)       - a + b * mix (additive with gain)

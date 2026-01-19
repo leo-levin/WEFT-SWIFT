@@ -1,0 +1,36 @@
+// WEFT Standard Library - Signed Distance Functions
+// All SDFs return: negative = inside, zero = on edge, positive = outside
+// The value is the distance to the nearest edge
+
+// ============================================================================
+// 2D Primitives (work with any 2 coordinates)
+// ============================================================================
+
+// spindle sdf_circle(x, y, cx, cy, r)              - circle at (cx,cy) with radius r
+// spindle sdf_box(x, y, cx, cy, hw, hh)            - axis-aligned box, hw/hh = half-width/height
+// spindle sdf_box_round(x, y, cx, cy, hw, hh, r)   - rounded box
+// spindle sdf_line(x, y, ax, ay, bx, by)           - line segment from a to b
+// spindle sdf_ring(x, y, cx, cy, r, thickness)     - ring/annulus
+
+// ============================================================================
+// 3D Primitives (for volumetric or using z as parameter)
+// ============================================================================
+
+// spindle sdf_sphere(x, y, z, cx, cy, cz, r)       - sphere
+// spindle sdf_box3(x, y, z, cx, cy, cz, hx, hy, hz) - axis-aligned 3D box
+
+// ============================================================================
+// Operations (combine/modify SDFs)
+// ============================================================================
+
+// spindle sdf_union(d1, d2)          - combine two shapes: min(d1, d2)
+// spindle sdf_intersect(d1, d2)      - intersection: max(d1, d2)
+// spindle sdf_subtract(d1, d2)       - cut d2 from d1: max(d1, -d2)
+
+// spindle sdf_smooth_union(d1, d2, k)     - smooth blend, k = smoothness
+// spindle sdf_smooth_intersect(d1, d2, k) - smooth intersection
+// spindle sdf_smooth_subtract(d1, d2, k)  - smooth subtraction
+
+// spindle sdf_round(d, r)      - round edges by radius r
+// spindle sdf_shell(d, thickness)  - hollow out a shape
+// spindle sdf_onion(d, thickness)  - onion layers (repeating shells)

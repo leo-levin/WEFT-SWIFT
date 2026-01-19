@@ -1,0 +1,35 @@
+// WEFT Standard Library - Coordinate Transforms
+// These modify coordinates before sampling (inverse transform intuition)
+
+// ============================================================================
+// Basic Transforms
+// ============================================================================
+
+// spindle move(coord, amount)   - shift coordinate (subtracts, so +amount moves content right/up)
+// spindle scale(coord, factor)  - scale coordinate (divides, so factor>1 makes content bigger)
+// spindle scale_around(coord, center, factor)  - scale around a point
+
+// ============================================================================
+// Rotation (2D) - returns transformed x or y component
+// ============================================================================
+
+// spindle rotate_x(x, y, cx, cy, angle)  - returns rotated x coordinate
+// spindle rotate_y(x, y, cx, cy, angle)  - returns rotated y coordinate
+
+// ============================================================================
+// Polar Coordinates
+// ============================================================================
+
+// spindle to_polar_r(x, y, cx, cy)   - cartesian to polar: radius (distance from center)
+// spindle to_polar_a(x, y, cx, cy)   - cartesian to polar: angle in radians
+
+// spindle from_polar_x(r, a, cx, cy) - polar to cartesian: x component
+// spindle from_polar_y(r, a, cx, cy) - polar to cartesian: y component
+
+// ============================================================================
+// Distortion
+// ============================================================================
+
+// spindle twist(coord, amount, center)    - twist around center based on distance
+// spindle pinch(coord, amount, center)    - pinch toward center
+// spindle ripple(x, y, cx, cy, freq, amp) - radial ripple distortion

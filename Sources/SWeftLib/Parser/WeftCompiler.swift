@@ -37,7 +37,8 @@ public class WeftCompiler {
     public static let shared = WeftCompiler()
 
     /// Whether to prepend the standard library to user code
-    public var includeStdlib: Bool = true
+    /// When false (default), users must explicitly #include "core.weft" or individual modules
+    public var includeStdlib: Bool = false
 
     /// Additional search paths for #include directives
     public var includePaths: [String] = []

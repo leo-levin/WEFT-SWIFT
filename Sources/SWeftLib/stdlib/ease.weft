@@ -1,0 +1,19 @@
+// WEFT Standard Library - Easing Functions
+// All functions take t in [0,1] and return value in [0,1]
+
+// spindle ease_in(t)       - quadratic ease in (slow start)
+// spindle ease_out(t)      - quadratic ease out (slow end)
+// spindle ease_inout(t)    - quadratic ease in+out (slow start and end)
+
+// spindle ease_in_cubic(t)    - cubic ease in (slower start)
+// spindle ease_out_cubic(t)   - cubic ease out
+// spindle ease_inout_cubic(t) - cubic ease in+out
+
+// spindle ease_in_expo(t)     - exponential ease in (very slow start)
+// spindle ease_out_expo(t)    - exponential ease out
+
+// spindle bounce(t)        - bouncy overshoot at end
+// spindle elastic(t)       - elastic snap at end
+
+// spindle smooth(t)        - smoothstep (same as built-in but explicit)
+// spindle smoother(t)      - smootherstep (6t^5 - 15t^4 + 10t^3)

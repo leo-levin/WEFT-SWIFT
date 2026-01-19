@@ -1,0 +1,14 @@
+// WEFT Standard Library - Mapping & Range Functions
+
+// spindle remap(val, in_lo, in_hi, out_lo, out_hi)  - linear remap from one range to another
+// spindle unlerp(val, lo, hi)                        - inverse lerp: where does val fall in [lo,hi]? returns [0,1]
+
+// spindle wrap(val, lo, hi)    - wrap value into range (modular arithmetic)
+// spindle mirror(val, lo, hi)  - ping-pong value within range
+
+// spindle quantize(val, levels)  - snap to nearest of N levels (posterize/bitcrush)
+// spindle deadzone(val, threshold)  - zero out values below threshold
+
+// spindle bias(val, b)   - pegs curve toward 0 (b<0.5) or 1 (b>0.5)
+// spindle gain(val, g)   - S-curve contrast: low g = flat, high g = sharp
+// spindle softclip(val)  - soft saturation (tanh-like)
