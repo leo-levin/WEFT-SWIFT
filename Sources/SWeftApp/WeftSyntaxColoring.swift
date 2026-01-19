@@ -446,7 +446,7 @@ extension NSColor {
     static let weftString = NSColor(hex: "#ce9178")        // orange
     static let weftNumber = NSColor(hex: "#b5cea8")        // light green
     static let weftComment = NSColor(hex: "#6a9955")       // green
-    static let weftIdentifier = NSColor(hex: "#9cdcfe")    // light blue
+    static let weftIdentifier = NSColor(hex: "#dcdcaa")    // yellow/gold
     static let weftBundle = NSColor(hex: "#569cd6")        // blue
     static let weftStrand = NSColor(hex: "#9cdcfe")        // lighter blue
     static let weftChain = NSColor(hex: "#4ec9b0")         // teal
