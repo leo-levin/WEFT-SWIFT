@@ -335,4 +335,43 @@ public class Coordinator: CameraCaptureDelegate {
         stopCamera()
         stopMicrophone()
     }
+
+    // MARK: - Dev Mode Accessors
+
+    /// Get compiled shader source for a swatch (for dev mode)
+    public func getCompiledShaderSource(for swatchId: UUID) -> String? {
+        guard let unit = compiledUnits[swatchId] as? MetalCompiledUnit else {
+            return nil
+        }
+        return unit.shaderSource
+    }
+
+    /// Get all compiled shader sources (for dev mode)
+    public func getAllCompiledShaderSources() -> [UUID: String] {
+        var sources: [UUID: String] = [:]
+        for (id, unit) in compiledUnits {
+            if let metalUnit = unit as? MetalCompiledUnit {
+                sources[id] = metalUnit.shaderSource
+            }
+        }
+        return sources
+    }
+
+    /// Get cache descriptors (for dev mode)
+    public func getCacheDescriptors() -> [CacheNodeDescriptor]? {
+        return cacheManager.getDescriptors()
+    }
+
+    /// Get compiled units info (for dev mode)
+    public func getCompiledUnitsInfo() -> [(swatchId: UUID, backend: BackendDomain, usedInputs: Set<String>)] {
+        var info: [(UUID, BackendDomain, Set<String>)] = []
+        for (id, unit) in compiledUnits {
+            if let metalUnit = unit as? MetalCompiledUnit {
+                info.append((id, .visual, metalUnit.usedInputs))
+            } else {
+                info.append((id, .audio, []))
+            }
+        }
+        return info
+    }
 }

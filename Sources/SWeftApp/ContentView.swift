@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var showGraph = true
     @State private var showErrors = true
     @State private var showStats = true
+    @State private var showDevMode = false
+    @State private var devModeTab: DevModeTab = .ir
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +26,7 @@ struct ContentView: View {
         .focusedSceneValue(\.showGraph, $showGraph)
         .focusedSceneValue(\.showErrors, $showErrors)
         .focusedSceneValue(\.showStats, $showStats)
+        .focusedSceneValue(\.showDevMode, $showDevMode)
         .navigationTitle(viewModel.documentTitle)
         .onOpenURL { url in
             viewModel.loadFile(from: url)
@@ -92,6 +95,15 @@ struct ContentView: View {
                         showGraph.toggle()
                     }
                 }
+
+                Divider()
+                    .frame(height: 12)
+
+                ToolbarIconButton("hammer", label: "Dev Mode (⇧⌘D)", isActive: showDevMode) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        showDevMode.toggle()
+                    }
+                }
             }
         }
         .padding(.horizontal, Spacing.sm)
@@ -107,9 +119,52 @@ struct ContentView: View {
             editorSection
                 .frame(minWidth: 300, idealWidth: 400)
 
-            // Right: Canvas + Graph
+            // Middle: Canvas + Graph
             canvasSection
-                .frame(minWidth: 400)
+                .frame(minWidth: showDevMode ? 300 : 400)
+
+            // Right: Dev Mode Panel (when enabled)
+            if showDevMode {
+                devModeSection
+                    .frame(minWidth: 320, idealWidth: 400)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: showDevMode)
+    }
+
+    // MARK: - Dev Mode Section
+
+    private var devModeSection: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "hammer")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Text("Dev Mode")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        showDevMode = false
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+            .background(Color.panelHeaderBackground)
+
+            SubtleDivider(.horizontal)
+
+            DevModeView(coordinator: viewModel.coordinator, selectedTab: $devModeTab)
+                .id(viewModel.compilationVersion) // Refresh on recompile
         }
     }
 
@@ -482,6 +537,9 @@ class WeftViewModel: ObservableObject {
     @Published var hasError = false
     @Published var isRunning = false
 
+    // Dev mode state - increments on each compile to trigger view refresh
+    @Published var compilationVersion = 0
+
     // File state
     @Published var currentFileURL: URL? = nil
     @Published var isDirty: Bool = false
@@ -623,6 +681,7 @@ class WeftViewModel: ObservableObject {
 
             isRunning = true
             statusText = "Running"
+            compilationVersion += 1  // Trigger dev mode refresh
 
             if hasAudio && !isAudioPlaying {
                 try coordinator.startAudio()
