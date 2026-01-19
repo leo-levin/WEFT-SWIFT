@@ -34,8 +34,8 @@ struct DevModeView: View {
                 switch selectedTab {
                 case .ir:
                     IRView(coordinator: coordinator)
-                case .metal:
-                    MetalShaderView(coordinator: coordinator)
+                case .code:
+                    GeneratedCodeView(coordinator: coordinator)
                 case .analysis:
                     AnalysisView(coordinator: coordinator)
                 case .swatches:
@@ -51,14 +51,14 @@ struct DevModeView: View {
 
 enum DevModeTab: String, CaseIterable {
     case ir = "IR"
-    case metal = "Metal"
+    case code = "Code"
     case analysis = "Analysis"
     case swatches = "Swatches"
 
     var icon: String {
         switch self {
         case .ir: return "doc.text"
-        case .metal: return "cpu"
+        case .code: return "cpu"
         case .analysis: return "chart.bar.xaxis"
         case .swatches: return "square.grid.2x2"
         }
@@ -296,38 +296,173 @@ struct SpindleRow: View {
     }
 }
 
-// MARK: - Metal Shader View
+// MARK: - Generated Code View
 
-struct MetalShaderView: View {
+struct GeneratedCodeView: View {
     let coordinator: Coordinator
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            if let shaderSource = getShaderSource() {
-                Text(shaderSource)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
-                    .padding(Spacing.sm)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                EmptyDevModeView(message: "No Metal shader", hint: "Run a visual program to see generated shader")
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                // Metal Shaders
+                if let shaderSources = getShaderSources(), !shaderSources.isEmpty {
+                    ForEach(Array(shaderSources.enumerated()), id: \.offset) { idx, source in
+                        DevModeSection(title: shaderSources.count > 1 ? "Metal Shader \(idx + 1)" : "Metal Shader", icon: "cpu") {
+                            SyntaxHighlightedCode(source: source.source, language: .metal)
+                        }
+                    }
+                }
+
+                // Audio Backend Info
+                if hasAudioSwatches() {
+                    DevModeSection(title: "Audio Backend", icon: "waveform") {
+                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                            Text("Audio code is generated as Swift closures at runtime.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+
+                            Divider()
+
+                            Text("Signature:")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.tertiary)
+
+                            Text("(sampleIndex: Int, time: Double, sampleRate: Double) -> (Float, Float)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.primary)
+                                .padding(.vertical, Spacing.xxs)
+
+                            if let audioInfo = getAudioInfo() {
+                                Divider()
+                                Text("Bundles:")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                                Text(audioInfo)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                }
+
+                // Empty state
+                if getShaderSources()?.isEmpty ?? true && !hasAudioSwatches() {
+                    EmptyDevModeView(message: "No generated code", hint: "Run a program to see generated code")
+                }
             }
+            .padding(Spacing.sm)
         }
-        .background(Color(NSColor.textBackgroundColor))
     }
 
-    private func getShaderSource() -> String? {
-        // Access the compiled unit from the coordinator's swatches
+    private func getShaderSources() -> [(swatch: Swatch, source: String)]? {
         guard let swatches = coordinator.swatchGraph?.swatches else { return nil }
 
-        // Find visual sink swatch and get its compiled shader
-        for swatch in swatches where swatch.backend == .visual && swatch.isSink {
-            // The shader source is stored in MetalCompiledUnit
-            // We need to access it through the coordinator
-            return coordinator.getCompiledShaderSource(for: swatch.id)
+        var sources: [(Swatch, String)] = []
+        for swatch in swatches where swatch.backend == .visual {
+            if let source = coordinator.getCompiledShaderSource(for: swatch.id) {
+                sources.append((swatch, source))
+            }
         }
-        return nil
+        return sources.isEmpty ? nil : sources
+    }
+
+    private func hasAudioSwatches() -> Bool {
+        guard let swatches = coordinator.swatchGraph?.swatches else { return false }
+        return swatches.contains { $0.backend == .audio }
+    }
+
+    private func getAudioInfo() -> String? {
+        guard let swatches = coordinator.swatchGraph?.swatches else { return nil }
+        let audioBundles = swatches
+            .filter { $0.backend == .audio }
+            .flatMap { $0.bundles }
+            .sorted()
+        return audioBundles.isEmpty ? nil : audioBundles.joined(separator: ", ")
+    }
+}
+
+// MARK: - Syntax Highlighted Code
+
+enum CodeLanguage {
+    case metal
+}
+
+struct SyntaxHighlightedCode: View {
+    let source: String
+    let language: CodeLanguage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(highlightedCode)
+                .font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineSpacing(2)
+        }
+    }
+
+    private var highlightedCode: AttributedString {
+        var result = AttributedString(source)
+
+        // Apply base style
+        result.foregroundColor = NSColor.labelColor
+
+        // Metal syntax highlighting
+        if language == .metal {
+            highlightMetalSyntax(&result)
+        }
+
+        return result
+    }
+
+    private func highlightMetalSyntax(_ attributed: inout AttributedString) {
+        let sourceString = source
+
+        // Keywords (purple/magenta)
+        let keywords = ["kernel", "void", "return", "if", "else", "for", "while", "struct", "constant", "device", "texture2d", "sampler", "float", "float2", "float3", "float4", "int", "int2", "uint", "uint2", "half", "half3", "half4", "bool", "using", "namespace", "metal", "access", "read", "write", "sample", "thread_position_in_grid"]
+        for keyword in keywords {
+            highlightPattern("\\b\(keyword)\\b", in: &attributed, source: sourceString, color: NSColor(red: 0.77, green: 0.52, blue: 0.77, alpha: 1.0)) // purple
+        }
+
+        // Types (blue)
+        let types = ["Uniforms", "MTLTexture", "MTLBuffer"]
+        for type in types {
+            highlightPattern("\\b\(type)\\b", in: &attributed, source: sourceString, color: NSColor(red: 0.34, green: 0.61, blue: 0.84, alpha: 1.0)) // blue
+        }
+
+        // Built-in functions (cyan/teal)
+        let builtins = ["sin", "cos", "tan", "abs", "floor", "ceil", "sqrt", "pow", "min", "max", "clamp", "mix", "step", "smoothstep", "fract", "fmod", "normalize", "length", "dot", "cross", "saturate"]
+        for builtin in builtins {
+            highlightPattern("\\b\(builtin)\\b(?=\\s*\\()", in: &attributed, source: sourceString, color: NSColor(red: 0.31, green: 0.79, blue: 0.69, alpha: 1.0)) // teal
+        }
+
+        // Numbers (light green)
+        highlightPattern("\\b\\d+\\.?\\d*f?\\b", in: &attributed, source: sourceString, color: NSColor(red: 0.71, green: 0.84, blue: 0.66, alpha: 1.0))
+
+        // Comments (green)
+        highlightPattern("//.*$", in: &attributed, source: sourceString, color: NSColor(red: 0.42, green: 0.60, blue: 0.33, alpha: 1.0), options: [.anchorsMatchLines])
+
+        // Strings (orange) - unlikely in Metal but just in case
+        highlightPattern("\"[^\"]*\"", in: &attributed, source: sourceString, color: NSColor(red: 0.81, green: 0.57, blue: 0.48, alpha: 1.0))
+
+        // Preprocessor directives (magenta)
+        highlightPattern("^\\s*#\\w+", in: &attributed, source: sourceString, color: NSColor(red: 0.77, green: 0.52, blue: 0.77, alpha: 1.0), options: [.anchorsMatchLines])
+
+        // Attributes like [[texture(0)]] (yellow)
+        highlightPattern("\\[\\[[^\\]]+\\]\\]", in: &attributed, source: sourceString, color: NSColor(red: 0.86, green: 0.86, blue: 0.67, alpha: 1.0))
+    }
+
+    private func highlightPattern(_ pattern: String, in attributed: inout AttributedString, source: String, color: NSColor, options: NSRegularExpression.Options = []) {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
+
+        let nsRange = NSRange(source.startIndex..., in: source)
+        let matches = regex.matches(in: source, options: [], range: nsRange)
+
+        for match in matches {
+            guard let range = Range(match.range, in: source) else { continue }
+            guard let attrRange = Range(range, in: attributed) else { continue }
+            attributed[attrRange].foregroundColor = color
+        }
     }
 }
 
