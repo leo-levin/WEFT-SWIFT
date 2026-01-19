@@ -464,10 +464,15 @@ struct CompilationError {
 
         // Build code context (1 line before, error line, 1 line after)
         var codeContext: [CodeLine] = []
-        if let loc = location {
+        if let loc = location, !lines.isEmpty {
             let errorLineIndex = loc.line - 1
             let startIndex = max(0, errorLineIndex - 1)
             let endIndex = min(lines.count - 1, errorLineIndex + 1)
+
+            // Guard against invalid range (can happen with invalid line numbers)
+            guard startIndex <= endIndex else {
+                return CompilationError(message: message, location: location, codeContext: codeContext)
+            }
 
             for i in startIndex...endIndex {
                 if i < lines.count {
