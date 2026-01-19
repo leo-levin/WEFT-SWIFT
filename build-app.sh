@@ -82,6 +82,42 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
     <string>SWeft uses the microphone for audio input.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>WEFT Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.weft.weft-source</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.weft.weft-source</string>
+            <key>UTTypeDescription</key>
+            <string>WEFT Source File</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.plain-text</string>
+                <string>public.source-code</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>weft</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF

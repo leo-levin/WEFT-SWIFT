@@ -2,6 +2,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import SWeftLib
 
 struct ContentView: View {
@@ -19,9 +20,14 @@ struct ContentView: View {
         .onAppear {
             viewModel.loadExample(.gradient)
         }
+        .focusedSceneValue(\.viewModel, viewModel)
         .focusedSceneValue(\.showGraph, $showGraph)
         .focusedSceneValue(\.showErrors, $showErrors)
         .focusedSceneValue(\.showStats, $showStats)
+        .navigationTitle(viewModel.documentTitle)
+        .onOpenURL { url in
+            viewModel.loadFile(from: url)
+        }
     }
 
     // MARK: - Toolbar
@@ -459,7 +465,13 @@ enum WeftExample: CaseIterable {
 @MainActor
 class WeftViewModel: ObservableObject {
     @Published var coordinator = Coordinator()
-    @Published var sourceCode = ""
+    @Published var sourceCode = "" {
+        didSet {
+            if sourceCode != oldValue {
+                isDirty = true
+            }
+        }
+    }
     @Published var statusText = "Ready"
     @Published var errorMessage = ""
     @Published var compilationError = CompilationError(message: "", location: nil, codeContext: [])
@@ -468,6 +480,15 @@ class WeftViewModel: ObservableObject {
     @Published var isAudioPlaying = false
     @Published var hasError = false
     @Published var isRunning = false
+
+    // File state
+    @Published var currentFileURL: URL? = nil
+    @Published var isDirty: Bool = false
+
+    var documentTitle: String {
+        let filename = currentFileURL?.lastPathComponent ?? "Untitled"
+        return isDirty ? "\(filename) \u{2022}" : filename
+    }
 
     private let jsCompiler = WeftJSCompiler()
 
@@ -479,9 +500,95 @@ class WeftViewModel: ObservableObject {
         }
     }
 
+    // MARK: - File Operations
+
+    func newFile() {
+        stop()
+        sourceCode = ""
+        currentFileURL = nil
+        isDirty = false
+        errorMessage = ""
+        hasError = false
+        statusText = "Ready"
+    }
+
+    func openFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "weft")!]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose a WEFT file to open"
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                self?.loadFile(from: url)
+            }
+        }
+    }
+
+    func loadFile(from url: URL) {
+        do {
+            let content = try String(contentsOf: url, encoding: .utf8)
+            stop()
+            sourceCode = content
+            currentFileURL = url
+            isDirty = false
+            errorMessage = ""
+            hasError = false
+            statusText = "Ready"
+        } catch {
+            showFileError("Failed to open file: \(error.localizedDescription)")
+        }
+    }
+
+    func saveFile() {
+        if let url = currentFileURL {
+            writeFile(to: url)
+        } else {
+            saveFileAs()
+        }
+    }
+
+    func saveFileAs() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "weft")!]
+        panel.nameFieldStringValue = currentFileURL?.lastPathComponent ?? "Untitled.weft"
+        panel.message = "Save your WEFT file"
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                self?.writeFile(to: url)
+            }
+        }
+    }
+
+    private func writeFile(to url: URL) {
+        do {
+            try sourceCode.write(to: url, atomically: true, encoding: .utf8)
+            currentFileURL = url
+            isDirty = false
+        } catch {
+            showFileError("Failed to save file: \(error.localizedDescription)")
+        }
+    }
+
+    private func showFileError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "File Error"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     func loadExample(_ example: WeftExample) {
         stop()
         sourceCode = example.source
+        currentFileURL = nil
+        isDirty = false
         errorMessage = ""
         hasError = false
         compileAndRun()
