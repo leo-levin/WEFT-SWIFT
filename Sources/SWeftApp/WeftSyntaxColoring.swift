@@ -313,8 +313,8 @@ class WeftTokenizer {
         if isKeyword {
             // Keywords followed by . get strand accessor treatment for the dot
             return makeToken(type: .keyword, text: text, startOffset: startOffset)
-        } else if nextNonWhitespace == "." || nextNonWhitespace == "[" {
-            // Identifier followed by . or [ is a bundle name
+        } else if nextNonWhitespace == "." || nextNonWhitespace == "[" || nextNonWhitespace == "-" {
+            // Identifier followed by ., [, or -> is a bundle name
             return makeToken(type: .bundleName, text: text, startOffset: startOffset)
         } else {
             return makeToken(type: .identifier, text: text, startOffset: startOffset)
@@ -449,7 +449,7 @@ extension NSColor {
     static let weftIdentifier = NSColor(hex: "#9cdcfe")    // light blue
     static let weftBundle = NSColor(hex: "#569cd6")        // blue
     static let weftStrand = NSColor(hex: "#9cdcfe")        // lighter blue
-    static let weftChain = NSColor(hex: "#4fc1ff")         // cyan blue
+    static let weftChain = NSColor(hex: "#4ec9b0")         // teal
     static let weftOperator = NSColor(hex: "#d4d4d4")      // light gray
 }
 
