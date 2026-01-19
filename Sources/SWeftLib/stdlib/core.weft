@@ -1,0 +1,10 @@
+// WEFT Standard Library - Core
+// This is the main entry point for the standard library
+// It includes all standard modules
+
+#include "noise.weft"
+
+// Future modules can be added here:
+// #include "math.weft"
+// #include "color.weft"
+// #include "easing.weft"

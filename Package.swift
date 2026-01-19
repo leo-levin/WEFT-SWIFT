@@ -14,7 +14,10 @@ let package = Package(
         .target(
             name: "SWeftLib",
             dependencies: [],
-            path: "Sources/SWeftLib"
+            path: "Sources/SWeftLib",
+            resources: [
+                .copy("stdlib")
+            ]
         ),
         .executableTarget(
             name: "SWeftApp",
