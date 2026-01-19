@@ -118,6 +118,7 @@ struct ContentView: View {
     private var editorSection: some View {
         VStack(spacing: 0) {
             CodeEditor(text: $viewModel.sourceCode)
+                .id(viewModel.editorID)
                 .onChange(of: viewModel.sourceCode) { _, _ in
                     viewModel.hasError = false
                 }
@@ -484,6 +485,7 @@ class WeftViewModel: ObservableObject {
     // File state
     @Published var currentFileURL: URL? = nil
     @Published var isDirty: Bool = false
+    @Published var editorID = UUID()  // Changes to force editor refresh
 
     var documentTitle: String {
         let filename = currentFileURL?.lastPathComponent ?? "Untitled"
@@ -507,6 +509,7 @@ class WeftViewModel: ObservableObject {
         sourceCode = ""
         currentFileURL = nil
         isDirty = false
+        editorID = UUID()
         errorMessage = ""
         hasError = false
         statusText = "Ready"
@@ -535,6 +538,7 @@ class WeftViewModel: ObservableObject {
             sourceCode = content
             currentFileURL = url
             isDirty = false
+            editorID = UUID()
             errorMessage = ""
             hasError = false
             statusText = "Ready"
