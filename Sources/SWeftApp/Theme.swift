@@ -427,29 +427,33 @@ struct CompilationError {
         let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         // Try to extract line/col from error
-        let lineColPattern = /[Ll]ine\s+(\d+),?\s*[Cc]ol(?:umn)?\s+(\d+)/
         var location: Location? = nil
         var message = errorString
 
-        if let match = errorString.firstMatch(of: lineColPattern) {
-            if let line = Int(match.1), let col = Int(match.2) {
+        if let lineColPattern = try? NSRegularExpression(pattern: "[Ll]ine\\s+(\\d+),?\\s*[Cc]ol(?:umn)?\\s+(\\d+)"),
+           let match = lineColPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)) {
+            if let lineRange = Range(match.range(at: 1), in: errorString),
+               let colRange = Range(match.range(at: 2), in: errorString),
+               let line = Int(errorString[lineRange]),
+               let col = Int(errorString[colRange]) {
                 location = Location(line: line, column: col)
             }
         }
 
         // Also check for "at position X" style
-        if location == nil {
-            let posPattern = /at position (\d+)/
-            if let match = errorString.firstMatch(of: posPattern), let pos = Int(match.1) {
-                // Convert position to line/col
-                var charCount = 0
-                for (i, line) in lines.enumerated() {
-                    if charCount + line.count >= pos {
-                        location = Location(line: i + 1, column: pos - charCount + 1)
-                        break
-                    }
-                    charCount += line.count + 1 // +1 for newline
+        if location == nil,
+           let posPattern = try? NSRegularExpression(pattern: "at position (\\d+)"),
+           let match = posPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)),
+           let posRange = Range(match.range(at: 1), in: errorString),
+           let pos = Int(errorString[posRange]) {
+            // Convert position to line/col
+            var charCount = 0
+            for (i, line) in lines.enumerated() {
+                if charCount + line.count >= pos {
+                    location = Location(line: i + 1, column: pos - charCount + 1)
+                    break
                 }
+                charCount += line.count + 1 // +1 for newline
             }
         }
 
