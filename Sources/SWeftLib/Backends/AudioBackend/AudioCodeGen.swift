@@ -14,6 +14,9 @@ public class AudioCodeGen {
     /// Cache descriptors for audio domain
     private var cacheDescriptors: [CacheNodeDescriptor] = []
 
+    /// Loaded audio samples by resource ID
+    public var loadedSamples: [Int: AudioSampleBuffer] = [:]
+
     public init(program: IRProgram, swatch: Swatch, cacheManager: CacheManager? = nil) {
         self.program = program
         self.swatch = swatch
@@ -365,6 +368,37 @@ public class AudioCodeGen {
         case "camera", "texture":
             // Camera and texture not applicable to audio - return 0
             return { _ in 0.0 }
+
+        case "sample":
+            // sample(resourceId, offset, channel)
+            guard args.count >= 3 else {
+                return { _ in 0.0 }
+            }
+
+            // Get resource ID from first arg (must be static)
+            let resourceId: Int
+            if case .num(let rid) = args[0] {
+                resourceId = Int(rid)
+            } else {
+                return { _ in 0.0 }
+            }
+
+            // Get channel from third arg (must be static)
+            let channel: Int
+            if case .num(let ch) = args[2] {
+                channel = Int(ch)
+            } else {
+                channel = 0
+            }
+
+            let offsetEval = argEvals[1]
+            let samples = self.loadedSamples
+
+            return { ctx in
+                guard let buffer = samples[resourceId] else { return 0.0 }
+                let offset = Int(offsetEval(ctx))
+                return buffer.getSample(at: offset, channel: channel)
+            }
 
         // Universal input builtins
         case "mouse":

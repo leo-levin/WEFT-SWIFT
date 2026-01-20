@@ -11,12 +11,14 @@ public class MetalCompiledUnit: CompiledUnit {
     public let pipelineState: MTLComputePipelineState
     public let shaderSource: String
     public let usedInputs: Set<String>
+    public let usedTextureIds: Set<Int>
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = []) {
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = []) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
         self.usedInputs = usedInputs
+        self.usedTextureIds = usedTextureIds
     }
 }
 
@@ -80,6 +82,9 @@ public class MetalBackend: Backend {
     /// Audio buffer texture - for microphone/audio reactive visuals
     public var audioBufferTexture: MTLTexture?
 
+    /// Loaded textures by resource ID - set by TextureManager via Coordinator
+    public var loadedTextures: [Int: MTLTexture] = [:]
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw BackendError.deviceNotAvailable("Metal device not available")
@@ -137,10 +142,16 @@ public class MetalBackend: Backend {
         let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors)
         let shaderSource = try codegen.generate()
         var usedInputs = codegen.usedInputs()
+        let usedTextureIds = codegen.usedTextureIds()
 
         // Add "cache" to usedInputs if there are cache descriptors
         if codegen.usesCache() {
             usedInputs.insert("cache")
+        }
+
+        // Add "texture" to usedInputs if textures are used
+        if !usedTextureIds.isEmpty {
+            usedInputs.insert("texture")
         }
 
         // Debug: print generated shader
@@ -170,7 +181,8 @@ public class MetalBackend: Backend {
             swatchId: swatch.id,
             pipelineState: pipelineState,
             shaderSource: shaderSource,
-            usedInputs: usedInputs
+            usedInputs: usedInputs,
+            usedTextureIds: usedTextureIds
         )
     }
 
@@ -307,6 +319,14 @@ public class MetalBackend: Backend {
                         break
                     }
                 }
+            }
+        }
+
+        // Bind loaded textures for texture() builtin
+        for textureId in metalUnit.usedTextureIds {
+            if let tex = loadedTextures[textureId] {
+                let textureIndex = MetalCodeGen.textureBaseIndex + textureId
+                computeEncoder.setTexture(tex, index: textureIndex)
             }
         }
 

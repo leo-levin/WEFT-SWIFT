@@ -14,11 +14,76 @@ public class MetalCodeGen {
     /// Track which cache we're currently generating valueExpr for (to handle self-references)
     private var currentlyGeneratingCacheIndex: Int? = nil
 
+    /// Base texture index for loaded textures (camera=1, audio=2, textures start at 3)
+    public static let textureBaseIndex = 3
+
     public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = []) {
         self.program = program
         self.swatch = swatch
         // Filter to only visual domain caches
         self.cacheDescriptors = cacheDescriptors.filter { $0.domain == .visual }
+    }
+
+    /// Get set of texture resource IDs used in this swatch
+    public func usedTextureIds() -> Set<Int> {
+        var textureIds = Set<Int>()
+
+        for bundleName in swatch.bundles {
+            if let bundle = program.bundles[bundleName] {
+                for strand in bundle.strands {
+                    collectTextureIds(from: strand.expr, into: &textureIds)
+                }
+            }
+        }
+
+        return textureIds
+    }
+
+    /// Recursively collect texture resource IDs from an expression
+    private func collectTextureIds(from expr: IRExpr, into textureIds: inout Set<Int>) {
+        switch expr {
+        case .builtin(let name, let args) where name == "texture":
+            // texture(resourceId, u, v, channel) - extract resourceId
+            if args.count >= 1, case .num(let id) = args[0] {
+                textureIds.insert(Int(id))
+            }
+            // Also check args for nested texture calls
+            for arg in args {
+                collectTextureIds(from: arg, into: &textureIds)
+            }
+
+        case .builtin(_, let args):
+            for arg in args {
+                collectTextureIds(from: arg, into: &textureIds)
+            }
+
+        case .binaryOp(_, let left, let right):
+            collectTextureIds(from: left, into: &textureIds)
+            collectTextureIds(from: right, into: &textureIds)
+
+        case .unaryOp(_, let operand):
+            collectTextureIds(from: operand, into: &textureIds)
+
+        case .call(_, let args):
+            for arg in args {
+                collectTextureIds(from: arg, into: &textureIds)
+            }
+
+        case .extract(let call, _):
+            collectTextureIds(from: call, into: &textureIds)
+
+        case .remap(let base, let substitutions):
+            collectTextureIds(from: base, into: &textureIds)
+            for (_, sub) in substitutions {
+                collectTextureIds(from: sub, into: &textureIds)
+            }
+
+        case .index(_, let indexExpr):
+            collectTextureIds(from: indexExpr, into: &textureIds)
+
+        case .num, .param, .cacheRead:
+            break
+        }
     }
 
     /// Generate complete Metal shader source
@@ -112,6 +177,7 @@ public class MetalCodeGen {
 
         // Build shader params from used input bindings
         let usedInputNames = usedInputs()
+        let usedTextures = usedTextureIds()
         var extraParams = ""
         var needsSampler = false
 
@@ -127,6 +193,13 @@ public class MetalCodeGen {
                     needsSampler = true
                 }
             }
+        }
+
+        // Add texture parameters for loaded textures
+        for textureId in usedTextures.sorted() {
+            let textureIndex = MetalCodeGen.textureBaseIndex + textureId
+            extraParams += "\n    texture2d<float, access::sample> texture\(textureId) [[texture(\(textureIndex))]],"
+            needsSampler = true
         }
 
         if needsSampler {

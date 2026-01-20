@@ -35,6 +35,11 @@ public class Coordinator: CameraCaptureDelegate {
     // Managers
     public private(set) var bufferManager: BufferManager
     public private(set) var cacheManager: CacheManager
+    public private(set) var textureManager: TextureManager?
+    public private(set) var sampleManager: SampleManager?
+
+    // Source file URL for relative resource resolution
+    public var sourceFileURL: URL?
 
     // State
     public private(set) var time: Double = 0
@@ -108,6 +113,8 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Load IR from JSON file
     public func load(url: URL) throws {
+        // Store the source file URL for relative resource resolution
+        self.sourceFileURL = url
         let parser = IRParser()
         let program = try parser.parse(url: url)
         try load(program: program)
@@ -136,6 +143,25 @@ public class Coordinator: CameraCaptureDelegate {
                 if metalBackend == nil {
                     metalBackend = try MetalBackend()
                     bufferManager = BufferManager(metalDevice: metalBackend?.device)
+
+                    // Initialize texture manager
+                    if let device = metalBackend?.device {
+                        textureManager = TextureManager(device: device)
+                    }
+                }
+
+                // Load textures from program resources if any
+                if !program.resources.isEmpty, let texMgr = textureManager {
+                    do {
+                        let loadedTextures = try texMgr.loadTextures(
+                            resources: program.resources,
+                            sourceFileURL: sourceFileURL
+                        )
+                        metalBackend?.loadedTextures = loadedTextures
+                        print("Coordinator: Loaded \(loadedTextures.count) textures")
+                    } catch {
+                        print("Coordinator: Warning - texture loading failed: \(error)")
+                    }
                 }
 
                 // Always (re)allocate cache buffers when we have cache descriptors
@@ -170,6 +196,25 @@ public class Coordinator: CameraCaptureDelegate {
                 // Initialize Audio backend if needed
                 if audioBackend == nil {
                     audioBackend = AudioBackend()
+
+                    // Initialize sample manager
+                    sampleManager = SampleManager()
+                }
+
+                // Load audio samples from program resources if any
+                if !program.resources.isEmpty, let smpMgr = sampleManager {
+                    do {
+                        let loadedSamples = try smpMgr.loadSamples(
+                            resources: program.resources,
+                            sourceFileURL: sourceFileURL
+                        )
+                        audioBackend?.loadedSamples = loadedSamples
+                        if !loadedSamples.isEmpty {
+                            print("Coordinator: Loaded \(loadedSamples.count) audio samples")
+                        }
+                    } catch {
+                        print("Coordinator: Warning - sample loading failed: \(error)")
+                    }
                 }
 
                 // Pass cache manager to audio backend for shared buffer access
