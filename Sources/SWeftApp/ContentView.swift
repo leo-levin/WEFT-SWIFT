@@ -206,6 +206,20 @@ struct ContentView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                 Spacer()
+
+                Button {
+                    viewModel.browseForMissingResource()
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9))
+                        Text("Browse...")
+                            .font(.system(size: 10))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
                 Button {
                     viewModel.resourceWarning = nil
                 } label: {
@@ -227,7 +241,7 @@ struct ContentView: View {
                         Text(warning)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.primary)
-                        Text("Place files next to your .weft file, or save your file first to enable relative paths.")
+                        Text("Place files next to your .weft file, or use Browse to locate them.")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
@@ -775,6 +789,82 @@ class WeftViewModel: ObservableObject {
                 isAudioPlaying = true
             } catch {
                 errorMessage = "Audio error: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func browseForMissingResource() {
+        // Get the first missing resource to help determine file types
+        let hasImageErrors = coordinator.getTextureLoadErrors()?.isEmpty == false
+        let hasAudioErrors = coordinator.getSampleLoadErrors()?.isEmpty == false
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select the missing resource file"
+
+        // Set allowed types based on what's missing
+        var allowedTypes: [UTType] = []
+        if hasImageErrors {
+            allowedTypes.append(contentsOf: [.png, .jpeg, .heic, .tiff, .bmp, .gif])
+        }
+        if hasAudioErrors {
+            allowedTypes.append(contentsOf: [.wav, .aiff, .mp3, .audio])
+        }
+        if allowedTypes.isEmpty {
+            allowedTypes = [.png, .jpeg, .wav, .aiff, .mp3, .audio]
+        }
+        panel.allowedContentTypes = allowedTypes
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                // Get the filename to find which resource to replace
+                let filename = url.lastPathComponent
+
+                // Find and replace the path in source code
+                // Look for load("...") or sample("...") patterns
+                var newSource = self.sourceCode
+                let loadPattern = #"(load|sample|texture)\s*\(\s*"([^"]*)""#
+                if let regex = try? NSRegularExpression(pattern: loadPattern, options: []) {
+                    let range = NSRange(newSource.startIndex..., in: newSource)
+                    let matches = regex.matches(in: newSource, options: [], range: range)
+
+                    // Find a match that contains a file not found
+                    for match in matches.reversed() {
+                        if let pathRange = Range(match.range(at: 2), in: newSource) {
+                            let oldPath = String(newSource[pathRange])
+                            let oldFilename = (oldPath as NSString).lastPathComponent
+
+                            // If the old filename matches or this resource was missing, replace it
+                            if let texErrors = self.coordinator.getTextureLoadErrors(),
+                               texErrors.values.contains(where: { $0.path == oldPath }) {
+                                // Replace with full path
+                                newSource.replaceSubrange(pathRange, with: url.path)
+                                break
+                            } else if let smpErrors = self.coordinator.getSampleLoadErrors(),
+                                      smpErrors.values.contains(where: { $0.path == oldPath }) {
+                                newSource.replaceSubrange(pathRange, with: url.path)
+                                break
+                            } else if filename.lowercased().contains(oldFilename.lowercased()) ||
+                                        oldFilename.lowercased().contains(filename.lowercased()) {
+                                // Fuzzy match on filename
+                                newSource.replaceSubrange(pathRange, with: url.path)
+                                break
+                            }
+                        }
+                    }
+                }
+
+                // Update source and recompile
+                if newSource != self.sourceCode {
+                    self.sourceCode = newSource
+                }
+                self.compileAndRun()
             }
         }
     }
