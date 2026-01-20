@@ -61,14 +61,29 @@ private let BUILTINS: Set<String> = [
 
 private struct ResourceBuiltin {
     let width: Int
-    let argCount: Int
+    let minArgs: Int
+    let maxArgs: Int
+
+    init(width: Int, argCount: Int) {
+        self.width = width
+        self.minArgs = argCount
+        self.maxArgs = argCount
+    }
+
+    init(width: Int, minArgs: Int, maxArgs: Int) {
+        self.width = width
+        self.minArgs = minArgs
+        self.maxArgs = maxArgs
+    }
 }
 
 private let RESOURCE_BUILTINS: [String: ResourceBuiltin] = [
     "texture": ResourceBuiltin(width: 3, argCount: 3),
     "camera": ResourceBuiltin(width: 3, argCount: 2),
     "microphone": ResourceBuiltin(width: 2, argCount: 1),
-    "mouse": ResourceBuiltin(width: 3, argCount: 0)  // Returns [x, y, down]
+    "mouse": ResourceBuiltin(width: 3, argCount: 0),  // Returns [x, y, down]
+    "load": ResourceBuiltin(width: 3, minArgs: 1, maxArgs: 3),  // load(path) or load(path, u, v)
+    "sample": ResourceBuiltin(width: 2, minArgs: 1, maxArgs: 2)  // sample(path) or sample(path, offset)
 ]
 
 private let ME_STRANDS: [String: Int] = [
@@ -641,8 +656,13 @@ public class WeftLowering {
             throw LoweringError.unknownSpindle(name)
         }
 
-        if args.count != spec.argCount {
-            throw LoweringError.invalidExpression("\(name)() expects \(spec.argCount) args, got \(args.count)")
+        // Check arg count is in valid range
+        if args.count < spec.minArgs || args.count > spec.maxArgs {
+            if spec.minArgs == spec.maxArgs {
+                throw LoweringError.invalidExpression("\(name)() expects \(spec.minArgs) args, got \(args.count)")
+            } else {
+                throw LoweringError.invalidExpression("\(name)() expects \(spec.minArgs)-\(spec.maxArgs) args, got \(args.count)")
+            }
         }
 
         if spec.width != width {
@@ -682,6 +702,67 @@ public class WeftLowering {
 
             return (0..<spec.width).map { channel in
                 .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
+            }
+
+        case "load":
+            // load(path) uses me.x, me.y as default UVs
+            // load(path, u, v) uses specified UVs
+            guard case .string(let path) = args[0] else {
+                throw LoweringError.invalidExpression("load() first argument must be a string literal")
+            }
+
+            let resourceId: Int
+            if let existing = resourceIndex[path] {
+                resourceId = existing
+            } else {
+                resourceId = resources.count
+                resources.append(path)
+                resourceIndex[path] = resourceId
+            }
+
+            // Determine UV coordinates
+            let u: IRExpr
+            let v: IRExpr
+            if args.count >= 3 {
+                u = try lowerExpr(args[1], subs: subs)
+                v = try lowerExpr(args[2], subs: subs)
+            } else {
+                // Default to me.x, me.y
+                u = .index(bundle: "me", indexExpr: .param("x"))
+                v = .index(bundle: "me", indexExpr: .param("y"))
+            }
+
+            return (0..<spec.width).map { channel in
+                .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
+            }
+
+        case "sample":
+            // sample(path) uses me.i as default offset
+            // sample(path, offset) uses specified offset
+            guard case .string(let path) = args[0] else {
+                throw LoweringError.invalidExpression("sample() first argument must be a string literal")
+            }
+
+            let resourceId: Int
+            if let existing = resourceIndex[path] {
+                resourceId = existing
+            } else {
+                resourceId = resources.count
+                resources.append(path)
+                resourceIndex[path] = resourceId
+            }
+
+            // Determine sample offset
+            let offset: IRExpr
+            if args.count >= 2 {
+                offset = try lowerExpr(args[1], subs: subs)
+            } else {
+                // Default to me.i (sample index)
+                offset = .index(bundle: "me", indexExpr: .param("i"))
+            }
+
+            return (0..<spec.width).map { channel in
+                .builtin(name: "sample", args: [.num(Double(resourceId)), offset, .num(Double(channel))])
             }
 
         case "mouse":

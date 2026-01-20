@@ -19,8 +19,8 @@ public class AudioCompiledUnit: CompiledUnit {
 
 public class AudioBackend: Backend {
     public static let identifier = "audio"
-    public static let ownedBuiltins: Set<String> = ["microphone"]
-    public static let externalBuiltins: Set<String> = ["microphone"]
+    public static let ownedBuiltins: Set<String> = ["microphone", "sample"]
+    public static let externalBuiltins: Set<String> = ["microphone", "sample"]
     public static let statefulBuiltins: Set<String> = ["cache"]
     public static let coordinateFields = ["i", "t", "sampleRate"]
 
@@ -45,6 +45,9 @@ public class AudioBackend: Backend {
     private var sampleIndex: Int = 0
     private var startTime: Double = 0
 
+    /// Loaded audio samples by resource ID - set by SampleManager via Coordinator
+    public var loadedSamples: [Int: AudioSampleBuffer] = [:]
+
     public init() {}
 
     /// Compile swatch to audio render function (without cache support)
@@ -55,6 +58,10 @@ public class AudioBackend: Backend {
     /// Compile swatch to audio render function with cache manager
     public func compile(swatch: Swatch, ir: IRProgram, cacheManager: CacheManager?) throws -> CompiledUnit {
         let codegen = AudioCodeGen(program: ir, swatch: swatch, cacheManager: cacheManager)
+
+        // Pass loaded samples to codegen
+        codegen.loadedSamples = loadedSamples
+
         let renderFunction = try codegen.generateRenderFunction()
 
         print("Audio backend compiled successfully")

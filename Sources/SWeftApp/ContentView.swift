@@ -178,6 +178,13 @@ struct ContentView: View {
                     viewModel.hasError = false
                 }
 
+            // Resource warning panel
+            if viewModel.resourceWarning != nil && showErrors {
+                SubtleDivider(.horizontal)
+                resourceWarningPanel
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             // Error panel
             if viewModel.hasError && showErrors {
                 SubtleDivider(.horizontal)
@@ -186,6 +193,64 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: viewModel.hasError && showErrors)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.resourceWarning != nil)
+    }
+
+    private var resourceWarningPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                Text("Resource Warning")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+
+                Button {
+                    viewModel.browseForMissingResource()
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9))
+                        Text("Browse...")
+                            .font(.system(size: 10))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    viewModel.resourceWarning = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+            .background(Color.orange.opacity(0.1))
+
+            SubtleDivider(.horizontal)
+
+            ScrollView {
+                if let warning = viewModel.resourceWarning {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(warning)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.primary)
+                        Text("Place files next to your .weft file, or use Browse to locate them.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Spacing.sm)
+                }
+            }
+            .frame(maxHeight: 100)
+        }
     }
 
     private var errorPanel: some View {
@@ -334,34 +399,24 @@ struct GraphView: View {
             return
         }
 
-        // Build dependency graph
-        var deps: [String: Set<String>] = [:]
-        for (name, bundle) in program.bundles {
-            var bundleDeps = Set<String>()
-            for strand in bundle.strands {
-                for fv in strand.expr.freeVars() {
-                    let parts = fv.split(separator: ".")
-                    if let first = parts.first {
-                        let depName = String(first)
-                        if depName != name && depName != "me" && program.bundles[depName] != nil {
-                            bundleDeps.insert(depName)
-                        }
-                    }
-                }
-            }
-            deps[name] = bundleDeps
-        }
+        // Use coordinator's dependency graph (already has cycle handling)
+        let deps = coordinator.dependencyGraph?.dependencies ?? [:]
 
-        // Assign layers via longest path (sinks at right)
+        // Compute layers using topological sort order
         var layers: [String: Int] = [:]
-        func computeLayer(_ name: String) -> Int {
-            if let l = layers[name] { return l }
-            let myDeps = deps[name] ?? []
-            let layer = myDeps.isEmpty ? 0 : (myDeps.map { computeLayer($0) }.max() ?? 0) + 1
-            layers[name] = layer
-            return layer
+        if let sortedNodes = coordinator.dependencyGraph?.topologicalSort() {
+            // Assign layers based on topological order
+            for name in sortedNodes {
+                let myDeps = deps[name] ?? []
+                let layer = myDeps.isEmpty ? 0 : (myDeps.compactMap { layers[$0] }.max() ?? 0) + 1
+                layers[name] = layer
+            }
+        } else {
+            // Fallback: no valid sort (has cycles), just assign layer 0 to all
+            for name in program.bundles.keys {
+                layers[name] = 0
+            }
         }
-        for name in program.bundles.keys { _ = computeLayer(name) }
 
         // Group by layer
         var layerGroups: [Int: [String]] = [:]
@@ -536,6 +591,7 @@ class WeftViewModel: ObservableObject {
     @Published var isAudioPlaying = false
     @Published var hasError = false
     @Published var isRunning = false
+    @Published var resourceWarning: String? = nil
 
     // Dev mode state - increments on each compile to trigger view refresh
     @Published var compilationVersion = 0
@@ -667,6 +723,7 @@ class WeftViewModel: ObservableObject {
     func compileAndRun() {
         errorMessage = ""
         hasError = false
+        resourceWarning = nil
         statusText = "Compiling..."
         RenderStats.shared.reset()
 
@@ -674,13 +731,22 @@ class WeftViewModel: ObservableObject {
             // Use native Swift compiler
             let program = try compiler.compile(sourceCode)
 
+            // Set source file URL for relative resource resolution
+            coordinator.sourceFileURL = currentFileURL
+
             try coordinator.load(program: program)
+
+            // Check for resource loading errors
+            if let resourceErrors = coordinator.getResourceErrorMessage() {
+                resourceWarning = resourceErrors
+                print("Resource warnings:\n\(resourceErrors)")
+            }
 
             hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == .visual } ?? false
             hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == .audio } ?? false
 
             isRunning = true
-            statusText = "Running"
+            statusText = resourceWarning != nil ? "Running (with warnings)" : "Running"
             compilationVersion += 1  // Trigger dev mode refresh
 
             if hasAudio && !isAudioPlaying {
@@ -713,6 +779,83 @@ class WeftViewModel: ObservableObject {
                 isAudioPlaying = true
             } catch {
                 errorMessage = "Audio error: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func browseForMissingResource() {
+        // Get the first missing resource to help determine file types
+        let hasImageErrors = coordinator.getTextureLoadErrors()?.isEmpty == false
+        let hasAudioErrors = coordinator.getSampleLoadErrors()?.isEmpty == false
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select the missing resource file"
+
+        // Set allowed types based on what's missing
+        var allowedTypes: [UTType] = []
+        if hasImageErrors {
+            allowedTypes.append(contentsOf: [.png, .jpeg, .heic, .tiff, .bmp, .gif])
+        }
+        if hasAudioErrors {
+            allowedTypes.append(contentsOf: [.wav, .aiff, .mp3, .audio])
+        }
+        if allowedTypes.isEmpty {
+            allowedTypes = [.png, .jpeg, .wav, .aiff, .mp3, .audio]
+        }
+        panel.allowedContentTypes = allowedTypes
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                // Get the filename to find which resource to replace
+                let filename = url.lastPathComponent
+
+                // Find and replace the path in source code
+                // Look for load("...") or sample("...") patterns
+                var newSource = self.sourceCode
+                let loadPattern = #"(load|sample|texture)\s*\(\s*"([^"]*)""#
+                if let regex = try? NSRegularExpression(pattern: loadPattern, options: []) {
+                    let range = NSRange(newSource.startIndex..., in: newSource)
+                    let matches = regex.matches(in: newSource, options: [], range: range)
+
+                    // Find a match that contains a file not found
+                    for match in matches.reversed() {
+                        if let pathRange = Range(match.range(at: 2), in: newSource) {
+                            let oldPath = String(newSource[pathRange])
+                            let oldFilename = (oldPath as NSString).lastPathComponent
+
+                            // If the old filename matches or this resource was missing, replace it
+                            if let texErrors = self.coordinator.getTextureLoadErrors(),
+                               texErrors.values.contains(where: { $0.path == oldPath }) {
+                                // Replace with full path
+                                newSource.replaceSubrange(pathRange, with: url.path)
+                                break
+                            } else if let smpErrors = self.coordinator.getSampleLoadErrors(),
+                                      smpErrors.values.contains(where: { $0.path == oldPath }) {
+                                newSource.replaceSubrange(pathRange, with: url.path)
+                                break
+                            } else if filename.lowercased().contains(oldFilename.lowercased()) ||
+                                        oldFilename.lowercased().contains(filename.lowercased()) {
+                                // Fuzzy match on filename
+                                newSource.replaceSubrange(pathRange, with: url.path)
+                                break
+                            }
+                        }
+                    }
+                }
+
+                // Update source and recompile
+                if newSource != self.sourceCode {
+                    self.sourceCode = newSource
+                    self.editorID = UUID()  // Force editor refresh
+                }
+                self.compileAndRun()
             }
         }
     }
