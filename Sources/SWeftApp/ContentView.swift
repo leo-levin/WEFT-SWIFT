@@ -853,6 +853,7 @@ class WeftViewModel: ObservableObject {
                 // Update source and recompile
                 if newSource != self.sourceCode {
                     self.sourceCode = newSource
+                    self.editorID = UUID()  // Force editor refresh
                 }
                 self.compileAndRun()
             }
