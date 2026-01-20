@@ -122,5 +122,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
+# Ad-hoc code sign the app (allows running without "damaged" errors)
+echo "Code signing app bundle..."
+codesign --force --deep --sign - "$APP_BUNDLE"
+
 echo "Done! App bundle created at: $APP_BUNDLE"
 echo "You can double-click it or run: open $APP_BUNDLE"
+echo ""
+echo "Note: Recipients may need to run: xattr -cr $APP_BUNDLE"

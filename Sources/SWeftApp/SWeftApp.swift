@@ -19,6 +19,7 @@ struct SWeftApp: App {
         .commands {
             FileCommands()
             PanelCommands()
+            HelpCommands()
         }
     }
 }
@@ -118,6 +119,20 @@ struct PanelCommands: Commands {
                     set: { showDevMode = $0 }
                 ))
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+            }
+        }
+    }
+}
+
+// MARK: - Help Commands (Help Menu)
+
+struct HelpCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("WEFT Documentation") {
+                if let url = URL(string: "https://weft.notion.site") {
+                    NSWorkspace.shared.open(url)
+                }
             }
         }
     }
