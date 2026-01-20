@@ -16,6 +16,31 @@ public enum WeftStdlib {
 
     /// URL to the stdlib directory in the bundle (for "View Stdlib" menu)
     public static var directoryURL: URL? {
-        Bundle.module.url(forResource: "stdlib", withExtension: nil)
+        findStdlibURL()
+    }
+
+    /// Find stdlib URL - checks multiple locations for .app bundle compatibility
+    static func findStdlibURL() -> URL? {
+        // Try the resource bundle inside .app (for distributed app)
+        if let resourceBundle = Bundle.main.url(forResource: "SWeft_SWeftLib", withExtension: "bundle"),
+           let bundle = Bundle(url: resourceBundle),
+           let url = bundle.url(forResource: "stdlib", withExtension: nil) {
+            return url
+        }
+
+        // Try Bundle.main directly (for some bundle configurations)
+        if let url = Bundle.main.url(forResource: "stdlib", withExtension: nil) {
+            return url
+        }
+
+        // For SPM development builds, try Bundle.module
+        // Only safe to access if we're not in an app bundle (Bundle.main has no bundlePath ending in .app)
+        if !Bundle.main.bundlePath.hasSuffix(".app") {
+            if let url = Bundle.module.url(forResource: "stdlib", withExtension: nil) {
+                return url
+            }
+        }
+
+        return nil
     }
 }

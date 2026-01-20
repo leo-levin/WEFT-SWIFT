@@ -52,7 +52,7 @@ public class WeftCompiler {
     public init() {
         self.preprocessor = WeftPreprocessor()
         // Set up stdlib path from bundle resources if available
-        if let stdlibURL = Bundle.module.url(forResource: "stdlib", withExtension: nil) {
+        if let stdlibURL = WeftStdlib.directoryURL {
             preprocessor.stdlibPath = stdlibURL.path
         }
     }
