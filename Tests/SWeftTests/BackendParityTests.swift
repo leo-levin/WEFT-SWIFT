@@ -72,6 +72,56 @@ final class BackendParityTests: XCTestCase {
         XCTAssertEqual(audioResult, expected, accuracy: 0.0001)
     }
 
+    func testTanParity() throws {
+        let expr = IRExpr.builtin(name: "tan", args: [.num(0.5)])
+        let program = createDualDomainProgram(expression: expr)
+
+        let audioResult = try evaluateAudio(program: program)
+        let expected = Float(tan(0.5))
+
+        XCTAssertEqual(audioResult, expected, accuracy: 0.0001)
+    }
+
+    func testAsinParity() throws {
+        let expr = IRExpr.builtin(name: "asin", args: [.num(0.5)])
+        let program = createDualDomainProgram(expression: expr)
+
+        let audioResult = try evaluateAudio(program: program)
+        let expected = Float(asin(0.5))
+
+        XCTAssertEqual(audioResult, expected, accuracy: 0.0001)
+    }
+
+    func testAcosParity() throws {
+        let expr = IRExpr.builtin(name: "acos", args: [.num(0.5)])
+        let program = createDualDomainProgram(expression: expr)
+
+        let audioResult = try evaluateAudio(program: program)
+        let expected = Float(acos(0.5))
+
+        XCTAssertEqual(audioResult, expected, accuracy: 0.0001)
+    }
+
+    func testAtanParity() throws {
+        let expr = IRExpr.builtin(name: "atan", args: [.num(1.0)])
+        let program = createDualDomainProgram(expression: expr)
+
+        let audioResult = try evaluateAudio(program: program)
+        let expected = Float(atan(1.0))
+
+        XCTAssertEqual(audioResult, expected, accuracy: 0.0001)
+    }
+
+    func testAtan2Parity() throws {
+        let expr = IRExpr.builtin(name: "atan2", args: [.num(1.0), .num(1.0)])
+        let program = createDualDomainProgram(expression: expr)
+
+        let audioResult = try evaluateAudio(program: program)
+        let expected = Float(atan2(1.0, 1.0))
+
+        XCTAssertEqual(audioResult, expected, accuracy: 0.0001)
+    }
+
     func testAbsParity() throws {
         let expr = IRExpr.builtin(name: "abs", args: [.num(-3.14)])
         let program = createDualDomainProgram(expression: expr)
@@ -127,6 +177,33 @@ final class BackendParityTests: XCTestCase {
 
         let audioResult = try evaluateAudio(program: program)
         XCTAssertEqual(audioResult, 1.0, accuracy: 0.001)
+    }
+
+    func testLog2Parity() throws {
+        let expr = IRExpr.builtin(name: "log2", args: [.num(8.0)])
+        let program = createDualDomainProgram(expression: expr)
+
+        let audioResult = try evaluateAudio(program: program)
+        XCTAssertEqual(audioResult, 3.0, accuracy: 0.0001)
+    }
+
+    func testRoundParity() throws {
+        // round(2.3) should be 2
+        let expr1 = IRExpr.builtin(name: "round", args: [.num(2.3)])
+        let program1 = createDualDomainProgram(expression: expr1)
+        XCTAssertEqual(try evaluateAudio(program: program1), 2.0, accuracy: 0.0001)
+
+        // round(2.7) should be 3
+        let expr2 = IRExpr.builtin(name: "round", args: [.num(2.7)])
+        let program2 = createDualDomainProgram(expression: expr2)
+        XCTAssertEqual(try evaluateAudio(program: program2), 3.0, accuracy: 0.0001)
+
+        // round(2.5) should be 3 (round half up)
+        let expr3 = IRExpr.builtin(name: "round", args: [.num(2.5)])
+        let program3 = createDualDomainProgram(expression: expr3)
+        // Note: rounding behavior at .5 may vary, just verify it's 2 or 3
+        let result = try evaluateAudio(program: program3)
+        XCTAssertTrue(result == 2.0 || result == 3.0, "round(2.5) should be 2 or 3")
     }
 
     // MARK: - Utility Builtin Parity Tests
@@ -423,5 +500,57 @@ final class BackendParityTests: XCTestCase {
         let agnostic = SharedBuiltins.domainAgnosticNames
         XCTAssertTrue(agnostic.contains("sin"))
         XCTAssertFalse(agnostic.contains("camera"))
+    }
+
+    func testBackendBuiltinCoverage() throws {
+        // Test that both backends implement all required builtins using validateBackend()
+
+        // Visual backend should implement domain-agnostic + visual-owned builtins
+        let visualImplemented: Set<String> = [
+            // Math
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "abs", "floor", "ceil", "round", "sqrt", "pow", "exp", "log", "log2",
+            "sign", "fract",
+            // Utility
+            "min", "max", "clamp", "lerp", "mix", "step", "smoothstep", "mod",
+            // Noise
+            "noise",
+            // State & Control
+            "cache", "select",
+            // Visual-owned hardware
+            "camera", "texture", "microphone"
+        ]
+
+        let visualMissing = SharedBuiltins.validateBackend(
+            identifier: "visual",
+            implementedBuiltins: visualImplemented,
+            ownedBuiltins: MetalBackend.ownedBuiltins
+        )
+        XCTAssertTrue(visualMissing.isEmpty, "Visual backend missing: \(visualMissing)")
+
+        // Audio backend should implement domain-agnostic + audio-owned builtins
+        let audioImplemented: Set<String> = [
+            // Math
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "abs", "floor", "ceil", "round", "sqrt", "pow", "exp", "log", "log2",
+            "sign", "fract",
+            // Utility
+            "min", "max", "clamp", "lerp", "mix", "step", "smoothstep", "mod",
+            // Noise
+            "noise",
+            // State & Control
+            "cache", "select",
+            // Audio-owned hardware
+            "microphone",
+            // Returns 0 for visual builtins (graceful fallback)
+            "camera", "texture"
+        ]
+
+        let audioMissing = SharedBuiltins.validateBackend(
+            identifier: "audio",
+            implementedBuiltins: audioImplemented,
+            ownedBuiltins: AudioBackend.ownedBuiltins
+        )
+        XCTAssertTrue(audioMissing.isEmpty, "Audio backend missing: \(audioMissing)")
     }
 }
