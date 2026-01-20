@@ -1,0 +1,94 @@
+// WEFT Standard Library - Input/Output
+// Friendly wrappers for mouse and keyboard input
+
+// === MOUSE ===
+// Internal: capture mouse state as bundle
+_mouse[x, y, down] = mouse()
+
+// Public: convenient access to mouse state
+mouse.x = _mouse.x         // Normalized X position (0 = left, 1 = right)
+mouse.y = _mouse.y         // Normalized Y position (0 = bottom, 1 = top)
+mouse.down = _mouse.down   // Button state (0 = up, 1 = down)
+
+// === KEYBOARD ===
+// Common keys by name
+// Note: Key codes are macOS virtual key codes
+
+// Arrow keys
+keys.left = key(123)
+keys.right = key(124)
+keys.down = key(125)
+keys.up = key(126)
+
+// Modifiers
+keys.shift = key(56)
+keys.ctrl = key(59)
+keys.control = key(59)
+keys.alt = key(58)
+keys.option = key(58)
+keys.cmd = key(55)
+keys.command = key(55)
+
+// Common keys
+keys.space = key(49)
+keys.enter = key(36)
+keys.return = key(36)
+keys.escape = key(53)
+keys.esc = key(53)
+keys.tab = key(48)
+keys.delete = key(51)
+keys.backspace = key(51)
+
+// Letters (macOS key codes)
+keys.a = key(0)
+keys.b = key(11)
+keys.c = key(8)
+keys.d = key(2)
+keys.e = key(14)
+keys.f = key(3)
+keys.g = key(5)
+keys.h = key(4)
+keys.i = key(34)
+keys.j = key(38)
+keys.k = key(40)
+keys.l = key(37)
+keys.m = key(46)
+keys.n = key(45)
+keys.o = key(31)
+keys.p = key(35)
+keys.q = key(12)
+keys.r = key(15)
+keys.s = key(1)
+keys.t = key(17)
+keys.u = key(32)
+keys.v = key(9)
+keys.w = key(13)
+keys.x = key(7)
+keys.y = key(16)
+keys.z = key(6)
+
+// Numbers (top row, macOS key codes)
+keys.n0 = key(29)
+keys.n1 = key(18)
+keys.n2 = key(19)
+keys.n3 = key(20)
+keys.n4 = key(21)
+keys.n5 = key(23)
+keys.n6 = key(22)
+keys.n7 = key(26)
+keys.n8 = key(28)
+keys.n9 = key(25)
+
+// Function keys
+keys.f1 = key(122)
+keys.f2 = key(120)
+keys.f3 = key(99)
+keys.f4 = key(118)
+keys.f5 = key(96)
+keys.f6 = key(97)
+keys.f7 = key(98)
+keys.f8 = key(100)
+keys.f9 = key(101)
+keys.f10 = key(109)
+keys.f11 = key(103)
+keys.f12 = key(111)

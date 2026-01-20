@@ -26,6 +26,10 @@ public struct MetalUniforms {
     var time: Float
     var width: Float
     var height: Float
+    var mouseX: Float
+    var mouseY: Float
+    var mouseDown: Float
+    var _padding: Float = 0  // Padding for alignment
 }
 
 // MARK: - Metal Backend
@@ -65,6 +69,7 @@ public class MetalBackend: Backend {
     public let commandQueue: MTLCommandQueue
     private var outputTexture: MTLTexture?
     private var uniformBuffer: MTLBuffer?
+    private var keyStateBuffer: MTLBuffer?
     private var samplerState: MTLSamplerState?
     public var width: Int = 512
     public var height: Int = 512
@@ -88,6 +93,9 @@ public class MetalBackend: Backend {
 
         // Create uniform buffer
         self.uniformBuffer = device.makeBuffer(length: MemoryLayout<MetalUniforms>.stride, options: .storageModeShared)
+
+        // Create key state buffer (256 floats for key states)
+        self.keyStateBuffer = device.makeBuffer(length: 256 * MemoryLayout<Float>.stride, options: .storageModeShared)
 
         // Create sampler state for texture sampling
         let samplerDescriptor = MTLSamplerDescriptor()
@@ -183,18 +191,34 @@ public class MetalBackend: Backend {
         }
         guard let texture = outputTexture else { return }
 
-        // Update uniforms
+        // Get current input state
+        let mouseState = InputState.shared.getMouseState()
+
+        // Update uniforms including input state
         var uniforms = MetalUniforms(
             time: Float(time),
             width: Float(width),
-            height: Float(height)
+            height: Float(height),
+            mouseX: mouseState.x,
+            mouseY: mouseState.y,
+            mouseDown: mouseState.down
         )
         uniformBuffer?.contents().copyMemory(from: &uniforms, byteCount: MemoryLayout<MetalUniforms>.stride)
+
+        // Update key state buffer
+        if let keyBuffer = keyStateBuffer {
+            InputState.shared.copyKeyStates(to: keyBuffer.contents().assumingMemoryBound(to: Float.self))
+        }
 
         // Configure compute encoder
         computeEncoder.setComputePipelineState(metalUnit.pipelineState)
         computeEncoder.setTexture(texture, index: 0)
         computeEncoder.setBuffer(uniformBuffer, offset: 0, index: 0)
+
+        // Bind key state buffer (always at index 1 for input)
+        if metalUnit.usedInputs.contains("key") {
+            computeEncoder.setBuffer(keyStateBuffer, offset: 0, index: 1)
+        }
 
         // Dispatch
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
@@ -237,18 +261,34 @@ public class MetalBackend: Backend {
 
         let texture = drawable.texture
 
-        // Update uniforms
+        // Get current input state
+        let mouseState = InputState.shared.getMouseState()
+
+        // Update uniforms including input state
         var uniforms = MetalUniforms(
             time: Float(time),
             width: Float(texture.width),
-            height: Float(texture.height)
+            height: Float(texture.height),
+            mouseX: mouseState.x,
+            mouseY: mouseState.y,
+            mouseDown: mouseState.down
         )
         uniformBuffer?.contents().copyMemory(from: &uniforms, byteCount: MemoryLayout<MetalUniforms>.stride)
+
+        // Update key state buffer
+        if let keyBuffer = keyStateBuffer {
+            InputState.shared.copyKeyStates(to: keyBuffer.contents().assumingMemoryBound(to: Float.self))
+        }
 
         // Configure compute encoder
         computeEncoder.setComputePipelineState(metalUnit.pipelineState)
         computeEncoder.setTexture(texture, index: 0)
         computeEncoder.setBuffer(uniformBuffer, offset: 0, index: 0)
+
+        // Bind key state buffer if needed (always at index 1)
+        if metalUnit.usedInputs.contains("key") {
+            computeEncoder.setBuffer(keyStateBuffer, offset: 0, index: 1)
+        }
 
         // Bind textures for used inputs (derived from bindings)
         for binding in MetalBackend.bindings {

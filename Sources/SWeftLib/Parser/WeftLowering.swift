@@ -56,7 +56,7 @@ public enum LoweringError: Error, LocalizedError {
 private let BUILTINS: Set<String> = [
     "sin", "cos", "tan", "abs", "floor", "ceil", "sqrt", "pow",
     "min", "max", "lerp", "clamp", "step", "smoothstep", "fract", "mod",
-    "osc", "cache"
+    "osc", "cache", "key"
 ]
 
 private struct ResourceBuiltin {
@@ -67,7 +67,8 @@ private struct ResourceBuiltin {
 private let RESOURCE_BUILTINS: [String: ResourceBuiltin] = [
     "texture": ResourceBuiltin(width: 3, argCount: 3),
     "camera": ResourceBuiltin(width: 3, argCount: 2),
-    "microphone": ResourceBuiltin(width: 2, argCount: 1)
+    "microphone": ResourceBuiltin(width: 2, argCount: 1),
+    "mouse": ResourceBuiltin(width: 3, argCount: 0)  // Returns [x, y, down]
 ]
 
 private let ME_STRANDS: [String: Int] = [
@@ -681,6 +682,12 @@ public class WeftLowering {
 
             return (0..<spec.width).map { channel in
                 .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
+            }
+
+        case "mouse":
+            // mouse() returns [x, y, down] - channel 0=x, 1=y, 2=down
+            return (0..<spec.width).map { channel in
+                .builtin(name: "mouse", args: [.num(Double(channel))])
             }
 
         default:
