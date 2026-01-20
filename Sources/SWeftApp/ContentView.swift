@@ -399,34 +399,24 @@ struct GraphView: View {
             return
         }
 
-        // Build dependency graph
-        var deps: [String: Set<String>] = [:]
-        for (name, bundle) in program.bundles {
-            var bundleDeps = Set<String>()
-            for strand in bundle.strands {
-                for fv in strand.expr.freeVars() {
-                    let parts = fv.split(separator: ".")
-                    if let first = parts.first {
-                        let depName = String(first)
-                        if depName != name && depName != "me" && program.bundles[depName] != nil {
-                            bundleDeps.insert(depName)
-                        }
-                    }
-                }
-            }
-            deps[name] = bundleDeps
-        }
+        // Use coordinator's dependency graph (already has cycle handling)
+        let deps = coordinator.dependencyGraph?.dependencies ?? [:]
 
-        // Assign layers via longest path (sinks at right)
+        // Compute layers using topological sort order
         var layers: [String: Int] = [:]
-        func computeLayer(_ name: String) -> Int {
-            if let l = layers[name] { return l }
-            let myDeps = deps[name] ?? []
-            let layer = myDeps.isEmpty ? 0 : (myDeps.map { computeLayer($0) }.max() ?? 0) + 1
-            layers[name] = layer
-            return layer
+        if let sortedNodes = coordinator.dependencyGraph?.topologicalSort() {
+            // Assign layers based on topological order
+            for name in sortedNodes {
+                let myDeps = deps[name] ?? []
+                let layer = myDeps.isEmpty ? 0 : (myDeps.compactMap { layers[$0] }.max() ?? 0) + 1
+                layers[name] = layer
+            }
+        } else {
+            // Fallback: no valid sort (has cycles), just assign layer 0 to all
+            for name in program.bundles.keys {
+                layers[name] = 0
+            }
         }
-        for name in program.bundles.keys { _ = computeLayer(name) }
 
         // Group by layer
         var layerGroups: [Int: [String]] = [:]
