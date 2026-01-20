@@ -32,6 +32,10 @@ public class MetalCodeGen {
             float time;
             float width;
             float height;
+            float mouseX;
+            float mouseY;
+            float mouseDown;
+            float _padding;
         };
 
         """
@@ -68,8 +72,14 @@ public class MetalCodeGen {
             }
         }
 
-        // Return intersection of input bindings and used builtins
-        return usedBuiltins.intersection(inputNames)
+        // Start with intersection of input bindings and used builtins
+        var result = usedBuiltins.intersection(inputNames)
+
+        // Also include universal input builtins (mouse, key)
+        let universalInputs: Set<String> = ["mouse", "key"]
+        result.formUnion(usedBuiltins.intersection(universalInputs))
+
+        return result
     }
 
     /// Check if program uses cache
@@ -129,6 +139,11 @@ public class MetalCodeGen {
             let signalIdx = CacheNodeDescriptor.shaderSignalBufferIndex(cachePosition: i)
             extraParams += "\n    device float* cache\(i)_history [[buffer(\(historyIdx))]],"
             extraParams += "\n    device float* cache\(i)_signal [[buffer(\(signalIdx))]],"
+        }
+
+        // Add key state buffer parameter if key() builtin is used
+        if usedInputNames.contains("key") {
+            extraParams += "\n    device float* keyStates [[buffer(1)]],"
         }
 
         // Generate cache helper code if needed
@@ -500,6 +515,34 @@ public class MetalCodeGen {
                 micChannelName = "r"
             }
             return "audioBuffer.sample(textureSampler, float2(\(offsetCode), 0.5)).\(micChannelName)"
+
+        // Universal input builtins
+        case "mouse":
+            // mouse(channel) - returns x, y, or down based on channel
+            // channel 0 = x, channel 1 = y, channel 2 = down
+            guard args.count >= 1 else {
+                throw BackendError.unsupportedExpression("mouse requires 1 argument: channel")
+            }
+            let channel = args[0]
+            if case .num(let ch) = channel {
+                switch Int(ch) {
+                case 0: return "uniforms.mouseX"
+                case 1: return "uniforms.mouseY"
+                case 2: return "uniforms.mouseDown"
+                default: return "uniforms.mouseX"
+                }
+            }
+            // Dynamic channel access (rare case)
+            return "(\(argCodes[0]) < 1.0 ? uniforms.mouseX : (\(argCodes[0]) < 2.0 ? uniforms.mouseY : uniforms.mouseDown))"
+
+        case "key":
+            // key(keyCode) - returns 0.0 or 1.0 based on key state
+            guard args.count >= 1 else {
+                throw BackendError.unsupportedExpression("key requires 1 argument: keyCode")
+            }
+            let keyCodeExpr = argCodes[0]
+            // Access key state from buffer - clamp to valid range
+            return "keyStates[clamp(int(\(keyCodeExpr)), 0, 255)]"
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")
