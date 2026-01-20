@@ -6,24 +6,18 @@ set -e
 
 echo "Installing WEFT..."
 
-# Check for Swift
-if ! command -v swift &> /dev/null; then
-    echo "Error: Swift is required. Install Xcode or Xcode Command Line Tools."
-    echo "Run: xcode-select --install"
-    exit 1
-fi
-
 # Create temp directory
 TMPDIR=$(mktemp -d)
 cd "$TMPDIR"
 
-echo "Downloading source..."
-curl -fsSL https://github.com/leo-levin/WEFT-SWIFT/archive/refs/heads/master.tar.gz | tar xz
+echo "Downloading WEFT..."
+curl -fsSL -o WEFT.zip https://github.com/leo-levin/WEFT-SWIFT/releases/latest/download/WEFT.zip
 
-cd WEFT-SWIFT-master
+echo "Extracting..."
+unzip -q WEFT.zip
 
-echo "Building WEFT (this may take a minute)..."
-./build-app.sh
+echo "Removing quarantine..."
+xattr -cr WEFT.app
 
 echo "Installing to /Applications..."
 rm -rf /Applications/WEFT.app
