@@ -174,10 +174,10 @@ public class WeftPreprocessor {
     // MARK: - Private Implementation
 
     /// Regex pattern for #include directive
-    /// Matches: #include "path" with optional leading whitespace
+    /// Matches: #include "path" with optional leading whitespace and trailing comment
     /// Does NOT match if inside a comment (handled separately)
     private static let includePattern = try! NSRegularExpression(
-        pattern: #"^(\s*)#include\s+"([^"]+)"\s*$"#,
+        pattern: #"^(\s*)#include\s+"([^"]+)"(\s*(//.*)?)?$"#,
         options: []
     )
 
