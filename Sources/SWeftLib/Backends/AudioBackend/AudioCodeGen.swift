@@ -327,6 +327,21 @@ public class AudioCodeGen {
                 return 0.0
             }
 
+        // Noise (hash-based pseudo-random - same formula as Metal)
+        case "noise":
+            let xEval = argEvals[0]
+            let yEval = argEvals.count > 1 ? argEvals[1] : { _ in Float(0.0) }
+            return { ctx in
+                let x = xEval(ctx)
+                let y = yEval(ctx)
+                // dot(float2(x, y), float2(12.9898, 78.233))
+                let dot = x * 12.9898 + y * 78.233
+                // fract(sin(dot) * 43758.5453)
+                let sinVal = sinf(dot)
+                let scaled = sinVal * 43758.5453
+                return scaled - floorf(scaled)
+            }
+
         // Hardware inputs - now handled as builtins
         case "microphone":
             // microphone(offset, channel)
@@ -350,6 +365,60 @@ public class AudioCodeGen {
         case "camera", "texture":
             // Camera and texture not applicable to audio - return 0
             return { _ in 0.0 }
+
+        // Universal input builtins
+        case "mouse":
+            // mouse(channel) - returns x, y, or down based on channel
+            // channel 0 = x, channel 1 = y, channel 2 = down
+            guard args.count >= 1 else {
+                return { _ in 0.0 }
+            }
+            let channel: Int
+            if case .num(let ch) = args[0] {
+                channel = Int(ch)
+            } else {
+                // Dynamic channel - evaluate at runtime
+                let channelEval = argEvals[0]
+                return { ctx in
+                    let ch = Int(channelEval(ctx))
+                    let state = InputState.shared.getMouseState()
+                    switch ch {
+                    case 0: return state.x
+                    case 1: return state.y
+                    case 2: return state.down
+                    default: return state.x
+                    }
+                }
+            }
+            // Static channel
+            return { _ in
+                let state = InputState.shared.getMouseState()
+                switch channel {
+                case 0: return state.x
+                case 1: return state.y
+                case 2: return state.down
+                default: return state.x
+                }
+            }
+
+        case "key":
+            // key(keyCode) - returns 0.0 or 1.0 based on key state
+            guard args.count >= 1 else {
+                return { _ in 0.0 }
+            }
+            if case .num(let code) = args[0] {
+                // Static key code - most common case
+                let keyCode = Int(code)
+                return { _ in
+                    InputState.shared.getKeyState(keyCode: keyCode)
+                }
+            }
+            // Dynamic key code - evaluate at runtime
+            let keyCodeEval = argEvals[0]
+            return { ctx in
+                let keyCode = Int(keyCodeEval(ctx))
+                return InputState.shared.getKeyState(keyCode: keyCode)
+            }
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")
