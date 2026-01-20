@@ -178,6 +178,13 @@ struct ContentView: View {
                     viewModel.hasError = false
                 }
 
+            // Resource warning panel
+            if viewModel.resourceWarning != nil && showErrors {
+                SubtleDivider(.horizontal)
+                resourceWarningPanel
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             // Error panel
             if viewModel.hasError && showErrors {
                 SubtleDivider(.horizontal)
@@ -186,6 +193,50 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: viewModel.hasError && showErrors)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.resourceWarning != nil)
+    }
+
+    private var resourceWarningPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                Text("Resource Warning")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    viewModel.resourceWarning = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+            .background(Color.orange.opacity(0.1))
+
+            SubtleDivider(.horizontal)
+
+            ScrollView {
+                if let warning = viewModel.resourceWarning {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(warning)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.primary)
+                        Text("Place files next to your .weft file, or save your file first to enable relative paths.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Spacing.sm)
+                }
+            }
+            .frame(maxHeight: 100)
+        }
     }
 
     private var errorPanel: some View {
@@ -536,6 +587,7 @@ class WeftViewModel: ObservableObject {
     @Published var isAudioPlaying = false
     @Published var hasError = false
     @Published var isRunning = false
+    @Published var resourceWarning: String? = nil
 
     // Dev mode state - increments on each compile to trigger view refresh
     @Published var compilationVersion = 0
@@ -667,6 +719,7 @@ class WeftViewModel: ObservableObject {
     func compileAndRun() {
         errorMessage = ""
         hasError = false
+        resourceWarning = nil
         statusText = "Compiling..."
         RenderStats.shared.reset()
 
@@ -674,13 +727,22 @@ class WeftViewModel: ObservableObject {
             // Use native Swift compiler
             let program = try compiler.compile(sourceCode)
 
+            // Set source file URL for relative resource resolution
+            coordinator.sourceFileURL = currentFileURL
+
             try coordinator.load(program: program)
+
+            // Check for resource loading errors
+            if let resourceErrors = coordinator.getResourceErrorMessage() {
+                resourceWarning = resourceErrors
+                print("Resource warnings:\n\(resourceErrors)")
+            }
 
             hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == .visual } ?? false
             hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == .audio } ?? false
 
             isRunning = true
-            statusText = "Running"
+            statusText = resourceWarning != nil ? "Running (with warnings)" : "Running"
             compilationVersion += 1  // Trigger dev mode refresh
 
             if hasAudio && !isAudioPlaying {

@@ -41,6 +41,9 @@ public class TextureManager {
     /// Textures indexed by resource ID (for shader binding)
     private var textures: [Int: MTLTexture] = [:]
 
+    /// Tracks which resources failed to load and why
+    public private(set) var loadErrors: [Int: (path: String, error: TextureError)] = [:]
+
     /// Callback for when a file picker is needed (set by UI layer)
     public var onPickerNeeded: ((_ forResourceId: Int, _ fileTypes: [String]) async -> URL?)?
 
@@ -59,15 +62,30 @@ public class TextureManager {
         sourceFileURL: URL?
     ) throws -> [Int: MTLTexture] {
         textures = [:]
+        loadErrors = [:]
 
         for (index, path) in resources.enumerated() {
+            // Skip non-image resources (audio handled by SampleManager)
+            let ext = (path as NSString).pathExtension.lowercased()
+            let audioExtensions = ["wav", "aiff", "aif", "mp3", "m4a", "flac", "ogg", "caf"]
+            if audioExtensions.contains(ext) {
+                continue
+            }
+
             do {
                 let texture = try loadTexture(path: path, relativeTo: sourceFileURL)
                 textures[index] = texture
                 print("TextureManager: Loaded texture \(index) from '\(path)'")
+            } catch let error as TextureError {
+                print("TextureManager: Failed to load texture \(index) from '\(path)': \(error)")
+                loadErrors[index] = (path: path, error: error)
+                // Create a placeholder texture (1x1 magenta for debugging)
+                if let placeholder = createPlaceholderTexture() {
+                    textures[index] = placeholder
+                }
             } catch {
                 print("TextureManager: Failed to load texture \(index) from '\(path)': \(error)")
-                // Create a placeholder texture (1x1 magenta for debugging)
+                loadErrors[index] = (path: path, error: .loadFailed(error.localizedDescription))
                 if let placeholder = createPlaceholderTexture() {
                     textures[index] = placeholder
                 }

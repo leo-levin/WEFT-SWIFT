@@ -80,6 +80,9 @@ public class SampleManager {
     /// Samples indexed by resource ID
     private var samples: [Int: AudioSampleBuffer] = [:]
 
+    /// Tracks which resources failed to load and why
+    public private(set) var loadErrors: [Int: (path: String, error: SampleError)] = [:]
+
     /// Target sample rate for resampling (set from audio output)
     public var targetSampleRate: Double = 44100
 
@@ -98,6 +101,7 @@ public class SampleManager {
         sourceFileURL: URL?
     ) throws -> [Int: AudioSampleBuffer] {
         samples = [:]
+        loadErrors = [:]
 
         for (index, path) in resources.enumerated() {
             // Skip non-audio resources (images handled by TextureManager)
@@ -111,9 +115,14 @@ public class SampleManager {
                 let sample = try loadSample(path: path, relativeTo: sourceFileURL)
                 samples[index] = sample
                 print("SampleManager: Loaded sample \(index) from '\(path)' (\(sample.frameCount) frames, \(sample.channels) channels)")
+            } catch let error as SampleError {
+                print("SampleManager: Failed to load sample \(index) from '\(path)': \(error)")
+                loadErrors[index] = (path: path, error: error)
+                // Create a silent placeholder
+                samples[index] = createSilentSample()
             } catch {
                 print("SampleManager: Failed to load sample \(index) from '\(path)': \(error)")
-                // Create a silent placeholder
+                loadErrors[index] = (path: path, error: .loadFailed(error.localizedDescription))
                 samples[index] = createSilentSample()
             }
         }

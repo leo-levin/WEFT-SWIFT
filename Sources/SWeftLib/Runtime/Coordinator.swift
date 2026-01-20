@@ -419,4 +419,35 @@ public class Coordinator: CameraCaptureDelegate {
         }
         return info
     }
+
+    // MARK: - Resource Loading Status
+
+    /// Get any texture loading errors
+    public func getTextureLoadErrors() -> [Int: (path: String, error: TextureError)]? {
+        return textureManager?.loadErrors
+    }
+
+    /// Get any sample loading errors
+    public func getSampleLoadErrors() -> [Int: (path: String, error: SampleError)]? {
+        return sampleManager?.loadErrors
+    }
+
+    /// Get a formatted string describing all resource loading errors
+    public func getResourceErrorMessage() -> String? {
+        var errors: [String] = []
+
+        if let texErrors = textureManager?.loadErrors, !texErrors.isEmpty {
+            for (_, info) in texErrors.sorted(by: { $0.key < $1.key }) {
+                errors.append("Image '\(info.path)': \(info.error.localizedDescription)")
+            }
+        }
+
+        if let smpErrors = sampleManager?.loadErrors, !smpErrors.isEmpty {
+            for (_, info) in smpErrors.sorted(by: { $0.key < $1.key }) {
+                errors.append("Audio '\(info.path)': \(info.error.localizedDescription)")
+            }
+        }
+
+        return errors.isEmpty ? nil : errors.joined(separator: "\n")
+    }
 }
