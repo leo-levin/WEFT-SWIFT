@@ -64,30 +64,101 @@ public protocol CompiledUnit {
 
 // MARK: - Backend Protocol
 
-/// Backend protocol - minimal interface for execution backends
+/// Backend protocol - minimal interface for execution backends.
+///
+/// A backend is a "renderer" for WEFT IR. It defines:
+/// - What coordinates mean (pixels, samples, MIDI notes, etc.)
+/// - How to execute expressions in that domain
+/// - What resources it provides (camera, microphone, MIDI input, etc.)
+///
+/// The IR itself is domain-agnostic - it's just math. Backends give meaning to
+/// coordinates like `me.x`, `me.y`, `me.t` etc.
+///
+/// ## Implementing a New Backend
+///
+/// 1. Create a new class conforming to `Backend`
+/// 2. Define static properties for identification and capabilities
+/// 3. Implement `compile(swatch:ir:)` to generate executable code
+/// 4. Implement `execute(...)` to run the compiled code
+/// 5. Register your backend with `BackendRegistry.shared.register(YourBackend.self)`
+///
+/// ## Example: Skeleton MIDIBackend
+///
+/// ```swift
+/// public class MIDIBackend: Backend {
+///     public static let identifier = "midi"
+///     public static let ownedBuiltins: Set<String> = ["midiNote", "midiCC"]
+///     public static let externalBuiltins: Set<String> = ["midiNote"]
+///     public static let statefulBuiltins: Set<String> = ["cache"]
+///     public static let coordinateFields = ["note", "velocity", "channel", "t"]
+///     public static let bindings: [BackendBinding] = [
+///         .input(InputBinding(builtinName: "midiNote")),
+///         .output(OutputBinding(bundleName: "send", kernelName: "midiCallback"))
+///     ]
+///
+///     public func compile(swatch: Swatch, ir: IRProgram) throws -> CompiledUnit {
+///         // Generate MIDI message callbacks from IR expressions
+///     }
+///
+///     public func execute(unit: CompiledUnit, inputs: [...], outputs: [...], time: Double) {
+///         // Send MIDI messages
+///     }
+/// }
+/// ```
+///
 public protocol Backend {
-    /// Unique identifier for this backend
+    /// Unique identifier for this backend (e.g., "visual", "audio", "midi").
+    /// Used by the partitioner to route bundles to the correct backend.
     static var identifier: String { get }
 
-    /// Builtins this backend owns (determines ownership of bundles using these)
+    /// Builtins this backend "owns" - bundles using these builtins are assigned to this backend.
+    /// Examples: "camera" owned by visual, "microphone" owned by audio.
+    /// Ownership is used during partitioning to determine which backend compiles each bundle.
     static var ownedBuiltins: Set<String> { get }
 
-    /// External builtins - hardware/outside world inputs (camera, microphone)
+    /// External builtins - hardware or outside-world inputs that this backend provides.
+    /// These require special handling (device setup, permissions, etc.).
+    /// Subset of ownedBuiltins that represents actual hardware I/O.
     static var externalBuiltins: Set<String> { get }
 
-    /// Stateful builtins - functions that maintain state (cache)
+    /// Stateful builtins - functions that maintain state across invocations.
+    /// Currently just "cache" which implements signal-driven feedback.
     static var statefulBuiltins: Set<String> { get }
 
-    /// All bindings (inputs and outputs) for this backend
+    /// Bindings define the special bundle names and builtins for this backend:
+    /// - `.input(InputBinding)`: External inputs like camera, microphone
+    /// - `.output(OutputBinding)`: Sink bundles like "display", "play"
     static var bindings: [BackendBinding] { get }
 
-    /// Coordinate fields provided by this backend (e.g., ["x", "y", "t"] for visual)
+    /// Coordinate fields available in this domain via `me.field`.
+    /// The IR uses `me.x`, `me.y`, etc. - backends define what these mean.
+    ///
+    /// - Visual: `["x", "y", "t", "w", "h"]` - normalized pixel coords + resolution
+    /// - Audio: `["i", "t", "sampleRate"]` - sample index, time, sample rate
+    /// - MIDI: `["note", "velocity", "channel", "t"]` - MIDI message fields
     static var coordinateFields: [String] { get }
 
-    /// Compile a swatch to native code
+    /// Compile a swatch (group of related bundles) to executable code.
+    ///
+    /// The swatch contains bundle names owned by this backend. The implementation should:
+    /// 1. Look up bundle definitions in the IRProgram
+    /// 2. Generate code for each strand expression
+    /// 3. Return a CompiledUnit that can be executed later
+    ///
+    /// - Parameters:
+    ///   - swatch: The swatch containing bundles to compile
+    ///   - ir: The complete IR program for resolving references
+    /// - Returns: A compiled unit ready for execution
+    /// - Throws: `BackendError` if compilation fails
     func compile(swatch: Swatch, ir: IRProgram) throws -> CompiledUnit
 
-    /// Execute a compiled unit
+    /// Execute a compiled unit.
+    ///
+    /// - Parameters:
+    ///   - unit: The compiled unit from `compile()`
+    ///   - inputs: Input buffers from other backends (cross-domain data)
+    ///   - outputs: Output buffers to write results to
+    ///   - time: Current execution time in seconds
     func execute(
         unit: CompiledUnit,
         inputs: [String: any Buffer],

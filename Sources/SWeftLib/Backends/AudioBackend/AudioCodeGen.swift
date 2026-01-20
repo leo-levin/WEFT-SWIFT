@@ -327,6 +327,21 @@ public class AudioCodeGen {
                 return 0.0
             }
 
+        // Noise (hash-based pseudo-random - same formula as Metal)
+        case "noise":
+            let xEval = argEvals[0]
+            let yEval = argEvals.count > 1 ? argEvals[1] : { _ in Float(0.0) }
+            return { ctx in
+                let x = xEval(ctx)
+                let y = yEval(ctx)
+                // dot(float2(x, y), float2(12.9898, 78.233))
+                let dot = x * 12.9898 + y * 78.233
+                // fract(sin(dot) * 43758.5453)
+                let sinVal = sinf(dot)
+                let scaled = sinVal * 43758.5453
+                return scaled - floorf(scaled)
+            }
+
         // Hardware inputs - now handled as builtins
         case "microphone":
             // microphone(offset, channel)
