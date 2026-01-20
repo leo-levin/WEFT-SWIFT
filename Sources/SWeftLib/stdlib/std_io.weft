@@ -32,7 +32,7 @@ keys.command = key(55)
 // Common keys
 keys.space = key(49)
 keys.enter = key(36)
-keys.return = key(36)
+// Note: "return" is a reserved keyword, use keys.enter instead
 keys.escape = key(53)
 keys.esc = key(53)
 keys.tab = key(48)
