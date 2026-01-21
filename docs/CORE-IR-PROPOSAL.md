@@ -112,7 +112,7 @@ Expressions:
       | fix (λx. e)              -- Guarded fixpoint
       | ▷ e                      -- Delay
       | e ⊛                      -- Force
-      | read r e                 -- Read resource (IMPURE)
+      | r(e)                     -- Sample resource (time-varying lookup table)
 
 Programs:
   P ::= Decl*
@@ -251,38 +251,21 @@ trail input = fix (λprev →
 
 ---
 
-### Q6: What is the type of resources?
+### Q6: ~~What is the type of resources?~~ RESOLVED
 
-**Resources:** `camera`, `microphone`, `texture`, `mouse`, `sample`, `load`
+**Resources:** `camera`, `microphone`, `texture`, `mouse`, `midi`, `osc`, etc.
 
-**Key fact:** Resources are NOT pure. `camera(u, v)` returns different values on different frames even for the same `(u, v)`.
+**Model:** Resources are **time-varying lookup tables** — pure within a tick, changing across ticks. Same as `me.t`.
 
-**Option A:** Resources are frame-indexed
 ```
-camera : Frame → UV → RGB
--- Implicitly: current frame is in scope, like `me.t`
-```
-
-**Option B:** Resources are effectful operations (monadic)
-```
-camera : UV → IO RGB
--- But WEFT doesn't have IO monad...
+camera : Coords → RGB        -- Lookup table indexed by UV
+microphone : Offset → Float  -- Lookup table indexed by sample offset
+midi : (Note, Channel) → Float  -- Lookup table indexed by note/channel
 ```
 
-**Option C:** Resources are "external signals" with implicit time dependency
-```
-camera : Signal (UV → RGB)
--- A time-varying function
-```
+They're not special — they're just values that happen to come from outside the program. The backend populates them at tick boundaries.
 
-**Option D:** Resources are textures that get "captured" at frame boundaries
-```
--- At frame start: cameraTexture = captureCamera()
--- During frame: camera(u,v) = sampleTexture(cameraTexture, u, v)
--- This makes per-frame behavior pure, with impurity at frame boundaries
-```
-
-**Question:** Which model matches the actual implementation? Option D seems closest to how GPU code typically works (capture input textures, then pure sampling).
+**Implication:** No need for `IO`, `Signal`, or effect tracking. Resources are as pure as coordinates.
 
 ---
 
@@ -347,22 +330,20 @@ Where `condition` evaluates to 0 or 1. This indexes into the 2-element bundle.
 
 These are beliefs I've formed that may be wrong. Please challenge them.
 
-### A1: ~~WEFT is pure except for `cache`~~ WRONG
+### A1: WEFT is pure except for `cache` — MOSTLY RIGHT
 
-~~I assume all expressions are referentially transparent except for `cache` which introduces controlled state. Resources (`camera`, etc.) are pure functions of their arguments.~~
+~~**Correction:** Resources like `camera` and `microphone` are **NOT pure**.~~
 
-**Correction:** Resources like `camera` and `microphone` are **NOT pure**. They read from external state that changes over time independently of the program.
+**Revised:** Resources ARE "pure-ish" in the same way `me.t` is pure-ish. They're **time-varying lookup tables**:
+- Within a tick: pure (same coords → same value)
+- Across ticks: values change (like `me.t`)
 
-**Implications:**
-- `remap` cannot simply be substitution for resource-containing expressions
-- `camera(u, v)` at the same `(u, v)` returns different values on different frames
-- This means resources are more like "effectful reads" than pure functions
-- Core needs to distinguish pure expressions from effectful ones
+This means:
+- `remap` CAN be just substitution (samples same table at different coords)
+- No need for monadic effects or special impure tracking
+- Resources are just another kind of coordinate-indexed value
 
-**New question:** What IS the model for resources?
-- Option A: Resources are implicit parameters that change each frame (like `me.t`)
-- Option B: Resources are monadic effects that must be sequenced
-- Option C: Resources are first-class "signals" with their own identity
+**The only true source of state is `cache`** — it's the only thing that carries information from one tick to the next based on program logic (not external input).
 
 ### A2: Evaluation is synchronous
 
@@ -476,15 +457,26 @@ These are open questions that need answers to proceed. They're not "what does WE
 
 ### D1: What is the semantic model for resources?
 
-Resources (`camera`, `microphone`) are impure - they return different values on different frames. But what's the right mental model?
+~~Resources (`camera`, `microphone`) are impure - they return different values on different frames. But what's the right mental model?~~
 
-| Option | Model | Implications |
-|--------|-------|--------------|
-| A | **Frame-captured textures** | At frame start, capture all resources into textures. During frame, sampling is pure. Simple, matches GPU reality. |
-| B | **Implicit time parameter** | Resources are functions of `(coords, frame)`. Frame is implicit like `me.t`. |
-| C | **First-class signals** | Resources are `Signal (Coords → Value)`. More expressive but more complex. |
+**Revised understanding:** Resources are **time-varying lookup tables**. They're populated at tick boundaries, and sampling within a tick is pure. This is the same model as `me.t` - it changes between ticks but is constant within a tick.
 
-**Recommendation:** Option A feels right. It's simple and matches how GPUs actually work.
+This generalizes beyond GPU:
+- **Camera**: 2D lookup (u, v) → RGB
+- **Microphone**: 1D lookup (sample offset) → amplitude
+- **MIDI**: Could be 2D lookup (note, channel) → velocity
+- **OSC**: Could be 1D lookup (address hash) → value
+
+```weft
+// All of these are "pure" within a tick:
+pixel[r,g,b] = camera(me.x, me.y)
+amplitude.val = microphone(0)
+velocity.val = midi(noteNum / 128, channel / 16)
+```
+
+**Implication for Core:** Resources don't need special "impure" treatment. They're just values that vary with time, like coordinates. The `read r e` primitive can be replaced with regular function application.
+
+**Implication for remap:** `camera(me.x ~ me.x + 0.1)` is just substitution - it samples the same lookup table at different coordinates. No re-evaluation needed.
 
 ---
 
@@ -503,16 +495,19 @@ Resources (`camera`, `microphone`) are impure - they return different values on 
 
 ---
 
-### D3: What's the execution model for `remap`?
+### D3: ~~What's the execution model for `remap`?~~ RESOLVED
 
 If `img = camera(me.x, me.y)` and we do `img(me.x ~ me.x + 0.1)`:
 
-| Option | Behavior |
-|--------|----------|
-| A | **Substitution** — becomes `camera(me.x + 0.1, me.y)`, one sample |
-| B | **Re-evaluation** — evaluates `img` at shifted coords, could mean different cache/state |
+**Answer:** Substitution. Since resources are time-varying lookup tables (pure within a tick), `remap` is just coordinate substitution:
 
-**Recommendation:** Need to decide. Option A is simpler but Option B might be what users expect.
+```
+img(me.x ~ me.x + 0.1)
+  = camera(me.x, me.y)(me.x ~ me.x + 0.1)
+  = camera(me.x + 0.1, me.y)
+```
+
+No re-evaluation or special semantics needed. This simplifies Core significantly — `remap` is sugar for substitution, even with resources.
 
 ---
 
