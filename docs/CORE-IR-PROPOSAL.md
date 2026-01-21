@@ -470,25 +470,100 @@ main(uv : vec2, t : float) → vec4
 
 ---
 
-## 7. Requested Feedback
+## 7. Design Decisions Needed
 
-I'd appreciate thoughts on:
+These are open questions that need answers to proceed. They're not "what does WEFT do?" but "what SHOULD WEFT do?"
 
-1. **Is the indexed-family framing useful?** Or is it over-complicating things?
+### D1: What is the semantic model for resources?
 
-2. **What's the right model for `cache`?** Guarded recursion? Explicit state? Something else?
+Resources (`camera`, `microphone`) are impure - they return different values on different frames. But what's the right mental model?
 
-3. ~~**Should resources be pure?**~~ **ANSWERED: No.** New question: What's the right model for impure resources? Frame-captured textures?
+| Option | Model | Implications |
+|--------|-------|--------------|
+| A | **Frame-captured textures** | At frame start, capture all resources into textures. During frame, sampling is pure. Simple, matches GPU reality. |
+| B | **Implicit time parameter** | Resources are functions of `(coords, frame)`. Frame is implicit like `me.t`. |
+| C | **First-class signals** | Resources are `Signal (Coords → Value)`. More expressive but more complex. |
 
-4. **Are there WEFT features I misunderstood?** Please correct my mental model.
-   - ✓ Conditionals are via bundle indexing: `[else, then].(cond)`
-   - ✓ Resources (camera, mic) are not pure
+**Recommendation:** Option A feels right. It's simple and matches how GPUs actually work.
 
-5. **What's the goal of Core?** Optimization? Verification? Documentation? Portability? This affects design priorities.
+---
 
-6. **Is explicit typing worth the complexity?** Or should Core stay dynamically typed?
+### D2: What happens with non-integer dynamic indexing?
 
-7. **NEW: Is dynamic bundle indexing fundamental?** Given that conditionals use `[a,b].(cond)`, dynamic indexing seems core to the language. Should this be a primitive, or can it desugar to something simpler?
+`[a, b].(0.5)` — what does this return?
+
+| Option | Behavior |
+|--------|----------|
+| A | **Floor** — treat as `[a,b].(floor(0.5))` = `a` |
+| B | **Round** — treat as `[a,b].(round(0.5))` = `a` or `b` |
+| C | **Lerp** — return `lerp(a, b, 0.5)` = `0.5*a + 0.5*b` |
+| D | **Error** — require integer index |
+
+**Recommendation:** Option C (lerp) is most useful for creative coding. Enables smooth transitions. But it only works for numeric types.
+
+---
+
+### D3: What's the execution model for `remap`?
+
+If `img = camera(me.x, me.y)` and we do `img(me.x ~ me.x + 0.1)`:
+
+| Option | Behavior |
+|--------|----------|
+| A | **Substitution** — becomes `camera(me.x + 0.1, me.y)`, one sample |
+| B | **Re-evaluation** — evaluates `img` at shifted coords, could mean different cache/state |
+
+**Recommendation:** Need to decide. Option A is simpler but Option B might be what users expect.
+
+---
+
+### D4: How should backends be defined?
+
+| Option | Approach |
+|--------|----------|
+| A | **Compile-time registration** — backends are Swift types conforming to `Backend` protocol |
+| B | **Runtime configuration** — backends declared in WEFT source or config files |
+| C | **Hardcoded set** — just Visual, Audio, and maybe a few others |
+
+**Current implementation:** Option A (Swift protocol). But should Core IR assume this?
+
+---
+
+### D5: Should `cache` use signal-edge or time-step semantics?
+
+Current implementation ticks when signal *changes*. Is this intentional?
+
+| Option | Behavior | Use case |
+|--------|----------|----------|
+| A | **Edge-triggered** | Tick when `signal` changes value | Sample-and-hold, event-driven |
+| B | **Time-stepped** | Tick every frame/sample | Traditional delay line |
+| C | **Configurable** | Both modes available | Flexibility |
+
+**Recommendation:** Need to decide if edge-triggering is a feature or an accident.
+
+---
+
+### D6: What's the goal of Core IR?
+
+This affects all other decisions:
+
+| Goal | Implications |
+|------|--------------|
+| **Optimization target** | Need explicit sharing, SSA-like form, analysis-friendly |
+| **Formal semantics** | Need clean denotational model, proofs |
+| **Documentation** | Need readable, minimal syntax |
+| **Portability** | Need to abstract over backends cleanly |
+| **All of the above** | Need to balance trade-offs |
+
+---
+
+### D7: Are spindles just macros, or do we want higher-order functions?
+
+| Option | Capability |
+|--------|------------|
+| A | **Macros** — spindles inline at call sites, no closures |
+| B | **First-class functions** — can pass spindles as arguments, return them |
+
+**Current implementation:** Option A. Is this sufficient?
 
 ---
 
