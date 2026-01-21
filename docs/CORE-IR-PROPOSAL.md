@@ -81,13 +81,17 @@ Types:
   τ ::= Float                    -- Base type
       | τ × τ                    -- Product (bundles)
       | ●                        -- Unit
-      | Stream i τ               -- Indexed family
+      | Stream b τ               -- Indexed family over backend b
       | Later τ                  -- Guarded delay (for feedback)
+      | ∀b. τ                    -- Backend-polymorphic (pure)
 
-Index sorts:
-  i ::= V                        -- Visual: (x, y, t)
-      | A                        -- Audio: (i, t, rate)
-      | P                        -- Pure: ()
+Backends:
+  b ::= (user-defined)           -- NOT hardcoded to Visual/Audio
+
+  -- Each backend defines:
+  -- • Coordinate type (what fields does `here` have?)
+  -- • Owned builtins (which resources belong to this backend?)
+  -- • Iteration domain (per-pixel? per-sample? per-vertex?)
 
 Expressions:
   e ::= n                        -- Float literal
@@ -95,18 +99,20 @@ Expressions:
       | ()                       -- Unit
       | (e₁, e₂)                 -- Pair
       | fst e | snd e            -- Projections
+      | e.ₙ                      -- Static projection (strand n)
+      | e.(e')                   -- Dynamic projection (conditional!)
       | let x = e₁ in e₂         -- Binding
       | e₁ ⊕ e₂                  -- Binary operators
       | ⊖ e                      -- Unary operators
       | prim(e₁, ..., eₙ)        -- Builtin functions
       | here                     -- Current index
-      | e ! j                    -- Reindex (sample e at index j)
+      | e @ j                    -- Reindex (sample e at index j)
       | pure e                   -- Lift to stream
       | e₁ <*> e₂                -- Applicative apply
       | fix (λx. e)              -- Guarded fixpoint
       | ▷ e                      -- Delay
       | e ⊛                      -- Force
-      | sample r e               -- Sample resource
+      | read r e                 -- Read resource (IMPURE)
 
 Programs:
   P ::= Decl*
@@ -117,27 +123,32 @@ Programs:
 
 ```
 ─────────────────────────────
-    here : Stream i (Idx i)
+    here : Stream b (Coords b)      -- Coords is backend-specific
 
 
-  e : Stream i τ    j : Stream i' (Idx i)
+  e : Stream b τ    j : Stream b' (Coords b)
+────────────────────────────────────────────
+          e @ j : Stream b' τ               -- Reindex across backends
+
+
+           e : τ    (τ is pure, no Stream)
+          ────────────────────────────────
+               pure e : ∀b. Stream b τ      -- Polymorphic lifting
+
+
+  f : Stream b (τ → σ)    x : Stream b τ
 ─────────────────────────────────────────
-          e ! j : Stream i' τ
-
-
-         e : τ    (where τ has no Stream)
-        ─────────────────────────────────
-              pure e : Stream i τ
-
-
-  f : Stream i (τ → σ)    x : Stream i τ
-─────────────────────────────────────────
-          f <*> x : Stream i σ
+          f <*> x : Stream b σ
 
 
      e : Later τ → τ     (guarded in x)
     ───────────────────────────────────
             fix (λx. e) : τ
+
+
+        e : ∀b. Stream b τ
+       ─────────────────────
+        e : Stream b' τ                     -- Instantiate polymorphic
 ```
 
 ### 3.5 Desugaring Examples
@@ -199,9 +210,16 @@ trail input = fix (λprev →
 
 **Current behavior:** `remap` does substitution, which works for pure expressions but has unclear semantics for resources.
 
+**Update:** Since resources (camera, microphone) are NOT pure, remap has real semantic content—it's not just substitution.
+
 **Questions:**
-- If `e` contains `camera(...)`, does `e ! j` re-sample the camera? Or is it memoized?
-- Is remap just substitution (sugar) or does it have real semantic content?
+- If `e = camera(me.x, me.y)` and we do `e(me.x ~ me.x + 0.1)`, does this:
+  - (a) Substitute to get `camera(me.x + 0.1, me.y)` and sample once?
+  - (b) Sample `camera` twice (original and offset)?
+- Is `remap` fundamentally about **coordinate transformation** or **re-evaluation**?
+- Does remapping a cached expression read from the same cache or create a new one?
+
+**This is now clearly fundamental, not sugar.**
 
 ---
 
@@ -237,25 +255,34 @@ trail input = fix (λprev →
 
 **Resources:** `camera`, `microphone`, `texture`, `mouse`, `sample`, `load`
 
-**Option A:** Resources are builtins with special types
+**Key fact:** Resources are NOT pure. `camera(u, v)` returns different values on different frames even for the same `(u, v)`.
+
+**Option A:** Resources are frame-indexed
 ```
-camera : Stream V (Float × Float × Float)  -- Always at current pixel
-camera_at : (Float × Float) → Stream V (Float × Float × Float)  -- At specified UV
+camera : Frame → UV → RGB
+-- Implicitly: current frame is in scope, like `me.t`
 ```
 
-**Option B:** Resources are indexed families that you sample
+**Option B:** Resources are effectful operations (monadic)
 ```
-camera : Stream V Float → Stream V Float → Stream V (Float × Float × Float)
--- camera u v = RGB at (u, v)
-```
-
-**Option C:** Resources are opaque handles + sampling primitives
-```
-camera : Resource RGB
-sample : Resource τ → Idx → τ
+camera : UV → IO RGB
+-- But WEFT doesn't have IO monad...
 ```
 
-**Question:** Which model best captures how resources actually work in WEFT?
+**Option C:** Resources are "external signals" with implicit time dependency
+```
+camera : Signal (UV → RGB)
+-- A time-varying function
+```
+
+**Option D:** Resources are textures that get "captured" at frame boundaries
+```
+-- At frame start: cameraTexture = captureCamera()
+-- During frame: camera(u,v) = sampleTexture(cameraTexture, u, v)
+-- This makes per-frame behavior pure, with impurity at frame boundaries
+```
+
+**Question:** Which model matches the actual implementation? Option D seems closest to how GPU code typically works (capture input textures, then pure sampling).
 
 ---
 
@@ -283,14 +310,23 @@ sample : Resource τ → Idx → τ
 
 ---
 
-### Q9: What about conditionals?
+### Q9: ~~What about conditionals?~~ RESOLVED
 
-**Current state:** WEFT has comparison operators (`<`, `==`, etc.) but I didn't see explicit `if-then-else`.
+**Answer:** Conditionals are expressed via dynamic bundle indexing:
 
-**Questions:**
-- Is there `if e₁ then e₂ else e₃`?
-- If not, is `step`/`smoothstep` sufficient for all conditional needs?
-- Should Core have sum types and case expressions?
+```weft
+[elseExpr, thenExpr].(condition)
+```
+
+Where `condition` evaluates to 0 or 1. This indexes into the 2-element bundle.
+
+**Implications for Core:**
+- Dynamic indexing (`bundle.(expr)`) is fundamental, not sugar
+- No need for `if-then-else` or sum types
+- This is similar to `select` in GPU shader languages
+- Both branches are evaluated (no short-circuiting) — important for side-effect semantics
+
+**Open question:** What happens if condition is not exactly 0 or 1? Linear interpolation? Floor? Error?
 
 ---
 
@@ -311,11 +347,22 @@ sample : Resource τ → Idx → τ
 
 These are beliefs I've formed that may be wrong. Please challenge them.
 
-### A1: WEFT is pure except for `cache`
+### A1: ~~WEFT is pure except for `cache`~~ WRONG
 
-I assume all expressions are referentially transparent except for `cache` which introduces controlled state. Resources (`camera`, etc.) are pure functions of their arguments.
+~~I assume all expressions are referentially transparent except for `cache` which introduces controlled state. Resources (`camera`, etc.) are pure functions of their arguments.~~
 
-**Could be wrong if:** Resources have side effects, caching behavior, or frame-dependent state beyond what's captured by coordinates.
+**Correction:** Resources like `camera` and `microphone` are **NOT pure**. They read from external state that changes over time independently of the program.
+
+**Implications:**
+- `remap` cannot simply be substitution for resource-containing expressions
+- `camera(u, v)` at the same `(u, v)` returns different values on different frames
+- This means resources are more like "effectful reads" than pure functions
+- Core needs to distinguish pure expressions from effectful ones
+
+**New question:** What IS the model for resources?
+- Option A: Resources are implicit parameters that change each frame (like `me.t`)
+- Option B: Resources are monadic effects that must be sequenced
+- Option C: Resources are first-class "signals" with their own identity
 
 ### A2: Evaluation is synchronous
 
@@ -335,11 +382,34 @@ I assume all spindle calls can be inlined. There's no need for higher-order prog
 
 **Could be wrong if:** There are planned features requiring function values.
 
-### A5: The two-domain model is fixed
+### A5: ~~The two-domain model is fixed~~ WRONG
 
-I assume Visual and Audio are the only domains, with fixed coordinate types.
+~~I assume Visual and Audio are the only domains, with fixed coordinate types.~~
 
-**Could be wrong if:** The system should support user-defined domains (3D, MIDI, network, etc.).
+**Correction:** WEFT should support **arbitrary backends**, not just Visual and Audio.
+
+**Implications:**
+- Index sorts can't be hardcoded as `V | A | P`
+- Backends define their own coordinate systems
+- The type system needs to be parameterized by backend
+- Cross-backend communication needs a general solution
+
+**New questions:**
+- How are backends declared/registered?
+- What defines a backend's coordinate type?
+- Can user code define new backends, or only the runtime?
+- How do we type expressions that work across any backend (polymorphism)?
+
+**Revised type system sketch:**
+```
+Backend b ::= (declared at runtime/config level)
+Coords b ::= (backend-specific, e.g., {x,y,t} for visual, {i,t,rate} for audio)
+
+τ ::= Float
+    | τ × τ
+    | Stream b τ        -- Parameterized by backend b
+    | ∀b. Stream b τ    -- Backend-polymorphic (pure expressions)
+```
 
 ### A6: Cache signal-edge semantics are intentional
 
@@ -408,13 +478,17 @@ I'd appreciate thoughts on:
 
 2. **What's the right model for `cache`?** Guarded recursion? Explicit state? Something else?
 
-3. **Should resources be pure?** What are the actual semantics of `camera`, `microphone`, etc.?
+3. ~~**Should resources be pure?**~~ **ANSWERED: No.** New question: What's the right model for impure resources? Frame-captured textures?
 
 4. **Are there WEFT features I misunderstood?** Please correct my mental model.
+   - ✓ Conditionals are via bundle indexing: `[else, then].(cond)`
+   - ✓ Resources (camera, mic) are not pure
 
 5. **What's the goal of Core?** Optimization? Verification? Documentation? Portability? This affects design priorities.
 
 6. **Is explicit typing worth the complexity?** Or should Core stay dynamically typed?
+
+7. **NEW: Is dynamic bundle indexing fundamental?** Given that conditionals use `[a,b].(cond)`, dynamic indexing seems core to the language. Should this be a primitive, or can it desugar to something simpler?
 
 ---
 
