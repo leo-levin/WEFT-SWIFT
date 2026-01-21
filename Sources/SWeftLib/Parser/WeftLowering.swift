@@ -52,39 +52,15 @@ public enum LoweringError: Error, LocalizedError {
 }
 
 // MARK: - Built-in Functions
+//
+// Builtin definitions are now derived from SharedBuiltins (single source of truth).
+// See Sources/SWeftLib/Backends/SharedBuiltins.swift for the canonical list.
 
-private let BUILTINS: Set<String> = [
-    "sin", "cos", "tan", "abs", "floor", "ceil", "sqrt", "pow",
-    "min", "max", "lerp", "clamp", "step", "smoothstep", "fract", "mod",
-    "osc", "cache", "key"
-]
+/// Scalar builtins (outputWidth == 1) - derived from SharedBuiltins
+private let BUILTINS: Set<String> = SharedBuiltins.scalarNames
 
-private struct ResourceBuiltin {
-    let width: Int
-    let minArgs: Int
-    let maxArgs: Int
-
-    init(width: Int, argCount: Int) {
-        self.width = width
-        self.minArgs = argCount
-        self.maxArgs = argCount
-    }
-
-    init(width: Int, minArgs: Int, maxArgs: Int) {
-        self.width = width
-        self.minArgs = minArgs
-        self.maxArgs = maxArgs
-    }
-}
-
-private let RESOURCE_BUILTINS: [String: ResourceBuiltin] = [
-    "texture": ResourceBuiltin(width: 3, argCount: 3),
-    "camera": ResourceBuiltin(width: 3, argCount: 2),
-    "microphone": ResourceBuiltin(width: 2, argCount: 1),
-    "mouse": ResourceBuiltin(width: 3, argCount: 0),  // Returns [x, y, down]
-    "load": ResourceBuiltin(width: 3, minArgs: 1, maxArgs: 3),  // load(path) or load(path, u, v)
-    "sample": ResourceBuiltin(width: 2, minArgs: 1, maxArgs: 2)  // sample(path) or sample(path, offset)
-]
+/// Multi-strand builtins (outputWidth > 1) - derived from SharedBuiltins
+private let RESOURCE_BUILTINS: [String: BuiltinDef] = SharedBuiltins.multiStrandByName
 
 private let ME_STRANDS: [String: Int] = [
     "x": 0, "y": 1, "u": 2, "v": 3, "w": 4, "h": 5,
@@ -657,29 +633,29 @@ public class WeftLowering {
         }
 
         // Check arg count is in valid range
-        if args.count < spec.minArgs || args.count > spec.maxArgs {
-            if spec.minArgs == spec.maxArgs {
-                throw LoweringError.invalidExpression("\(name)() expects \(spec.minArgs) args, got \(args.count)")
+        if args.count < spec.minArity || args.count > spec.maxArity {
+            if spec.minArity == spec.maxArity {
+                throw LoweringError.invalidExpression("\(name)() expects \(spec.minArity) args, got \(args.count)")
             } else {
-                throw LoweringError.invalidExpression("\(name)() expects \(spec.minArgs)-\(spec.maxArgs) args, got \(args.count)")
+                throw LoweringError.invalidExpression("\(name)() expects \(spec.minArity)-\(spec.maxArity) args, got \(args.count)")
             }
         }
 
-        if spec.width != width {
-            throw LoweringError.widthMismatch(expected: width, got: spec.width, context: "\(name)()")
+        if spec.outputWidth != width {
+            throw LoweringError.widthMismatch(expected: width, got: spec.outputWidth, context: "\(name)()")
         }
 
         switch name {
         case "camera":
             let u = try lowerExpr(args[0], subs: subs)
             let v = try lowerExpr(args[1], subs: subs)
-            return (0..<spec.width).map { channel in
+            return (0..<spec.outputWidth).map { channel in
                 .builtin(name: "camera", args: [u, v, .num(Double(channel))])
             }
 
         case "microphone":
             let offset = try lowerExpr(args[0], subs: subs)
-            return (0..<spec.width).map { channel in
+            return (0..<spec.outputWidth).map { channel in
                 .builtin(name: "microphone", args: [offset, .num(Double(channel))])
             }
 
@@ -700,7 +676,7 @@ public class WeftLowering {
             let u = try lowerExpr(args[1], subs: subs)
             let v = try lowerExpr(args[2], subs: subs)
 
-            return (0..<spec.width).map { channel in
+            return (0..<spec.outputWidth).map { channel in
                 .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
             }
 
@@ -732,7 +708,7 @@ public class WeftLowering {
                 v = .index(bundle: "me", indexExpr: .param("y"))
             }
 
-            return (0..<spec.width).map { channel in
+            return (0..<spec.outputWidth).map { channel in
                 .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
             }
 
@@ -761,13 +737,13 @@ public class WeftLowering {
                 offset = .index(bundle: "me", indexExpr: .param("i"))
             }
 
-            return (0..<spec.width).map { channel in
+            return (0..<spec.outputWidth).map { channel in
                 .builtin(name: "sample", args: [.num(Double(resourceId)), offset, .num(Double(channel))])
             }
 
         case "mouse":
             // mouse() returns [x, y, down] - channel 0=x, 1=y, 2=down
-            return (0..<spec.width).map { channel in
+            return (0..<spec.outputWidth).map { channel in
                 .builtin(name: "mouse", args: [.num(Double(channel))])
             }
 
@@ -818,7 +794,7 @@ public class WeftLowering {
 
         case .spindleCall(let call):
             if let spec = RESOURCE_BUILTINS[call.name] {
-                return spec.width
+                return spec.outputWidth
             }
             if let info = spindleInfo[call.name] {
                 return info.width
