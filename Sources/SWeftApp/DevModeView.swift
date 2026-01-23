@@ -114,13 +114,15 @@ struct IRView: View {
                     // Bundles
                     DevModeSection(title: "Bundles", icon: "cube.fill") {
                         VStack(alignment: .leading, spacing: Spacing.xs) {
-                            ForEach(program.bundles.keys.sorted(), id: \.self) { bundleName in
+                            ForEach(Array(program.bundles.keys.sorted()), id: \.self) { bundleName in
                                 if let bundle = program.bundles[bundleName] {
+                                    let domain = coordinator.annotatedProgram?.bundleDomain(bundleName)
+                                    let purityState = purityStateForBundle(bundleName, annotations: coordinator.annotatedProgram)
                                     BundleRow(
                                         bundle: bundle,
                                         isExpanded: expandedBundles.contains(bundleName),
-                                        ownership: coordinator.ownershipAnalysis?.ownership[bundleName],
-                                        purity: coordinator.purityAnalysis?.purity[bundleName]
+                                        domain: domain,
+                                        purityState: purityState
                                     ) {
                                         if expandedBundles.contains(bundleName) {
                                             expandedBundles.remove(bundleName)
@@ -165,11 +167,18 @@ struct IRView: View {
 
 // MARK: - Bundle Row
 
+/// Simplified purity state for display (derived from annotations)
+enum PurityState {
+    case pure
+    case stateful
+    case external
+}
+
 struct BundleRow: View {
     let bundle: IRBundle
     let isExpanded: Bool
-    let ownership: BackendDomain?
-    let purity: Purity?
+    let domain: BackendDomain?
+    let purityState: PurityState?
     let onToggle: () -> Void
 
     var body: some View {
@@ -192,11 +201,11 @@ struct BundleRow: View {
                     Spacer()
 
                     // Badges
-                    if let owner = ownership {
-                        DomainBadge(domain: owner)
+                    if let d = domain {
+                        DomainBadge(domain: d)
                     }
-                    if let purity = purity {
-                        PurityBadge(purity: purity)
+                    if let ps = purityState {
+                        PurityBadge(purityState: ps)
                     }
                 }
                 .padding(.vertical, Spacing.xxs)
@@ -474,80 +483,42 @@ struct AnalysisView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.sm) {
-                // Ownership Analysis
-                DevModeSection(title: "Ownership Analysis", icon: "person.2.fill") {
-                    if let ownership = coordinator.ownershipAnalysis {
+                // Signal Annotations
+                DevModeSection(title: "Signal Annotations", icon: "tag.fill") {
+                    if let annotations = coordinator.annotatedProgram,
+                       let program = coordinator.program {
                         VStack(alignment: .leading, spacing: Spacing.xs) {
-                            ForEach(ownership.ownership.keys.sorted(), id: \.self) { bundle in
+                            ForEach(Array(program.bundles.keys.sorted()), id: \.self) { bundle in
                                 HStack {
                                     Text(bundle)
                                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         .foregroundStyle(.primary)
                                     Spacer()
-                                    DomainBadge(domain: ownership.ownership[bundle] ?? .none)
-                                }
-                            }
-
-                            if !ownership.sinks.isEmpty {
-                                Divider()
-                                Text("Sinks")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(.tertiary)
-                                ForEach(ownership.sinks.keys.sorted(), id: \.self) { bundle in
-                                    HStack {
-                                        Text(bundle)
-                                            .font(.system(size: 10, design: .monospaced))
-                                        Spacer()
-                                        Text(ownership.sinks[bundle] ?? "")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(.secondary)
+                                    DomainBadge(domain: annotations.bundleDomain(bundle))
+                                    if let ps = purityStateForBundle(bundle, annotations: annotations) {
+                                        PurityBadge(purityState: ps)
                                     }
                                 }
                             }
-                        }
-                    } else {
-                        Text("No analysis available")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
 
-                // Purity Analysis
-                DevModeSection(title: "Purity Analysis", icon: "sparkles") {
-                    if let purity = coordinator.purityAnalysis {
-                        VStack(alignment: .leading, spacing: Spacing.xs) {
-                            ForEach(purity.purity.keys.sorted(), id: \.self) { bundle in
-                                HStack {
-                                    Text(bundle)
-                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    PurityBadge(purity: purity.purity[bundle] ?? .pure)
+                            // Show stateful bundles
+                            let statefulBundles = program.bundles.keys.filter { bundleName in
+                                annotations.signals.contains { key, signal in
+                                    key.hasPrefix("\(bundleName).") && signal.stateful
                                 }
                             }
-
-                            if !purity.selfReferencing.isEmpty {
+                            if !statefulBundles.isEmpty {
                                 Divider()
-                                Text("Self-Referencing (Feedback)")
+                                Text("Stateful (uses cache)")
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundStyle(.tertiary)
-                                Text(purity.selfReferencing.sorted().joined(separator: ", "))
+                                Text(statefulBundles.sorted().joined(separator: ", "))
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(.orange)
                             }
-
-                            if !purity.usesCache.isEmpty {
-                                Divider()
-                                Text("Uses Cache")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(.tertiary)
-                                Text(purity.usesCache.sorted().joined(separator: ", "))
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.purple)
-                            }
                         }
                     } else {
-                        Text("No analysis available")
+                        Text("No annotations available")
                             .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
                     }
@@ -848,7 +819,7 @@ struct DomainBadge: View {
 }
 
 struct PurityBadge: View {
-    let purity: Purity
+    let purityState: PurityState
 
     var body: some View {
         Text(purityText)
@@ -861,7 +832,7 @@ struct PurityBadge: View {
     }
 
     private var purityText: String {
-        switch purity {
+        switch purityState {
         case .pure: return "pure"
         case .stateful: return "stateful"
         case .external: return "external"
@@ -869,12 +840,31 @@ struct PurityBadge: View {
     }
 
     private var purityColor: Color {
-        switch purity {
+        switch purityState {
         case .pure: return .green
         case .stateful: return .orange
         case .external: return .purple
         }
     }
+}
+
+/// Helper to derive purity state from annotations
+func purityStateForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) -> PurityState? {
+    guard let annotations = annotations else { return nil }
+
+    // Look for any strand in the bundle
+    for (key, signal) in annotations.signals {
+        if key.hasPrefix("\(bundleName).") {
+            if signal.isExternal {
+                return .external
+            } else if signal.stateful {
+                return .stateful
+            } else {
+                return .pure
+            }
+        }
+    }
+    return nil
 }
 
 struct CacheDomainBadge: View {

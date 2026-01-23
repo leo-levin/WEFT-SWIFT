@@ -24,6 +24,37 @@ public class AudioBackend: Backend {
     public static let statefulBuiltins: Set<String> = ["cache"]
     public static let coordinateFields = ["i", "t", "sampleRate"]
 
+    // MARK: - Domain Annotation Specs
+
+    /// Coordinate dimensions for audio domain
+    public static let coordinateSpecs: [String: IRDimension] = [
+        "i": IRDimension(name: "i", access: .free),
+        "t": IRDimension(name: "t", access: .free),  // derived from i, so seekable
+        "sampleRate": IRDimension(name: "sampleRate", access: .bound),
+    ]
+
+    /// Primitive specifications for audio domain builtins
+    public static let primitiveSpecs: [String: PrimitiveSpec] = [
+        "microphone": PrimitiveSpec(
+            name: "microphone",
+            outputDomain: [IRDimension(name: "t", access: .bound)],
+            hardwareRequired: [.microphone],
+            addsState: false
+        ),
+        "sample": PrimitiveSpec(
+            name: "sample",
+            outputDomain: [IRDimension(name: "t", access: .free)],
+            hardwareRequired: [],
+            addsState: false
+        ),
+        "cache": PrimitiveSpec(
+            name: "cache",
+            outputDomain: [],
+            hardwareRequired: [],
+            addsState: true
+        ),
+    ]
+
     public static let bindings: [BackendBinding] = [
         // Input
         .input(InputBinding(

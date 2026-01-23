@@ -6,22 +6,19 @@ import Foundation
 
 public class Partitioner {
     private let program: IRProgram
-    private let ownership: OwnershipAnalysis
-    private let purity: PurityAnalysis
     private let graph: DependencyGraph
+    private let annotations: IRAnnotatedProgram
     private let registry: BackendRegistry
 
     public init(
         program: IRProgram,
-        ownership: OwnershipAnalysis,
-        purity: PurityAnalysis,
         graph: DependencyGraph,
+        annotations: IRAnnotatedProgram,
         registry: BackendRegistry = .shared
     ) {
         self.program = program
-        self.ownership = ownership
-        self.purity = purity
         self.graph = graph
+        self.annotations = annotations
         self.registry = registry
     }
 
@@ -30,9 +27,20 @@ public class Partitioner {
         registry.allOutputBindings.first { $0.value.backendId == backendId }?.key
     }
 
-    /// Check if any sink belongs to a backend
+    /// Check if a bundle is a sink for a backend
+    private func isSinkBundle(_ bundleName: String, for backendId: String) -> Bool {
+        guard let binding = registry.allOutputBindings[bundleName] else { return false }
+        return binding.backendId == backendId
+    }
+
+    /// Check if program has a sink bundle for a backend
     private func hasSinkFor(backendId: String) -> Bool {
-        ownership.sinks.values.contains(backendId)
+        for (bundleName, binding) in registry.allOutputBindings {
+            if binding.backendId == backendId && program.bundles[bundleName] != nil {
+                return true
+            }
+        }
+        return false
     }
 
     /// Partition the IR into Swatches
@@ -45,8 +53,8 @@ public class Partitioner {
         var pureBundles = Set<String>()
 
         for (bundleName, _) in program.bundles {
-            let domain = ownership.ownership[bundleName] ?? .none
-            let isPure = purity.isPure(bundleName)
+            let domain = annotations.bundleDomain(bundleName)
+            let isPure = annotations.isPure(bundleName)
 
             switch domain {
             case .visual:
@@ -89,7 +97,7 @@ public class Partitioner {
             let visualSwatch = Swatch(
                 backend: .visual,
                 bundles: allVisualBundles,
-                isSink: visualOutputBundle.map { ownership.sinks[$0] != nil } ?? false
+                isSink: visualOutputBundle.map { isSinkBundle($0, for: visualBackendId) } ?? false
             )
             swatchGraph.swatches.append(visualSwatch)
 
@@ -123,7 +131,7 @@ public class Partitioner {
             let audioSwatch = Swatch(
                 backend: .audio,
                 bundles: allAudioBundles,
-                isSink: audioOutputBundle.map { ownership.sinks[$0] != nil } ?? false
+                isSink: audioOutputBundle.map { isSinkBundle($0, for: audioBackendId) } ?? false
             )
             swatchGraph.swatches.append(audioSwatch)
 

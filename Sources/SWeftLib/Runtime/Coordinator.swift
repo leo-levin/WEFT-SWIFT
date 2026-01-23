@@ -10,8 +10,7 @@ public class Coordinator: CameraCaptureDelegate {
     // IR and analysis
     public private(set) var program: IRProgram?
     public private(set) var dependencyGraph: DependencyGraph?
-    public private(set) var ownershipAnalysis: OwnershipAnalysis?
-    public private(set) var purityAnalysis: PurityAnalysis?
+    public private(set) var annotatedProgram: IRAnnotatedProgram?
     public private(set) var swatchGraph: SwatchGraph?
 
     // Backend registry
@@ -70,28 +69,32 @@ public class Coordinator: CameraCaptureDelegate {
         graph.build(from: program)
         self.dependencyGraph = graph
 
-        // Analyze ownership (using registry for backend metadata)
-        let ownership = OwnershipAnalysis(registry: registry)
-        ownership.analyze(program: program)
-        self.ownershipAnalysis = ownership
+        // Run annotation pass (merges both visual and audio specs)
+        let allCoordinateSpecs = MetalBackend.coordinateSpecs
+            .merging(AudioBackend.coordinateSpecs) { (visual, _) in visual }
+        let allPrimitiveSpecs = MetalBackend.primitiveSpecs
+            .merging(AudioBackend.primitiveSpecs) { (visual, _) in visual }
 
-        // Analyze purity (using registry for backend metadata)
-        let purity = PurityAnalysis(registry: registry)
-        purity.analyze(program: program)
-        self.purityAnalysis = purity
+        let annotationPass = AnnotationPass(
+            program: program,
+            coordinateSpecs: allCoordinateSpecs,
+            primitiveSpecs: allPrimitiveSpecs
+        )
+        let annotations = annotationPass.annotate()
+        self.annotatedProgram = annotations
 
         // Partition into swatches
         let partitioner = Partitioner(
             program: program,
-            ownership: ownership,
-            purity: purity,
-            graph: graph
+            graph: graph,
+            annotations: annotations,
+            registry: registry
         )
         let swatches = partitioner.partition()
         self.swatchGraph = swatches
 
-        // Analyze cache nodes (pass ownership for domain classification)
-        cacheManager.analyze(program: program, ownership: ownership)
+        // Analyze cache nodes
+        cacheManager.analyze(program: program, annotations: annotations)
 
         // Transform program to break cache cycles (replace back-references with cacheRead)
         if var mutableProgram = self.program {

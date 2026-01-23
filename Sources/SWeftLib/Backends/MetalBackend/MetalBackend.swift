@@ -38,10 +38,57 @@ public struct MetalUniforms {
 
 public class MetalBackend: Backend {
     public static let identifier = "visual"
+    public static let hardwareOwned: Set<IRHardware> = [.camera, .gpu]
     public static let ownedBuiltins: Set<String> = ["camera", "texture", "load"]
     public static let externalBuiltins: Set<String> = ["camera", "texture"]
     public static let statefulBuiltins: Set<String> = ["cache"]
     public static let coordinateFields = ["x", "y", "t", "w", "h"]
+
+    // MARK: - Domain Annotation Specs
+
+    /// Coordinate dimensions for visual domain
+    public static let coordinateSpecs: [String: IRDimension] = [
+        "x": IRDimension(name: "x", access: .free),
+        "y": IRDimension(name: "y", access: .free),
+        "t": IRDimension(name: "t", access: .bound),
+        "w": IRDimension(name: "w", access: .bound),
+        "h": IRDimension(name: "h", access: .bound),
+    ]
+
+    /// Primitive specifications for visual domain builtins
+    public static let primitiveSpecs: [String: PrimitiveSpec] = [
+        "camera": PrimitiveSpec(
+            name: "camera",
+            outputDomain: [
+                IRDimension(name: "x", access: .free),
+                IRDimension(name: "y", access: .free),
+                IRDimension(name: "t", access: .bound)
+            ],
+            hardwareRequired: [.camera],
+            addsState: false
+        ),
+        "mouse": PrimitiveSpec(
+            name: "mouse",
+            outputDomain: [IRDimension(name: "t", access: .bound)],
+            hardwareRequired: [],
+            addsState: false
+        ),
+        "texture": PrimitiveSpec(
+            name: "texture",
+            outputDomain: [
+                IRDimension(name: "x", access: .free),
+                IRDimension(name: "y", access: .free)
+            ],
+            hardwareRequired: [.gpu],
+            addsState: false
+        ),
+        "cache": PrimitiveSpec(
+            name: "cache",
+            outputDomain: [],
+            hardwareRequired: [],
+            addsState: true
+        ),
+    ]
 
     public static let bindings: [BackendBinding] = [
         // Inputs
