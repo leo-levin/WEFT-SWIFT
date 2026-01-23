@@ -129,4 +129,34 @@ public final class BackendRegistry {
     public func backendFor(sink: String) -> String? {
         outputSinks[sink]
     }
+
+    // MARK: - Hardware-based Routing
+
+    /// Find the backend that owns the given hardware
+    /// Returns nil if no backend claims this hardware
+    public func backendOwning(hardware: IRHardware) -> String? {
+        for (identifier, type) in backendTypes {
+            if type.hardwareOwned.contains(hardware) {
+                return identifier
+            }
+        }
+        return nil
+    }
+
+    /// Find the backend identifier for a set of hardware requirements
+    /// Returns the backend whose hardwareOwned intersects with the given hardware,
+    /// or nil if no intersection (pure signal)
+    public func backendFor(hardware: Set<IRHardware>) -> String? {
+        for (identifier, type) in backendTypes {
+            if !type.hardwareOwned.isDisjoint(with: hardware) {
+                return identifier
+            }
+        }
+        return nil
+    }
+
+    /// Get all registered backend types
+    public var allBackendTypes: [String: any Backend.Type] {
+        backendTypes
+    }
 }

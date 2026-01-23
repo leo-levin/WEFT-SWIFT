@@ -41,7 +41,7 @@ final class BackendParityTests: XCTestCase {
         time: Double = 0.5,
         sampleRate: Double = 44100
     ) throws -> Float {
-        let swatch = Swatch(backend: .audio, bundles: ["play"], isSink: true)
+        let swatch = Swatch(backend: "audio", bundles: ["play"], isSink: true)
         let codegen = AudioCodeGen(program: program, swatch: swatch)
         let renderFunc = try codegen.generateRenderFunction()
         let (left, _) = renderFunc(sampleIndex, time, sampleRate)

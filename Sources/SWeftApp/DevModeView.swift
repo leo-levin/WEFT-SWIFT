@@ -116,13 +116,15 @@ struct IRView: View {
                         VStack(alignment: .leading, spacing: Spacing.xs) {
                             ForEach(Array(program.bundles.keys.sorted()), id: \.self) { bundleName in
                                 if let bundle = program.bundles[bundleName] {
-                                    let domain = coordinator.annotatedProgram?.bundleDomain(bundleName)
+                                    let backendId = backendIdForBundle(bundleName, annotations: coordinator.annotatedProgram)
                                     let purityState = purityStateForBundle(bundleName, annotations: coordinator.annotatedProgram)
+                                    let bundleSignals = signalsForBundle(bundleName, annotations: coordinator.annotatedProgram)
                                     BundleRow(
                                         bundle: bundle,
                                         isExpanded: expandedBundles.contains(bundleName),
-                                        domain: domain,
-                                        purityState: purityState
+                                        backendId: backendId,
+                                        purityState: purityState,
+                                        signals: bundleSignals
                                     ) {
                                         if expandedBundles.contains(bundleName) {
                                             expandedBundles.remove(bundleName)
@@ -177,8 +179,11 @@ enum PurityState {
 struct BundleRow: View {
     let bundle: IRBundle
     let isExpanded: Bool
-    let domain: BackendDomain?
+    /// Backend identifier (e.g., "visual", "audio")
+    let backendId: String?
     let purityState: PurityState?
+    /// Signal annotations for this bundle's strands
+    let signals: [String: IRSignal]?
     let onToggle: () -> Void
 
     var body: some View {
@@ -194,15 +199,18 @@ struct BundleRow: View {
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(.primary)
 
-                    Text("[\(bundle.strands.map { $0.name }.joined(separator: ", "))]")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    // Domain annotation (from first strand)
+                    if let domainText = bundleDomainText {
+                        Text(domainText)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
 
                     Spacer()
 
                     // Badges
-                    if let d = domain {
-                        DomainBadge(domain: d)
+                    if let bid = backendId {
+                        BackendBadge(backendId: bid)
                     }
                     if let ps = purityState {
                         PurityBadge(purityState: ps)
@@ -215,16 +223,26 @@ struct BundleRow: View {
             if isExpanded {
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     ForEach(bundle.strands, id: \.name) { strand in
+                        let signalKey = "\(bundle.name).\(strand.name)"
+                        let signal = signals?[signalKey]
+
                         HStack(alignment: .top, spacing: Spacing.xs) {
                             Text("\(strand.name):")
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .frame(width: 30, alignment: .trailing)
 
-                            Text(strand.expr.description)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.primary)
-                                .textSelection(.enabled)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(strand.expr.description)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                    .textSelection(.enabled)
+
+                                // Show signal annotations
+                                if let signal = signal {
+                                    SignalAnnotationView(signal: signal)
+                                }
+                            }
                         }
                     }
                 }
@@ -234,6 +252,80 @@ struct BundleRow: View {
                 .cornerRadius(4)
             }
         }
+    }
+
+    /// Get domain text for the bundle (from first strand)
+    private var bundleDomainText: String? {
+        guard let signals = signals else { return nil }
+        // Find first strand's signal
+        for strand in bundle.strands {
+            let key = "\(bundle.name).\(strand.name)"
+            if let signal = signals[key] {
+                return formatDomain(signal.domain)
+            }
+        }
+        return nil
+    }
+
+    /// Format domain as compact string
+    private func formatDomain(_ domain: [IRDimension]) -> String {
+        if domain.isEmpty {
+            return "[]"
+        }
+        let dims = domain.map { dim in
+            let marker = dim.access == .bound ? "·" : ""
+            return "\(dim.name)\(marker)"
+        }
+        return "[\(dims.joined(separator: " "))]"
+    }
+}
+
+// MARK: - Signal Annotation View
+
+struct SignalAnnotationView: View {
+    let signal: IRSignal
+
+    var body: some View {
+        HStack(spacing: 4) {
+            // Domain
+            Text(domainText)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.cyan.opacity(0.8))
+
+            // Flags
+            if signal.stateful {
+                Text("stateful")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(.orange)
+            }
+            if !signal.hardware.isEmpty {
+                Text(hardwareText)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(.purple)
+            }
+        }
+    }
+
+    private var domainText: String {
+        if signal.domain.isEmpty {
+            return "constant"
+        }
+        let dims = signal.domain.map { dim in
+            dim.access == .bound ? "\(dim.name)·" : dim.name
+        }
+        return "(\(dims.joined(separator: ", ")))"
+    }
+
+    private var hardwareText: String {
+        signal.hardware.map { hw in
+            switch hw {
+            case .camera: return "cam"
+            case .microphone: return "mic"
+            case .speaker: return "spk"
+            case .gpu: return "gpu"
+            case .custom(let name): return name
+            }
+        }.joined(separator: "+")
     }
 }
 
@@ -367,7 +459,7 @@ struct GeneratedCodeView: View {
         guard let swatches = coordinator.swatchGraph?.swatches else { return nil }
 
         var sources: [(Swatch, String)] = []
-        for swatch in swatches where swatch.backend == .visual {
+        for swatch in swatches where swatch.backend == "visual" {
             if let source = coordinator.getCompiledShaderSource(for: swatch.id) {
                 sources.append((swatch, source))
             }
@@ -377,13 +469,13 @@ struct GeneratedCodeView: View {
 
     private func hasAudioSwatches() -> Bool {
         guard let swatches = coordinator.swatchGraph?.swatches else { return false }
-        return swatches.contains { $0.backend == .audio }
+        return swatches.contains { $0.backend == "audio" }
     }
 
     private func getAudioInfo() -> String? {
         guard let swatches = coordinator.swatchGraph?.swatches else { return nil }
         let audioBundles = swatches
-            .filter { $0.backend == .audio }
+            .filter { $0.backend == "audio" }
             .flatMap { $0.bundles }
             .sorted()
         return audioBundles.isEmpty ? nil : audioBundles.joined(separator: ", ")
@@ -494,7 +586,9 @@ struct AnalysisView: View {
                                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         .foregroundStyle(.primary)
                                     Spacer()
-                                    DomainBadge(domain: annotations.bundleDomain(bundle))
+                                    if let bid = backendIdForBundle(bundle, annotations: annotations) {
+                                        BackendBadge(backendId: bid)
+                                    }
                                     if let ps = purityStateForBundle(bundle, annotations: annotations) {
                                         PurityBadge(purityState: ps)
                                     }
@@ -607,8 +701,8 @@ struct SwatchesView: View {
                     DevModeSection(title: "Swatch Graph", icon: "square.grid.2x2.fill") {
                         VStack(alignment: .leading, spacing: Spacing.xs) {
                             InfoRow(label: "Total Swatches", value: "\(swatchGraph.swatches.count)")
-                            InfoRow(label: "Visual Swatches", value: "\(swatchGraph.swatches.filter { $0.backend == .visual }.count)")
-                            InfoRow(label: "Audio Swatches", value: "\(swatchGraph.swatches.filter { $0.backend == .audio }.count)")
+                            InfoRow(label: "Visual Swatches", value: "\(swatchGraph.swatches.filter { $0.backend == "visual" }.count)")
+                            InfoRow(label: "Audio Swatches", value: "\(swatchGraph.swatches.filter { $0.backend == "audio" }.count)")
                         }
                     }
 
@@ -641,7 +735,7 @@ struct SwatchesView: View {
                                             .foregroundStyle(.tertiary)
                                             .frame(width: 20)
 
-                                        DomainBadge(domain: swatch.backend)
+                                        BackendBadge(backendId: swatch.backend)
 
                                         Text(swatch.bundles.sorted().joined(separator: ", "))
                                             .font(.system(size: 10, design: .monospaced))
@@ -688,7 +782,7 @@ struct SwatchRow: View {
                         .foregroundStyle(.tertiary)
                         .frame(width: 10)
 
-                    DomainBadge(domain: swatch.backend)
+                    BackendBadge(backendId: swatch.backend)
 
                     Text(swatch.bundles.sorted().joined(separator: ", "))
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
@@ -796,24 +890,24 @@ struct InfoRow: View {
     }
 }
 
-struct DomainBadge: View {
-    let domain: BackendDomain
+struct BackendBadge: View {
+    let backendId: String
 
     var body: some View {
-        Text(domain.rawValue.uppercased())
+        Text(backendId.uppercased())
             .font(.system(size: 9, weight: .bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
-            .background(domainColor)
+            .background(badgeColor)
             .cornerRadius(3)
     }
 
-    private var domainColor: Color {
-        switch domain {
-        case .visual: return .blue
-        case .audio: return .green
-        case .none: return .gray
+    private var badgeColor: Color {
+        switch backendId {
+        case "visual": return .blue
+        case "audio": return .green
+        default: return .gray
         }
     }
 }
@@ -865,6 +959,25 @@ func purityStateForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?
         }
     }
     return nil
+}
+
+/// Helper to get backend ID for a bundle based on its hardware requirements
+func backendIdForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) -> String? {
+    guard let annotations = annotations else { return nil }
+    let hardware = annotations.bundleHardware(bundleName)
+    return BackendRegistry.shared.backendFor(hardware: hardware)
+}
+
+/// Helper to get all signals for a bundle
+func signalsForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) -> [String: IRSignal]? {
+    guard let annotations = annotations else { return nil }
+    var result: [String: IRSignal] = [:]
+    for (key, signal) in annotations.signals {
+        if key.hasPrefix("\(bundleName).") {
+            result[key] = signal
+        }
+    }
+    return result.isEmpty ? nil : result
 }
 
 struct CacheDomainBadge: View {

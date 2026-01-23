@@ -742,8 +742,8 @@ class WeftViewModel: ObservableObject {
                 print("Resource warnings:\n\(resourceErrors)")
             }
 
-            hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == .visual } ?? false
-            hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == .audio } ?? false
+            hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "visual" } ?? false
+            hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "audio" } ?? false
 
             isRunning = true
             statusText = resourceWarning != nil ? "Running (with warnings)" : "Running"

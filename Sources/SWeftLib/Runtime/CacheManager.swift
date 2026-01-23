@@ -160,9 +160,10 @@ public class CacheManager {
                     tapIndex = 0
                 }
 
-                // Determine domain from annotations
-                let bundleDomain = annotations.bundleDomain(bundleName)
-                let domain: CacheDomain = (bundleDomain == .audio) ? .audio : .visual
+                // Determine domain from hardware requirements
+                let hardware = annotations.bundleHardware(bundleName)
+                let backendId = BackendRegistry.shared.backendFor(hardware: hardware)
+                let domain: CacheDomain = (backendId == AudioBackend.identifier) ? .audio : .visual
 
                 // Check for duplicates - same bundle/strand/value/signal means same cache
                 let isDuplicate = descriptors.contains { existing in

@@ -19,6 +19,7 @@ public class AudioCompiledUnit: CompiledUnit {
 
 public class AudioBackend: Backend {
     public static let identifier = "audio"
+    public static let hardwareOwned: Set<IRHardware> = [.microphone, .speaker]
     public static let ownedBuiltins: Set<String> = ["microphone", "sample"]
     public static let externalBuiltins: Set<String> = ["microphone", "sample"]
     public static let statefulBuiltins: Set<String> = ["cache"]

@@ -44,99 +44,75 @@ public class Partitioner {
     }
 
     /// Partition the IR into Swatches
+    ///
+    /// Routing algorithm:
+    /// 1. For each bundle, get its hardware requirements from annotations
+    /// 2. Find the backend whose hardwareOwned intersects with the hardware
+    /// 3. If no intersection (pure), the bundle can be duplicated to any backend that needs it
     public func partition() -> SwatchGraph {
         var swatchGraph = SwatchGraph()
 
-        // Group bundles by backend (pure nodes can duplicate, so we handle them specially)
-        var visualBundles = Set<String>()
-        var audioBundles = Set<String>()
+        // Group bundles by backend based on hardware requirements
+        var bundlesByBackend: [String: Set<String>] = [:]
         var pureBundles = Set<String>()
 
         for (bundleName, _) in program.bundles {
-            let domain = annotations.bundleDomain(bundleName)
-            let isPure = annotations.isPure(bundleName)
+            let hardware = annotations.bundleHardware(bundleName)
 
-            switch domain {
-            case .visual:
-                visualBundles.insert(bundleName)
-            case .audio:
-                audioBundles.insert(bundleName)
-            case .none:
-                if isPure {
-                    pureBundles.insert(bundleName)
-                }
-                // Pure bundles with .none domain will be duplicated as needed
+            if let backendId = registry.backendFor(hardware: hardware) {
+                // Bundle requires hardware owned by this backend
+                bundlesByBackend[backendId, default: []].insert(bundleName)
+            } else {
+                // Pure bundle - no hardware requirements
+                pureBundles.insert(bundleName)
             }
         }
 
-        // For simplicity, create one swatch per backend (can be refined later for interleaving)
-        // Pure bundles are duplicated into each backend that needs them
+        // Create a swatch for each backend that has bundles or a sink
+        for (backendId, backendType) in registry.allBackendTypes {
+            let outputBundle = outputBundleName(for: backendId)
+            var backendBundles = bundlesByBackend[backendId] ?? []
 
-        // Visual swatch
-        let visualBackendId = MetalBackend.identifier
-        let visualOutputBundle = outputBundleName(for: visualBackendId)
+            // Check if this backend has a sink in the program
+            let hasSink = hasSinkFor(backendId: backendId)
 
-        if !visualBundles.isEmpty || hasSinkFor(backendId: visualBackendId) {
-            var allVisualBundles = visualBundles
+            // Skip if no bundles and no sink
+            if backendBundles.isEmpty && !hasSink {
+                continue
+            }
 
-            // Add pure bundles that visual depends on
-            for bundle in visualBundles {
+            // Add pure bundles that this backend's bundles depend on
+            for bundle in backendBundles {
                 let deps = graph.transitiveDependencies(of: bundle)
                 for dep in deps {
                     if pureBundles.contains(dep) {
-                        allVisualBundles.insert(dep)
+                        backendBundles.insert(dep)
                     }
                 }
             }
 
-            // Also include output bundle if present
-            if let outputBundle = visualOutputBundle, program.bundles[outputBundle] != nil {
-                allVisualBundles.insert(outputBundle)
-            }
+            // Include output bundle if present in program
+            if let outputBundle = outputBundle, program.bundles[outputBundle] != nil {
+                backendBundles.insert(outputBundle)
 
-            let visualSwatch = Swatch(
-                backend: .visual,
-                bundles: allVisualBundles,
-                isSink: visualOutputBundle.map { isSinkBundle($0, for: visualBackendId) } ?? false
-            )
-            swatchGraph.swatches.append(visualSwatch)
-
-            for bundle in allVisualBundles {
-                swatchGraph.bundleToSwatch[bundle] = visualSwatch.id
-            }
-        }
-
-        // Audio swatch
-        let audioBackendId = AudioBackend.identifier
-        let audioOutputBundle = outputBundleName(for: audioBackendId)
-
-        if !audioBundles.isEmpty || hasSinkFor(backendId: audioBackendId) {
-            var allAudioBundles = audioBundles
-
-            // Add pure bundles that audio depends on
-            for bundle in audioBundles {
-                let deps = graph.transitiveDependencies(of: bundle)
+                // Also add pure dependencies of the output bundle
+                let deps = graph.transitiveDependencies(of: outputBundle)
                 for dep in deps {
                     if pureBundles.contains(dep) {
-                        allAudioBundles.insert(dep)
+                        backendBundles.insert(dep)
                     }
                 }
             }
 
-            // Also include output bundle if present
-            if let outputBundle = audioOutputBundle, program.bundles[outputBundle] != nil {
-                allAudioBundles.insert(outputBundle)
-            }
-
-            let audioSwatch = Swatch(
-                backend: .audio,
-                bundles: allAudioBundles,
-                isSink: audioOutputBundle.map { isSinkBundle($0, for: audioBackendId) } ?? false
+            let swatch = Swatch(
+                backend: backendId,
+                bundles: backendBundles,
+                isSink: outputBundle.map { isSinkBundle($0, for: backendId) } ?? false
             )
-            swatchGraph.swatches.append(audioSwatch)
+            swatchGraph.swatches.append(swatch)
 
-            for bundle in allAudioBundles {
-                swatchGraph.bundleToSwatch[bundle] = audioSwatch.id
+            for bundle in backendBundles {
+                swatchGraph.bundleToSwatch[bundle] = swatch.id
             }
         }
 

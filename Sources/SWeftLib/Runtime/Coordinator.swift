@@ -140,8 +140,7 @@ public class Coordinator: CameraCaptureDelegate {
         needsMicrophone = false
 
         for swatch in swatches {
-            switch swatch.backend {
-            case .visual:
+            if swatch.backend == MetalBackend.identifier {
                 // Initialize Metal backend if needed
                 if metalBackend == nil {
                     metalBackend = try MetalBackend()
@@ -195,7 +194,7 @@ public class Coordinator: CameraCaptureDelegate {
                     }
                 }
 
-            case .audio:
+            } else if swatch.backend == AudioBackend.identifier {
                 // Initialize Audio backend if needed
                 if audioBackend == nil {
                     audioBackend = AudioBackend()
@@ -227,11 +226,8 @@ public class Coordinator: CameraCaptureDelegate {
                     cacheManager: cacheManager
                 )
                 compiledUnits[swatch.id] = unit
-
-            case .none:
-                // Pure swatch - skip
-                break
             }
+            // Unknown backend - skip (pure swatches or future backends)
         }
 
         // Start camera if needed
@@ -311,13 +307,10 @@ public class Coordinator: CameraCaptureDelegate {
             let inputs = bufferManager.getBuffers(names: swatch.inputBuffers)
             let outputs = bufferManager.getBuffers(names: swatch.outputBuffers)
 
-            switch swatch.backend {
-            case .visual:
+            if swatch.backend == MetalBackend.identifier {
                 metalBackend?.execute(unit: unit, inputs: inputs, outputs: outputs, time: time)
-            case .audio:
+            } else if swatch.backend == AudioBackend.identifier {
                 audioBackend?.execute(unit: unit, inputs: inputs, outputs: outputs, time: time)
-            case .none:
-                break
             }
         }
     }
@@ -339,7 +332,7 @@ public class Coordinator: CameraCaptureDelegate {
         }
 
         // Find visual sink swatch
-        for swatch in swatches where swatch.backend == .visual && swatch.isSink {
+        for swatch in swatches where swatch.backend == MetalBackend.identifier && swatch.isSink {
             if let unit = compiledUnits[swatch.id] {
                 metalBackend?.render(unit: unit, to: drawable, time: time, cacheManager: cacheManager)
                 return
@@ -357,7 +350,7 @@ public class Coordinator: CameraCaptureDelegate {
         guard let swatches = swatchGraph?.swatches else { return }
 
         // Find audio sink swatch
-        for swatch in swatches where swatch.backend == .audio && swatch.isSink {
+        for swatch in swatches where swatch.backend == AudioBackend.identifier && swatch.isSink {
             if let unit = compiledUnits[swatch.id] {
                 try audioBackend?.start(unit: unit, time: time)
                 return
@@ -411,13 +404,13 @@ public class Coordinator: CameraCaptureDelegate {
     }
 
     /// Get compiled units info (for dev mode)
-    public func getCompiledUnitsInfo() -> [(swatchId: UUID, backend: BackendDomain, usedInputs: Set<String>)] {
-        var info: [(UUID, BackendDomain, Set<String>)] = []
+    public func getCompiledUnitsInfo() -> [(swatchId: UUID, backend: String, usedInputs: Set<String>)] {
+        var info: [(UUID, String, Set<String>)] = []
         for (id, unit) in compiledUnits {
             if let metalUnit = unit as? MetalCompiledUnit {
-                info.append((id, .visual, metalUnit.usedInputs))
+                info.append((id, MetalBackend.identifier, metalUnit.usedInputs))
             } else {
-                info.append((id, .audio, []))
+                info.append((id, AudioBackend.identifier, []))
             }
         }
         return info
