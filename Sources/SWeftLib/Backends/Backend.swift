@@ -111,6 +111,11 @@ public protocol Backend {
     /// Used by the partitioner to route bundles to the correct backend.
     static var identifier: String { get }
 
+    /// Hardware resources this backend claims ownership of.
+    /// Signals requiring this hardware will be routed to this backend.
+    /// Examples: [.camera, .gpu] for visual, [.microphone, .speaker] for audio
+    static var hardwareOwned: Set<IRHardware> { get }
+
     /// Builtins this backend "owns" - bundles using these builtins are assigned to this backend.
     /// Examples: "camera" owned by visual, "microphone" owned by audio.
     /// Ownership is used during partitioning to determine which backend compiles each bundle.

@@ -176,8 +176,8 @@ final class FullPipelineTests: XCTestCase {
         XCTAssertNotNil(coordinator.audioBackend)
 
         // Verify swatches exist for both domains
-        let visualSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == .visual }
-        let audioSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == .audio }
+        let visualSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == "visual" }
+        let audioSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == "audio" }
 
         XCTAssertGreaterThanOrEqual(visualSwatches?.count ?? 0, 1)
         XCTAssertGreaterThanOrEqual(audioSwatches?.count ?? 0, 1)

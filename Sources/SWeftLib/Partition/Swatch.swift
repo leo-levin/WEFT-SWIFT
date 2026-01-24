@@ -8,7 +8,8 @@ import Foundation
 /// It's the unit of compilation for a backend.
 public struct Swatch: Identifiable, Hashable {
     public let id: UUID
-    public let backend: BackendDomain
+    /// Backend identifier (e.g., "visual", "audio", "midi")
+    public let backend: String
     public let bundles: Set<String>
 
     /// Cross-domain input buffers needed
@@ -21,7 +22,7 @@ public struct Swatch: Identifiable, Hashable {
     public var isSink: Bool
 
     public init(
-        backend: BackendDomain,
+        backend: String,
         bundles: Set<String>,
         inputBuffers: Set<String> = [],
         outputBuffers: Set<String> = [],
@@ -48,7 +49,7 @@ public struct Swatch: Identifiable, Hashable {
 
 extension Swatch: CustomStringConvertible {
     public var description: String {
-        var parts = ["Swatch(\(backend.rawValue))"]
+        var parts = ["Swatch(\(backend))"]
         parts.append("bundles: {\(bundles.sorted().joined(separator: ", "))}")
         if !inputBuffers.isEmpty {
             parts.append("inputs: {\(inputBuffers.sorted().joined(separator: ", "))}")

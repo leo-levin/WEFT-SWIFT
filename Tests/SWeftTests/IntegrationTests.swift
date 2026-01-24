@@ -32,7 +32,7 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.swatchGraph?.swatches.count, 1)
 
         // Should have visual swatch
-        let visualSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == .visual }
+        let visualSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == "visual" }
         XCTAssertEqual(visualSwatches?.count, 1)
         XCTAssertTrue(visualSwatches?.first?.isSink ?? false)
     }
@@ -70,7 +70,7 @@ final class IntegrationTests: XCTestCase {
         try coordinator.load(json: json)
 
         // Should have audio swatch
-        let audioSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == .audio }
+        let audioSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == "audio" }
         XCTAssertEqual(audioSwatches?.count, 1)
         XCTAssertTrue(audioSwatches?.first?.isSink ?? false)
     }
@@ -131,8 +131,8 @@ final class IntegrationTests: XCTestCase {
         try coordinator.load(json: json)
 
         // Should have both swatches
-        let visualSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == .visual }
-        let audioSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == .audio }
+        let visualSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == "visual" }
+        let audioSwatches = coordinator.swatchGraph?.swatches.filter { $0.backend == "audio" }
 
         XCTAssertGreaterThanOrEqual(visualSwatches?.count ?? 0, 1)
         XCTAssertGreaterThanOrEqual(audioSwatches?.count ?? 0, 1)
@@ -162,7 +162,7 @@ final class IntegrationTests: XCTestCase {
         let parser = IRParser()
         let program = try parser.parse(json: json)
 
-        let swatch = Swatch(backend: .visual, bundles: ["display"], isSink: true)
+        let swatch = Swatch(backend: "visual", bundles: ["display"], isSink: true)
         let codegen = MetalCodeGen(program: program, swatch: swatch)
         let shader = try codegen.generate()
 
@@ -205,7 +205,7 @@ final class IntegrationTests: XCTestCase {
         let parser = IRParser()
         let program = try parser.parse(json: json)
 
-        let swatch = Swatch(backend: .audio, bundles: ["play"], isSink: true)
+        let swatch = Swatch(backend: "audio", bundles: ["play"], isSink: true)
         let codegen = AudioCodeGen(program: program, swatch: swatch)
         let renderFunc = try codegen.generateRenderFunction()
 

@@ -110,7 +110,7 @@ public class CacheManager {
     // MARK: - Analysis
 
     /// Analyze IR to find all cache nodes and create descriptors
-    public func analyze(program: IRProgram, ownership: OwnershipAnalysis? = nil) {
+    public func analyze(program: IRProgram, annotations: IRAnnotatedProgram) {
         descriptors = []
         nextBufferIndex = 0
 
@@ -122,7 +122,7 @@ public class CacheManager {
                     bundleName: bundleName,
                     strandIndex: strand.index,
                     program: program,
-                    ownership: ownership
+                    annotations: annotations
                 )
             }
         }
@@ -139,7 +139,7 @@ public class CacheManager {
         bundleName: String,
         strandIndex: Int,
         program: IRProgram,
-        ownership: OwnershipAnalysis?
+        annotations: IRAnnotatedProgram
     ) {
         switch expr {
         case .builtin(let name, let args) where name == "cache":
@@ -160,15 +160,10 @@ public class CacheManager {
                     tapIndex = 0
                 }
 
-                // Determine domain from bundle ownership
-                let domain: CacheDomain
-                if let ownership = ownership {
-                    let bundleOwner = ownership.ownership[bundleName] ?? .none
-                    domain = (bundleOwner == .audio) ? .audio : .visual
-                } else {
-                    // Default heuristic: "play" bundle is audio, else visual
-                    domain = (bundleName == "play") ? .audio : .visual
-                }
+                // Determine domain from hardware requirements
+                let hardware = annotations.bundleHardware(bundleName)
+                let backendId = BackendRegistry.shared.backendFor(hardware: hardware)
+                let domain: CacheDomain = (backendId == AudioBackend.identifier) ? .audio : .visual
 
                 // Check for duplicates - same bundle/strand/value/signal means same cache
                 let isDuplicate = descriptors.contains { existing in
@@ -208,59 +203,59 @@ public class CacheManager {
             }
             // Also check args recursively for nested caches
             for arg in args {
-                findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
             }
 
         case .binaryOp(_, let left, let right):
-            findCacheNodes(expr: left, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
-            findCacheNodes(expr: right, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+            findCacheNodes(expr: left, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
+            findCacheNodes(expr: right, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
 
         case .unaryOp(_, let operand):
-            findCacheNodes(expr: operand, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+            findCacheNodes(expr: operand, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
 
         case .builtin(_, let args):
             for arg in args {
-                findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
             }
 
         case .call(let spindle, let args):
             // Scan the args first
             for arg in args {
-                findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
             }
             // Inline the spindle and scan for caches in the expanded expression
             if let spindleDef = program.spindles[spindle], !spindleDef.returns.isEmpty {
                 let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
                 var inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
                 inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
-                findCacheNodes(expr: inlined, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                findCacheNodes(expr: inlined, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
             }
 
         case .extract(let callExpr, let index):
             // Scan the call expression args
             if case .call(let spindle, let args) = callExpr {
                 for arg in args {
-                    findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                    findCacheNodes(expr: arg, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
                 }
                 // Inline the spindle's specific return and scan for caches
                 if let spindleDef = program.spindles[spindle], index < spindleDef.returns.count {
                     let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
                     var inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
                     inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
-                    findCacheNodes(expr: inlined, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                    findCacheNodes(expr: inlined, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
                 }
             } else {
-                findCacheNodes(expr: callExpr, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                findCacheNodes(expr: callExpr, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
             }
 
         case .remap(let base, let subs):
-            findCacheNodes(expr: base, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+            findCacheNodes(expr: base, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
             for (_, subExpr) in subs {
-                findCacheNodes(expr: subExpr, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+                findCacheNodes(expr: subExpr, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
             }
 
         case .index(_, let indexExpr):
-            findCacheNodes(expr: indexExpr, bundleName: bundleName, strandIndex: strandIndex, program: program, ownership: ownership)
+            findCacheNodes(expr: indexExpr, bundleName: bundleName, strandIndex: strandIndex, program: program, annotations: annotations)
 
         default:
             break
