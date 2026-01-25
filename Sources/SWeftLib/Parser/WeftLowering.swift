@@ -332,7 +332,7 @@ public class WeftLowering {
                 }
                 return try lowerBareStrandAccess(access.accessor, subs: subs)
             }
-            return try lowerStrandAccess(access)
+            return try lowerStrandAccess(access, subs: subs)
 
         case .binaryOp(let op):
             let left = try lowerExpr(op.left, subs: subs)
@@ -526,14 +526,14 @@ public class WeftLowering {
         }
     }
 
-    private func lowerStrandAccess(_ access: StrandAccess) throws -> IRExpr {
+    private func lowerStrandAccess(_ access: StrandAccess, subs: [IRExpr]?) throws -> IRExpr {
         guard let bundle = access.bundle else {
             throw LoweringError.bareStrandOutsidePattern
         }
 
         switch bundle {
         case .bundleLit(let elements):
-            let lowered = try elements.map { try lowerExpr($0, subs: nil) }
+            let lowered = try elements.map { try lowerExpr($0, subs: subs) }
             switch access.accessor {
             case .index(let idx):
                 let resolved = idx < 0 ? lowered.count + idx : idx
@@ -542,7 +542,7 @@ public class WeftLowering {
                 }
                 return lowered[resolved]
             case .expr(let indexExpr):
-                let irIndex = try lowerExpr(indexExpr, subs: nil)
+                let irIndex = try lowerExpr(indexExpr, subs: subs)
                 return buildSelector(lowered, index: irIndex)
             case .name:
                 throw LoweringError.invalidExpression("Cannot use named access on bundle literal")
@@ -550,7 +550,7 @@ public class WeftLowering {
 
         case .named(let bundleName):
             if bundleName == "me" {
-                return try lowerMeAccess(access.accessor)
+                return try lowerMeAccess(access.accessor, subs: subs)
             }
 
             let info = try getBundleInfo(bundleName)
@@ -570,13 +570,21 @@ public class WeftLowering {
                 return .index(bundle: bundleName, indexExpr: .num(Double(resolved)))
 
             case .expr(let indexExpr):
-                let irIndex = try lowerExpr(indexExpr, subs: nil)
-                return .index(bundle: bundleName, indexExpr: irIndex)
+                // Expand dynamic indexing to select builtin for runtime resolution
+                let irIndex = try lowerExpr(indexExpr, subs: subs)
+
+                // Build array of all strand expressions as static indices
+                let strandExprs = (0..<info.width).map { idx -> IRExpr in
+                    .index(bundle: bundleName, indexExpr: .num(Double(idx)))
+                }
+
+                // Generate select(index, strand0, strand1, ...) for runtime selection
+                return buildSelector(strandExprs, index: irIndex)
             }
         }
     }
 
-    private func lowerMeAccess(_ accessor: StrandAccessor) throws -> IRExpr {
+    private func lowerMeAccess(_ accessor: StrandAccessor, subs: [IRExpr]?) throws -> IRExpr {
         let meWidth = ME_STRANDS.count
 
         switch accessor {
@@ -592,7 +600,7 @@ public class WeftLowering {
             return .index(bundle: "me", indexExpr: .num(Double(resolved)))
 
         case .expr(let indexExpr):
-            let irIndex = try lowerExpr(indexExpr, subs: nil)
+            let irIndex = try lowerExpr(indexExpr, subs: subs)
             return .index(bundle: "me", indexExpr: irIndex)
         }
     }
@@ -607,13 +615,13 @@ public class WeftLowering {
             }
             irBase = try lowerBareStrandAccess(remap.base.accessor, subs: subs)
         } else {
-            irBase = try lowerStrandAccess(remap.base)
+            irBase = try lowerStrandAccess(remap.base, subs: subs)
         }
 
         var subMap: [String: IRExpr] = [:]
 
         for r in remap.remappings {
-            let domainIR = try lowerStrandAccess(r.domain)
+            let domainIR = try lowerStrandAccess(r.domain, subs: subs)
 
             // Extract the key from the domain
             guard case .index(let bundle, let indexExpr) = domainIR,
