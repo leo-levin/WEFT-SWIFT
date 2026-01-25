@@ -36,6 +36,7 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var cacheManager: CacheManager
     public private(set) var textureManager: TextureManager?
     public private(set) var sampleManager: SampleManager?
+    public private(set) var textManager: TextManager?
 
     // Source file URL for relative resource resolution
     public var sourceFileURL: URL?
@@ -149,6 +150,7 @@ public class Coordinator: CameraCaptureDelegate {
                     // Initialize texture manager
                     if let device = metalBackend?.device {
                         textureManager = TextureManager(device: device)
+                        textManager = TextManager(device: device)
                     }
                 }
 
@@ -163,6 +165,17 @@ public class Coordinator: CameraCaptureDelegate {
                         print("Coordinator: Loaded \(loadedTextures.count) textures")
                     } catch {
                         print("Coordinator: Warning - texture loading failed: \(error)")
+                    }
+                }
+
+                // Render text textures from textResources if any
+                if !program.textResources.isEmpty, let txtMgr = textManager {
+                    do {
+                        let renderedTexts = try txtMgr.renderTexts(program.textResources)
+                        metalBackend?.textTextures = renderedTexts
+                        print("Coordinator: Rendered \(renderedTexts.count) text textures")
+                    } catch {
+                        print("Coordinator: Warning - text rendering failed: \(error)")
                     }
                 }
 
