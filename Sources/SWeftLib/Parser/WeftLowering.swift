@@ -230,15 +230,36 @@ public class WeftLowering {
     // MARK: - Lowering Pass
 
     private func lowerBundleDecl(_ decl: BundleDecl) throws {
+        // Determine outputs - either explicit or inferred from expression
+        let outputs: [OutputItem]
+        let width: Int
+
+        if decl.outputs.isEmpty {
+            // Infer width from expression
+            width = try inferWidth(decl.expr)
+            outputs = (0..<width).map { OutputItem.index($0) }
+
+            // Update bundleInfo with inferred width
+            var info = bundleInfo[decl.name] ?? BundleInfo()
+            info.width = width
+            for i in 0..<width {
+                info.strandIndex[String(i)] = i
+            }
+            bundleInfo[decl.name] = info
+        } else {
+            outputs = decl.outputs
+            width = decl.outputs.count
+        }
+
         let info = bundleInfo[decl.name]!
-        let exprs = try lowerToStrands(decl.expr, width: decl.outputs.count, subs: nil)
+        let exprs = try lowerToStrands(decl.expr, width: width, subs: nil)
 
         var bundle = bundles[decl.name] ?? IRBundle(name: decl.name, strands: [])
 
         var strandNames = Set<String>()
         var declStrands: [IRStrand] = []
 
-        for (i, output) in decl.outputs.enumerated() {
+        for (i, output) in outputs.enumerated() {
             let isIdx: Bool
             let name: String
             let idx: Int
@@ -282,18 +303,31 @@ public class WeftLowering {
         for stmt in def.body {
             switch stmt {
             case .bundleDecl(let decl):
-                let exprs = try lowerToStrands(decl.expr, width: decl.outputs.count, subs: nil)
+                // Determine outputs - either explicit or inferred from expression
+                let outputs: [OutputItem]
+                let localWidth: Int
+
+                if decl.outputs.isEmpty {
+                    // Infer width from expression
+                    localWidth = try inferWidth(decl.expr)
+                    outputs = (0..<localWidth).map { OutputItem.index($0) }
+                } else {
+                    outputs = decl.outputs
+                    localWidth = decl.outputs.count
+                }
+
+                let exprs = try lowerToStrands(decl.expr, width: localWidth, subs: nil)
                 var strandIndex: [String: Int] = [:]
                 var strands: [IRStrand] = []
 
-                for (i, output) in decl.outputs.enumerated() {
+                for (i, output) in outputs.enumerated() {
                     let name = output.stringValue
                     strandIndex[name] = i
                     strands.append(IRStrand(name: name, index: i, expr: exprs[i]))
                 }
 
                 locals.append(IRBundle(name: decl.name, strands: strands))
-                scope?.locals[decl.name] = BundleInfo(width: decl.outputs.count, strandIndex: strandIndex)
+                scope?.locals[decl.name] = BundleInfo(width: localWidth, strandIndex: strandIndex)
 
             case .returnAssign(let ret):
                 let width = try inferWidth(ret.expr)

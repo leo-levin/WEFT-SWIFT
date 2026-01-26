@@ -614,4 +614,107 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(ir.order[1].bundle, "b")
         XCTAssertEqual(ir.order[2].bundle, "c")
     }
+
+    // MARK: - Inferred Width Bundle Tests
+
+    func testParseInferredWidthBundle() throws {
+        let source = "nums = [1, 2, 3]"
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        XCTAssertEqual(program.statements.count, 1)
+
+        guard case .bundleDecl(let decl) = program.statements[0] else {
+            XCTFail("Expected bundle declaration")
+            return
+        }
+
+        XCTAssertEqual(decl.name, "nums")
+        XCTAssertEqual(decl.outputs, [])  // Empty outputs signals inference
+
+        guard case .bundleLit(let elements) = decl.expr else {
+            XCTFail("Expected bundle literal")
+            return
+        }
+        XCTAssertEqual(elements.count, 3)
+    }
+
+    func testLowerInferredWidthBundleLiteral() throws {
+        let source = """
+        nums = [1, 2, 3]
+        result.v = nums.0 + nums.1 + nums.2
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        // Verify nums has 3 strands named "0", "1", "2"
+        let nums = ir.bundles["nums"]!
+        XCTAssertEqual(nums.strands.count, 3)
+        XCTAssertEqual(nums.strands[0].name, "0")
+        XCTAssertEqual(nums.strands[1].name, "1")
+        XCTAssertEqual(nums.strands[2].name, "2")
+
+        // Verify values
+        if case .num(1) = nums.strands[0].expr {} else {
+            XCTFail("Expected num(1) for strand 0")
+        }
+        if case .num(2) = nums.strands[1].expr {} else {
+            XCTFail("Expected num(2) for strand 1")
+        }
+        if case .num(3) = nums.strands[2].expr {} else {
+            XCTFail("Expected num(3) for strand 2")
+        }
+    }
+
+    func testLowerInferredWidthSingleValue() throws {
+        let source = "x = 42"
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        // Verify x has 1 strand named "0"
+        let x = ir.bundles["x"]!
+        XCTAssertEqual(x.strands.count, 1)
+        XCTAssertEqual(x.strands[0].name, "0")
+
+        if case .num(42) = x.strands[0].expr {} else {
+            XCTFail("Expected num(42)")
+        }
+    }
+
+    func testLowerInferredWidthResourceBuiltin() throws {
+        let source = "snd = sample(\"test.wav\")"
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        // Verify snd has 2 strands (stereo audio)
+        let snd = ir.bundles["snd"]!
+        XCTAssertEqual(snd.strands.count, 2)
+        XCTAssertEqual(snd.strands[0].name, "0")
+        XCTAssertEqual(snd.strands[1].name, "1")
+    }
+
+    func testLowerInferredWidthCamera() throws {
+        let source = "img = camera(me.x, me.y)"
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        // Verify img has 3 strands (RGB)
+        let img = ir.bundles["img"]!
+        XCTAssertEqual(img.strands.count, 3)
+        XCTAssertEqual(img.strands[0].name, "0")
+        XCTAssertEqual(img.strands[1].name, "1")
+        XCTAssertEqual(img.strands[2].name, "2")
+    }
 }
