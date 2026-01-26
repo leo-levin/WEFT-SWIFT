@@ -192,12 +192,48 @@ public class MetalCodeGen {
             return nil
         })
 
-        // Collect all builtins used in the swatch's bundles
+        // Collect all builtins used in the swatch's bundles, following bundle references
         var usedBuiltins = Set<String>()
+        var visitedBundles = Set<String>()
+
+        func collectBuiltins(from expr: IRExpr) {
+            switch expr {
+            case .num, .param, .cacheRead:
+                break
+            case .index(let bundle, let indexExpr):
+                collectBuiltins(from: indexExpr)
+                // Follow bundle reference if not already visited
+                if bundle != "me" && !visitedBundles.contains(bundle) {
+                    visitedBundles.insert(bundle)
+                    if let targetBundle = program.bundles[bundle] {
+                        for strand in targetBundle.strands {
+                            collectBuiltins(from: strand.expr)
+                        }
+                    }
+                }
+            case .binaryOp(_, let left, let right):
+                collectBuiltins(from: left)
+                collectBuiltins(from: right)
+            case .unaryOp(_, let operand):
+                collectBuiltins(from: operand)
+            case .call(_, let args):
+                for arg in args { collectBuiltins(from: arg) }
+            case .builtin(let name, let args):
+                usedBuiltins.insert(name)
+                for arg in args { collectBuiltins(from: arg) }
+            case .extract(let call, _):
+                collectBuiltins(from: call)
+            case .remap(let base, let substitutions):
+                collectBuiltins(from: base)
+                for (_, subExpr) in substitutions { collectBuiltins(from: subExpr) }
+            }
+        }
+
         for bundleName in swatch.bundles {
+            visitedBundles.insert(bundleName)
             if let bundle = program.bundles[bundleName] {
                 for strand in bundle.strands {
-                    usedBuiltins.formUnion(strand.expr.allBuiltins())
+                    collectBuiltins(from: strand.expr)
                 }
             }
         }
@@ -250,11 +286,6 @@ public class MetalCodeGen {
             if case .input(let input) = binding, usedInputNames.contains(input.builtinName) {
                 if let shaderParam = input.shaderParam {
                     extraParams += "\n    \(shaderParam),"
-                    needsSampler = true
-                }
-                // Special case for microphone which uses audioBuffer texture at index 2
-                if input.builtinName == "microphone" {
-                    extraParams += "\n    texture2d<float, access::sample> audioBuffer [[texture(2)]],"
                     needsSampler = true
                 }
             }

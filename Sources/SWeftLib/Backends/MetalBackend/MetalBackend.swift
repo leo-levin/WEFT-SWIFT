@@ -109,6 +109,11 @@ public class MetalBackend: Backend {
             textureIndex: 1
         )),
         .input(InputBinding(
+            builtinName: "microphone",
+            shaderParam: "texture2d<float, access::sample> audioBuffer [[texture(2)]]",
+            textureIndex: 2
+        )),
+        .input(InputBinding(
             builtinName: "texture",
             shaderParam: nil,  // Dynamic: texture{N} [[texture(3+N)]]
             textureIndex: 3    // Base index
