@@ -1,4 +1,4 @@
-// GraphView.swift - Improved dependency graph visualization
+// GraphView.swift - Dependency graph visualization
 
 import SwiftUI
 import SWeftLib
@@ -10,20 +10,19 @@ struct GraphNode: Identifiable {
     let name: String
     let strandCount: Int
     let strandNames: [String]
-    let backend: String?  // "visual" / "audio" / nil
+    let backend: String?
     let purity: PurityState?
     let isSink: Bool
     let hasCache: Bool
     let hardware: Set<IRHardware>
-    var position: CGPoint = .zero
-    var layer: Int = 0
+    let dependencies: Set<String>
+    let dependents: Set<String>
 }
 
 struct GraphEdge: Identifiable {
     var id: String { "\(from)->\(to)" }
     let from: String
     let to: String
-    let isCacheDependency: Bool
 }
 
 // MARK: - Graph View
@@ -31,40 +30,80 @@ struct GraphEdge: Identifiable {
 struct GraphView: View {
     let coordinator: Coordinator
     @State private var hoveredNode: String? = nil
-    @State private var graphSize: CGSize = .zero
+    @State private var selectedNode: String? = nil
+    @State private var nodePositions: [String: CGPoint] = [:]
+    @State private var graphNodes: [String: GraphNode] = [:]
+    @State private var graphEdges: [GraphEdge] = []
+    @State private var layoutParams: LayoutParams = LayoutParams()
+
+    struct LayoutParams {
+        var nodeWidth: CGFloat = 72
+        var nodeHeight: CGFloat = 26
+        var layerSpacing: CGFloat = 100
+        var nodeSpacing: CGFloat = 12
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            Canvas { context, size in
-                let graphData = buildGraphData(size: size)
-                drawGraph(context: context, size: size, data: graphData)
-            }
-            .background(Color(NSColor.windowBackgroundColor))
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let location):
-                    hoveredNode = hitTest(location: location, size: geometry.size)
-                case .ended:
-                    hoveredNode = nil
+            ZStack {
+                // Graph canvas
+                Canvas { context, size in
+                    drawGraph(context: context, size: size)
                 }
-            }
-            .onChange(of: geometry.size) { _, newSize in
-                graphSize = newSize
+                .background(Color(NSColor.windowBackgroundColor))
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        hoveredNode = hitTest(location: location)
+                    case .ended:
+                        hoveredNode = nil
+                    }
+                }
+                .onTapGesture { location in
+                    if let tapped = hitTest(location: location) {
+                        selectedNode = selectedNode == tapped ? nil : tapped
+                    } else {
+                        selectedNode = nil
+                    }
+                }
+                .onChange(of: geometry.size) { _, newSize in
+                    updateLayout(size: newSize)
+                }
+                .onAppear {
+                    updateLayout(size: geometry.size)
+                }
+
+                // Popover for selected node
+                if let nodeName = selectedNode, let node = graphNodes[nodeName], let pos = nodePositions[nodeName] {
+                    NodePopover(node: node, onDismiss: { selectedNode = nil })
+                        .position(x: pos.x, y: pos.y - layoutParams.nodeHeight / 2 - 60)
+                }
             }
         }
     }
 
-    // MARK: - Graph Data Building
+    // MARK: - Layout
 
-    private func buildGraphData(size: CGSize) -> (nodes: [String: GraphNode], edges: [GraphEdge], positions: [String: CGPoint]) {
+    private func updateLayout(size: CGSize) {
         guard coordinator.swatchGraph != nil, let program = coordinator.program else {
-            return ([:], [], [:])
+            graphNodes = [:]
+            graphEdges = []
+            nodePositions = [:]
+            return
         }
 
         let deps = coordinator.dependencyGraph?.dependencies ?? [:]
         let annotations = coordinator.annotatedProgram
         let cacheDescriptors = coordinator.getCacheDescriptors() ?? []
         let cacheBundles = Set(cacheDescriptors.map { $0.bundleName })
+
+        // Compute dependents (reverse lookup)
+        var dependents: [String: Set<String>] = [:]
+        for (name, nodeDeps) in deps {
+            for dep in nodeDeps {
+                dependents[dep, default: []].insert(name)
+            }
+        }
 
         // Build nodes
         var nodes: [String: GraphNode] = [:]
@@ -83,7 +122,9 @@ struct GraphView: View {
                 purity: purity,
                 isSink: isSink,
                 hasCache: cacheBundles.contains(bundleName),
-                hardware: hardware
+                hardware: hardware,
+                dependencies: deps[bundleName] ?? [],
+                dependents: dependents[bundleName] ?? []
             )
         }
 
@@ -91,47 +132,11 @@ struct GraphView: View {
         var edges: [GraphEdge] = []
         for (name, nodeDeps) in deps {
             for dep in nodeDeps {
-                // Check if this is a cache dependency
-                let isCacheDep = cacheDescriptors.contains { desc in
-                    desc.bundleName == name && expressionReferencesBundles(desc.signalExpr, bundles: [dep])
-                }
-                edges.append(GraphEdge(from: dep, to: name, isCacheDependency: isCacheDep))
+                edges.append(GraphEdge(from: dep, to: name))
             }
         }
 
-        // Compute positions
-        let positions = computeLayout(nodes: nodes, deps: deps, size: size)
-
-        return (nodes, edges, positions)
-    }
-
-    /// Check if an expression references any of the given bundles
-    private func expressionReferencesBundles(_ expr: IRExpr, bundles: Set<String>) -> Bool {
-        switch expr {
-        case .index(let bundle, let indexExpr):
-            return bundles.contains(bundle) || expressionReferencesBundles(indexExpr, bundles: bundles)
-        case .binaryOp(_, let left, let right):
-            return expressionReferencesBundles(left, bundles: bundles) || expressionReferencesBundles(right, bundles: bundles)
-        case .unaryOp(_, let operand):
-            return expressionReferencesBundles(operand, bundles: bundles)
-        case .builtin(_, let args):
-            return args.contains { expressionReferencesBundles($0, bundles: bundles) }
-        case .call(_, let args):
-            return args.contains { expressionReferencesBundles($0, bundles: bundles) }
-        case .extract(let call, _):
-            return expressionReferencesBundles(call, bundles: bundles)
-        case .remap(let base, let subs):
-            return expressionReferencesBundles(base, bundles: bundles) ||
-                   subs.values.contains { expressionReferencesBundles($0, bundles: bundles) }
-        case .num, .param, .cacheRead:
-            return false
-        }
-    }
-
-    // MARK: - Layout
-
-    private func computeLayout(nodes: [String: GraphNode], deps: [String: Set<String>], size: CGSize) -> [String: CGPoint] {
-        // Compute layers using topological sort
+        // Compute layers
         var layers: [String: Int] = [:]
         if let sortedNodes = coordinator.dependencyGraph?.topologicalSort() {
             for name in sortedNodes {
@@ -154,53 +159,63 @@ struct GraphView: View {
             layerGroups[layer]?.sort()
         }
 
-        // Layout constants - compact sizing
-        let nodeWidth: CGFloat = 64
-        let nodeHeight: CGFloat = 20
-        let layerSpacing: CGFloat = 90
-        let padding: CGFloat = 16
-
-        // Dynamic node spacing based on available space
-        let maxNodesInLayer = layerGroups.values.map { $0.count }.max() ?? 1
-        let availableHeight = size.height - 2 * padding
-        let minSpacing: CGFloat = 6
-        let maxSpacing: CGFloat = 24
-        let dynamicSpacing = max(minSpacing, min(maxSpacing,
-            (availableHeight - nodeHeight * CGFloat(maxNodesInLayer)) / CGFloat(max(1, maxNodesInLayer - 1))))
-
-        // Calculate positions
-        var positions: [String: CGPoint] = [:]
+        // Adaptive sizing based on graph complexity
+        let nodeCount = nodes.count
         let layerCount = (layerGroups.keys.max() ?? 0) + 1
-        let totalWidth = CGFloat(layerCount) * layerSpacing
+        let maxNodesInLayer = layerGroups.values.map { $0.count }.max() ?? 1
+
+        var params = LayoutParams()
+
+        // Scale down for larger graphs
+        if nodeCount > 15 {
+            params.nodeWidth = 64
+            params.nodeHeight = 22
+            params.layerSpacing = 85
+        } else if nodeCount > 8 {
+            params.nodeWidth = 68
+            params.nodeHeight = 24
+            params.layerSpacing = 90
+        }
+
+        // Dynamic vertical spacing
+        let padding: CGFloat = 20
+        let availableHeight = size.height - 2 * padding
+        let minSpacing: CGFloat = 8
+        let maxSpacing: CGFloat = 32
+        params.nodeSpacing = max(minSpacing, min(maxSpacing,
+            (availableHeight - params.nodeHeight * CGFloat(maxNodesInLayer)) / CGFloat(max(1, maxNodesInLayer - 1))))
+
+        // Compute positions
+        var positions: [String: CGPoint] = [:]
+        let totalWidth = CGFloat(layerCount) * params.layerSpacing
         let xOffset = max(padding, (size.width - totalWidth) / 2)
 
         for (layer, nodeNames) in layerGroups {
-            let totalHeight = CGFloat(nodeNames.count) * nodeHeight + CGFloat(nodeNames.count - 1) * dynamicSpacing
+            let totalHeight = CGFloat(nodeNames.count) * params.nodeHeight + CGFloat(nodeNames.count - 1) * params.nodeSpacing
             let startY = (size.height - totalHeight) / 2
-            let x = xOffset + CGFloat(layer) * layerSpacing + nodeWidth / 2
+            let x = xOffset + CGFloat(layer) * params.layerSpacing + params.nodeWidth / 2
 
             for (i, name) in nodeNames.enumerated() {
-                let y = startY + CGFloat(i) * (nodeHeight + dynamicSpacing) + nodeHeight / 2
+                let y = startY + CGFloat(i) * (params.nodeHeight + params.nodeSpacing) + params.nodeHeight / 2
                 positions[name] = CGPoint(x: x, y: y)
             }
         }
 
-        return positions
+        self.graphNodes = nodes
+        self.graphEdges = edges
+        self.nodePositions = positions
+        self.layoutParams = params
     }
 
     // MARK: - Hit Testing
 
-    private func hitTest(location: CGPoint, size: CGSize) -> String? {
-        let graphData = buildGraphData(size: size)
-        let nodeWidth: CGFloat = 64
-        let nodeHeight: CGFloat = 20
-
-        for (name, pos) in graphData.positions {
+    private func hitTest(location: CGPoint) -> String? {
+        for (name, pos) in nodePositions {
             let rect = CGRect(
-                x: pos.x - nodeWidth / 2,
-                y: pos.y - nodeHeight / 2,
-                width: nodeWidth,
-                height: nodeHeight
+                x: pos.x - layoutParams.nodeWidth / 2,
+                y: pos.y - layoutParams.nodeHeight / 2,
+                width: layoutParams.nodeWidth,
+                height: layoutParams.nodeHeight
             )
             if rect.contains(location) {
                 return name
@@ -211,10 +226,8 @@ struct GraphView: View {
 
     // MARK: - Drawing
 
-    private func drawGraph(context: GraphicsContext, size: CGSize, data: (nodes: [String: GraphNode], edges: [GraphEdge], positions: [String: CGPoint])) {
-        let (nodes, edges, positions) = data
-
-        guard !nodes.isEmpty else {
+    private func drawGraph(context: GraphicsContext, size: CGSize) {
+        guard !graphNodes.isEmpty else {
             let text = Text("No graph")
                 .font(.system(size: 11))
                 .foregroundColor(Color(NSColor.tertiaryLabelColor))
@@ -222,69 +235,43 @@ struct GraphView: View {
             return
         }
 
-        let deps = coordinator.dependencyGraph?.dependencies ?? [:]
-
-        // Compute connected nodes for hover highlighting
+        // Compute connected nodes for highlighting
         let connectedNodes: Set<String>
-        if let hovered = hoveredNode {
-            var connected = Set<String>([hovered])
-            // Add dependencies (upstream)
-            if let upstream = deps[hovered] {
-                connected.formUnion(upstream)
-            }
-            // Add dependents (downstream)
-            for (name, nodeDeps) in deps {
-                if nodeDeps.contains(hovered) {
-                    connected.insert(name)
-                }
-            }
+        let highlightNode = hoveredNode ?? selectedNode
+        if let hn = highlightNode, let node = graphNodes[hn] {
+            var connected = Set<String>([hn])
+            connected.formUnion(node.dependencies)
+            connected.formUnion(node.dependents)
             connectedNodes = connected
         } else {
-            connectedNodes = Set(nodes.keys)
+            connectedNodes = Set(graphNodes.keys)
         }
 
-        let nodeWidth: CGFloat = 64
-        let nodeHeight: CGFloat = 20
-
         // Draw edges
-        for edge in edges {
-            guard let fromPos = positions[edge.from], let toPos = positions[edge.to] else { continue }
+        for edge in graphEdges {
+            guard let fromPos = nodePositions[edge.from], let toPos = nodePositions[edge.to] else { continue }
 
-            let isHighlighted = hoveredNode == nil ||
+            let isHighlighted = highlightNode == nil ||
                 (connectedNodes.contains(edge.from) && connectedNodes.contains(edge.to))
 
-            drawEdge(
-                context: context,
-                from: fromPos,
-                to: toPos,
-                nodeWidth: nodeWidth,
-                isCacheDependency: edge.isCacheDependency,
-                isHighlighted: isHighlighted
-            )
+            drawEdge(context: context, from: fromPos, to: toPos, isHighlighted: isHighlighted)
         }
 
         // Draw nodes
-        for (name, node) in nodes {
-            guard let pos = positions[name] else { continue }
+        for (name, node) in graphNodes {
+            guard let pos = nodePositions[name] else { continue }
 
             let isHighlighted = connectedNodes.contains(name)
             let isHovered = hoveredNode == name
+            let isSelected = selectedNode == name
 
-            drawNode(
-                context: context,
-                node: node,
-                position: pos,
-                width: nodeWidth,
-                height: nodeHeight,
-                isHighlighted: isHighlighted,
-                isHovered: isHovered
-            )
+            drawNode(context: context, node: node, position: pos, isHighlighted: isHighlighted, isHovered: isHovered, isSelected: isSelected)
         }
     }
 
-    private func drawEdge(context: GraphicsContext, from: CGPoint, to: CGPoint, nodeWidth: CGFloat, isCacheDependency: Bool, isHighlighted: Bool) {
-        let startX = from.x + nodeWidth / 2
-        let endX = to.x - nodeWidth / 2
+    private func drawEdge(context: GraphicsContext, from: CGPoint, to: CGPoint, isHighlighted: Bool) {
+        let startX = from.x + layoutParams.nodeWidth / 2
+        let endX = to.x - layoutParams.nodeWidth / 2
         let midX = (startX + endX) / 2
 
         var path = Path()
@@ -295,20 +282,13 @@ struct GraphView: View {
             control2: CGPoint(x: midX, y: to.y)
         )
 
-        let baseColor = isCacheDependency ? Color.orange : Color(NSColor.tertiaryLabelColor)
-        let edgeColor = isHighlighted ? baseColor : baseColor.opacity(0.25)
-        let lineWidth: CGFloat = isCacheDependency ? 1.0 : 1.5
+        let baseColor = Color(NSColor.tertiaryLabelColor)
+        let edgeColor = isHighlighted ? baseColor : baseColor.opacity(0.2)
 
-        if isCacheDependency {
-            // Dashed line for cache dependencies
-            let dashed = StrokeStyle(lineWidth: lineWidth, dash: [4, 3])
-            context.stroke(path, with: .color(edgeColor), style: dashed)
-        } else {
-            context.stroke(path, with: .color(edgeColor), lineWidth: lineWidth)
-        }
+        context.stroke(path, with: .color(edgeColor), lineWidth: isHighlighted ? 1.5 : 1)
 
         // Arrowhead
-        let arrowSize: CGFloat = 5
+        let arrowSize: CGFloat = 6
         let arrowPath = Path { p in
             p.move(to: CGPoint(x: endX, y: to.y))
             p.addLine(to: CGPoint(x: endX - arrowSize, y: to.y - arrowSize / 2))
@@ -318,10 +298,12 @@ struct GraphView: View {
         context.fill(arrowPath, with: .color(edgeColor))
     }
 
-    private func drawNode(context: GraphicsContext, node: GraphNode, position: CGPoint, width: CGFloat, height: CGFloat, isHighlighted: Bool, isHovered: Bool) {
-        let rect = CGRect(x: position.x - width / 2, y: position.y - height / 2, width: width, height: height)
+    private func drawNode(context: GraphicsContext, node: GraphNode, position: CGPoint, isHighlighted: Bool, isHovered: Bool, isSelected: Bool) {
+        let w = layoutParams.nodeWidth
+        let h = layoutParams.nodeHeight
+        let rect = CGRect(x: position.x - w / 2, y: position.y - h / 2, width: w, height: h)
 
-        // Determine node color
+        // Node color based on backend
         let nodeColor: Color
         if node.isSink {
             nodeColor = node.name == "display" ? .nodeVisual : .nodeAudio
@@ -331,96 +313,148 @@ struct GraphView: View {
             nodeColor = .nodeCompute
         }
 
-        let opacity = isHighlighted ? 1.0 : 0.35
+        let opacity = isHighlighted ? 1.0 : 0.3
 
-        // Shadow for hovered nodes
-        if isHovered {
+        // Shadow for hovered/selected
+        if isHovered || isSelected {
             var shadowContext = context
-            shadowContext.addFilter(.shadow(color: nodeColor.opacity(0.4), radius: 4, x: 0, y: 1))
-            shadowContext.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(nodeColor.opacity(0.15)))
+            shadowContext.addFilter(.shadow(color: nodeColor.opacity(0.5), radius: 6, x: 0, y: 2))
+            shadowContext.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(nodeColor.opacity(0.2)))
         }
 
-        // Node background
-        let bgOpacity = isHovered ? 0.2 : 0.1
-        context.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(nodeColor.opacity(bgOpacity * opacity)))
+        // Background
+        let bgOpacity = (isHovered || isSelected) ? 0.25 : 0.12
+        context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(nodeColor.opacity(bgOpacity * opacity)))
 
-        // Node border
-        let borderOpacity = isHovered ? 0.7 : 0.4
-        context.stroke(Path(roundedRect: rect, cornerRadius: 4), with: .color(nodeColor.opacity(borderOpacity * opacity)), lineWidth: isHovered ? 1.5 : 1)
+        // Border
+        let borderWidth: CGFloat = isSelected ? 2 : (isHovered ? 1.5 : 1)
+        let borderOpacity = (isHovered || isSelected) ? 0.8 : 0.5
+        context.stroke(Path(roundedRect: rect, cornerRadius: 5), with: .color(nodeColor.opacity(borderOpacity * opacity)), lineWidth: borderWidth)
 
-        // Sink glow
+        // Sink indicator - outer glow
         if node.isSink && isHighlighted {
-            let glowRect = rect.insetBy(dx: -2, dy: -2)
-            context.stroke(Path(roundedRect: glowRect, cornerRadius: 6), with: .color(nodeColor.opacity(0.2)), lineWidth: 2)
+            let glowRect = rect.insetBy(dx: -3, dy: -3)
+            context.stroke(Path(roundedRect: glowRect, cornerRadius: 7), with: .color(nodeColor.opacity(0.25)), lineWidth: 2)
         }
 
-        // Build label: "name[n]" or just "name" for single-strand
-        let strandSuffix = node.strandCount > 1 ? "[\(node.strandCount)]" : ""
-        let labelText = node.name + strandSuffix
-
-        // Calculate text layout
-        let textX = position.x
-        let textY = position.y
-
-        // Draw backend indicator dot (left side)
-        let dotSize: CGFloat = 4
-        let dotX = rect.minX + 5
-        let dotY = position.y
-        let dotColor = node.backend == "visual" ? Color.nodeVisual : (node.backend == "audio" ? Color.nodeAudio : Color.nodeCompute)
-        context.fill(Circle().path(in: CGRect(x: dotX - dotSize/2, y: dotY - dotSize/2, width: dotSize, height: dotSize)), with: .color(dotColor.opacity(opacity)))
-
-        // Draw purity indicator (small dot after backend dot)
-        if let purity = node.purity {
-            let purityColor: Color
-            switch purity {
-            case .pure: purityColor = .green
-            case .stateful: purityColor = .orange
-            case .external: purityColor = .purple
-            }
-            let purityDotSize: CGFloat = 3
-            let purityX = dotX + dotSize + 2
-            context.fill(Circle().path(in: CGRect(x: purityX - purityDotSize/2, y: dotY - purityDotSize/2, width: purityDotSize, height: purityDotSize)), with: .color(purityColor.opacity(opacity * 0.8)))
-        }
-
-        // Draw cache indicator (right side)
-        if node.hasCache {
-            let cacheText = Text("↺")
-                .font(.system(size: 8, weight: .medium))
-                .foregroundColor(Color.orange.opacity(opacity * 0.9))
-            context.draw(cacheText, at: CGPoint(x: rect.maxX - 7, y: textY), anchor: .center)
-        }
-
-        // Draw main label (centered, accounting for indicators)
+        // Node label
         let textColor = Color(NSColor.labelColor).opacity(opacity)
-        let text = Text(labelText)
-            .font(.system(size: 9, weight: .medium, design: .monospaced))
+        let fontSize: CGFloat = layoutParams.nodeHeight > 24 ? 10 : 9
+        let text = Text(node.name)
+            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
             .foregroundColor(textColor)
+        context.draw(text, at: position, anchor: .center)
 
-        // Offset text slightly right to account for left indicators
-        let labelOffset: CGFloat = node.purity != nil ? 6 : 3
-        context.draw(text, at: CGPoint(x: textX + labelOffset, y: textY), anchor: .center)
+        // Strand count badge (top-right corner)
+        if node.strandCount > 1 {
+            let badgeX = rect.maxX - 2
+            let badgeY = rect.minY + 2
+            let badgeText = Text("\(node.strandCount)")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundColor(nodeColor.opacity(opacity * 0.9))
+            context.draw(badgeText, at: CGPoint(x: badgeX, y: badgeY), anchor: .topTrailing)
+        }
 
-        // Draw hardware icons on hover
-        if isHovered && !node.hardware.isEmpty {
-            var iconX = rect.minX
-            let iconY = rect.maxY + 8
-            for hw in node.hardware.sorted(by: { $0.description < $1.description }) {
-                let iconName: String
-                switch hw {
-                case .camera: iconName = "camera.fill"
-                case .microphone: iconName = "mic.fill"
-                case .speaker: iconName = "speaker.wave.2.fill"
-                case .gpu: iconName = "cpu"
-                case .custom(let name): iconName = name
+        // Cache indicator (small dot, bottom-right)
+        if node.hasCache {
+            let indicatorSize: CGFloat = 5
+            let indicatorX = rect.maxX - 4
+            let indicatorY = rect.maxY - 4
+            context.fill(Circle().path(in: CGRect(x: indicatorX - indicatorSize/2, y: indicatorY - indicatorSize/2, width: indicatorSize, height: indicatorSize)),
+                        with: .color(Color.orange.opacity(opacity * 0.8)))
+        }
+    }
+}
+
+// MARK: - Node Popover
+
+struct NodePopover: View {
+    let node: GraphNode
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Header
+            HStack {
+                Text(node.name)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
                 }
-
-                if let cgImage = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)?
-                    .cgImage(forProposedRect: nil, context: nil, hints: nil) {
-                    let iconRect = CGRect(x: iconX, y: iconY - 5, width: 10, height: 10)
-                    context.draw(Image(decorative: cgImage, scale: 2), in: iconRect)
-                }
-                iconX += 12
+                .buttonStyle(.plain)
             }
+
+            Divider()
+
+            // Info rows
+            VStack(alignment: .leading, spacing: 4) {
+                if node.strandCount > 1 {
+                    infoRow("Strands", value: "[\(node.strandNames.joined(separator: ", "))]")
+                }
+
+                if let backend = node.backend {
+                    infoRow("Backend", value: backend, color: backend == "visual" ? .nodeVisual : .nodeAudio)
+                }
+
+                if let purity = node.purity {
+                    let (label, color) = purityInfo(purity)
+                    infoRow("Purity", value: label, color: color)
+                }
+
+                if node.hasCache {
+                    infoRow("Cache", value: "stateful", color: .orange)
+                }
+
+                if !node.hardware.isEmpty {
+                    let hwNames = node.hardware.map { hw -> String in
+                        switch hw {
+                        case .camera: return "camera"
+                        case .microphone: return "mic"
+                        case .speaker: return "speaker"
+                        case .gpu: return "gpu"
+                        case .custom(let n): return n
+                        }
+                    }
+                    infoRow("Hardware", value: hwNames.joined(separator: ", "), color: .purple)
+                }
+
+                if !node.dependencies.isEmpty {
+                    infoRow("Depends on", value: node.dependencies.sorted().joined(separator: ", "))
+                }
+
+                if !node.dependents.isEmpty {
+                    infoRow("Used by", value: node.dependents.sorted().joined(separator: ", "))
+                }
+            }
+        }
+        .padding(8)
+        .frame(minWidth: 140, maxWidth: 200)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+        .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
+    }
+
+    private func infoRow(_ label: String, value: String, color: Color = .primary) -> some View {
+        HStack(alignment: .top, spacing: 4) {
+            Text(label + ":")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .frame(width: 55, alignment: .trailing)
+            Text(value)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(color)
+                .lineLimit(2)
+        }
+    }
+
+    private func purityInfo(_ purity: PurityState) -> (String, Color) {
+        switch purity {
+        case .pure: return ("pure", .green)
+        case .stateful: return ("stateful", .orange)
+        case .external: return ("external", .purple)
         }
     }
 }
@@ -429,10 +463,10 @@ struct GraphView: View {
 
 extension IRHardware: Comparable {
     public static func < (lhs: IRHardware, rhs: IRHardware) -> Bool {
-        lhs.description < rhs.description
+        lhs.sortKey < rhs.sortKey
     }
 
-    var description: String {
+    var sortKey: String {
         switch self {
         case .camera: return "camera"
         case .microphone: return "microphone"
