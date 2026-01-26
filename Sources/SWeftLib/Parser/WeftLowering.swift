@@ -297,6 +297,19 @@ public class WeftLowering {
 
         scope = Scope(params: info.params, locals: [:])
 
+        // First pass: Register all locals in scope (enables forward references)
+        // This allows cache(out.val, ...) to reference out.val before it's defined
+        for stmt in def.body {
+            if case .bundleDecl(let decl) = stmt {
+                var strandIndex: [String: Int] = [:]
+                for (i, output) in decl.outputs.enumerated() {
+                    strandIndex[output.stringValue] = i
+                }
+                scope?.locals[decl.name] = BundleInfo(width: decl.outputs.count, strandIndex: strandIndex)
+            }
+        }
+
+        // Second pass: Lower expressions (now all locals are in scope)
         var locals: [IRBundle] = []
         var returns: [IRExpr?] = Array(repeating: nil, count: info.width)
 
@@ -327,7 +340,6 @@ public class WeftLowering {
                 }
 
                 locals.append(IRBundle(name: decl.name, strands: strands))
-                scope?.locals[decl.name] = BundleInfo(width: localWidth, strandIndex: strandIndex)
 
             case .returnAssign(let ret):
                 let width = try inferWidth(ret.expr)
