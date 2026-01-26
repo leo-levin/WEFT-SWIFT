@@ -967,6 +967,23 @@ struct CodeEditor: NSViewRepresentable {
 class FocusableTextView: NSTextView {
     override var acceptsFirstResponder: Bool { true }
 
+    // Hover documentation state
+    private var trackingArea: NSTrackingArea?
+    private var hoverTimer: Timer?
+    private var docPopover: NSPopover?
+    private var lastHoveredWord: String?
+    private var lastMouseLocation: NSPoint?
+
+    private static let hoverDelay: TimeInterval = 0.5  // 500ms
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Set up tracking area when view is added to window
+        if window != nil {
+            updateTrackingAreas()
+        }
+    }
+
     override func becomeFirstResponder() -> Bool {
         super.becomeFirstResponder()
     }
@@ -974,6 +991,251 @@ class FocusableTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
         window?.makeFirstResponder(self)
+        dismissPopover()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        // Remove old tracking area
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+
+        // Add new tracking area covering the entire view
+        trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        if let area = trackingArea {
+            addTrackingArea(area)
+        }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+
+        let point = convert(event.locationInWindow, from: nil)
+        lastMouseLocation = point
+
+        // Cancel any pending hover timer
+        hoverTimer?.invalidate()
+        hoverTimer = nil
+
+        // Get the word at this position
+        guard let word = wordAtPoint(point), !word.isEmpty else {
+            dismissPopover()
+            lastHoveredWord = nil
+            return
+        }
+
+
+        // If hovering over a different word, dismiss current popover and start new timer
+        if word != lastHoveredWord {
+            dismissPopover()
+            lastHoveredWord = word
+
+            // Start timer to show popover on main thread
+            let wordToShow = word
+            hoverTimer = Timer.scheduledTimer(withTimeInterval: Self.hoverDelay, repeats: false) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.showDocumentationPopover(for: wordToShow)
+                }
+            }
+            // Ensure timer fires even when mouse tracking
+            RunLoop.main.add(hoverTimer!, forMode: .common)
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        hoverTimer?.invalidate()
+        dismissPopover()
+        lastHoveredWord = nil
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        dismissPopover()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        super.keyDown(with: event)
+        dismissPopover()
+    }
+
+    // MARK: - Word Detection
+
+    private func wordAtPoint(_ point: NSPoint) -> String? {
+        guard let layoutManager = layoutManager,
+              let textContainer = textContainer else { return nil }
+
+        // Convert point to text container coordinates
+        let textContainerOffset = textContainerOrigin
+        let locationInTextContainer = NSPoint(
+            x: point.x - textContainerOffset.x,
+            y: point.y - textContainerOffset.y
+        )
+
+        // Get character index at point
+        var fraction: CGFloat = 0
+        let charIndex = layoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: &fraction
+        )
+
+        guard charIndex < string.count else { return nil }
+
+        // Find word boundaries
+        let nsString = string as NSString
+        let wordRange = nsString.rangeOfWord(at: charIndex)
+
+        guard wordRange.location != NSNotFound && wordRange.length > 0 else { return nil }
+
+        return nsString.substring(with: wordRange)
+    }
+
+    // MARK: - Popover Management
+
+    // TODO: Hover documentation popover not working - NSTrackingArea mouseMoved events
+    // not firing in NSViewRepresentable-wrapped NSTextView. Needs investigation.
+    // The infrastructure is in place (DocParser, SpindleDocManager, BuiltinDocs).
+    // See to-do/hover-documentation.md for details.
+    private func showDocumentationPopover(for word: String) {
+        guard let doc = SpindleDocManager.shared.documentation(for: word) else { return }
+        guard let point = lastMouseLocation else { return }
+
+        // Create popover content
+        let contentView = DocumentationPopoverView(doc: doc)
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+
+        // Size to fit content
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = NSRect(origin: .zero, size: fittingSize)
+
+        // Create popover
+        let popover = NSPopover()
+        popover.contentViewController = NSViewController()
+        popover.contentViewController?.view = hostingView
+        popover.behavior = .transient
+        popover.animates = true
+
+        // Calculate rect at cursor position
+        let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
+
+        popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
+        docPopover = popover
+    }
+
+    private func dismissPopover() {
+        docPopover?.close()
+        docPopover = nil
+    }
+}
+
+// MARK: - NSString Extension for Word Finding
+
+extension NSString {
+    func rangeOfWord(at index: Int) -> NSRange {
+        guard index >= 0 && index < length else {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+
+        // Define word characters (letters, digits, underscore)
+        let wordChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+
+        // Check if current character is a word character
+        let char = character(at: index)
+        guard let scalar = Unicode.Scalar(char), wordChars.contains(scalar) else {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+
+        // Find start of word
+        var start = index
+        while start > 0 {
+            let prevChar = character(at: start - 1)
+            guard let prevScalar = Unicode.Scalar(prevChar), wordChars.contains(prevScalar) else { break }
+            start -= 1
+        }
+
+        // Find end of word
+        var end = index
+        while end < length - 1 {
+            let nextChar = character(at: end + 1)
+            guard let nextScalar = Unicode.Scalar(nextChar), wordChars.contains(nextScalar) else { break }
+            end += 1
+        }
+
+        return NSRange(location: start, length: end - start + 1)
+    }
+}
+
+// MARK: - Documentation Popover View
+
+struct DocumentationPopoverView: View {
+    let doc: SpindleDoc
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Signature
+            Text(doc.signature)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(.primary)
+
+            // Description
+            Text(doc.description)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Parameters
+            if !doc.params.isEmpty {
+                Divider()
+                ForEach(doc.params, id: \.name) { param in
+                    HStack(alignment: .top, spacing: 4) {
+                        Text(param.name)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.blue)
+                        Text("-")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Text(param.desc)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            // Returns
+            if let returns = doc.returns {
+                Divider()
+                HStack(alignment: .top, spacing: 4) {
+                    Text("Returns:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(returns)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Example
+            if let example = doc.example {
+                Divider()
+                Text(example)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.green)
+                    .padding(4)
+                    .background(Color.black.opacity(0.1))
+                    .cornerRadius(4)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: 320)
     }
 }
 

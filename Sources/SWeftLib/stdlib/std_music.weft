@@ -12,32 +12,47 @@ tau.val = 6.28318530718
 // OSCILLATORS
 // ============================================================================
 
-// Sine wave at frequency f (Hz)
+/// Sine wave oscillator at given frequency
+/// @param f - Frequency in Hz
+/// @returns Sine wave value in range [-1, 1]
+/// @example wave.val = sine(440)
 spindle sine(f) {
     return.0 = sin(me.t * f * 6.28318530718)
 }
 
-// Sawtooth wave (-1 to 1)
+/// Sawtooth wave oscillator
+/// @param f - Frequency in Hz
+/// @returns Sawtooth wave value in range [-1, 1]
 spindle saw(f) {
     return.0 = fract(me.t * f) * 2 - 1
 }
 
-// Square wave (-1 to 1)
+/// Square wave oscillator with 50% duty cycle
+/// @param f - Frequency in Hz
+/// @returns Square wave value: -1 or 1
 spindle square(f) {
     return.0 = step(0.5, fract(me.t * f)) * 2 - 1
 }
 
-// Triangle wave (-1 to 1)
+/// Triangle wave oscillator
+/// @param f - Frequency in Hz
+/// @returns Triangle wave value in range [-1, 1]
 spindle tri(f) {
     return.0 = abs(fract(me.t * f) * 4 - 2) - 1
 }
 
-// Pulse wave with variable width (0-1)
+/// Pulse wave oscillator with variable duty cycle
+/// @param f - Frequency in Hz
+/// @param width - Pulse width (0-1), where 0.5 is square wave
+/// @returns Pulse wave value: -1 or 1
 spindle pulse(f, width) {
     return.0 = step(width, fract(me.t * f)) * 2 - 1
 }
 
-// Sine with phase offset (0-1)
+/// Sine wave with phase offset
+/// @param f - Frequency in Hz
+/// @param phase - Phase offset (0-1, wraps)
+/// @returns Sine wave value in range [-1, 1]
 spindle sinep(f, phase) {
     return.0 = sin((me.t * f + phase) * 6.28318530718)
 }
@@ -46,17 +61,25 @@ spindle sinep(f, phase) {
 // NOTE / FREQUENCY CONVERSION
 // ============================================================================
 
-// MIDI note to frequency (A4 = 69 = 440Hz)
+/// Convert MIDI note number to frequency (A4 = 69 = 440Hz)
+/// @param note - MIDI note number (0-127)
+/// @returns Frequency in Hz
+/// @example freq.val = mtof(69)  // 440
 spindle mtof(note) {
     return.0 = 440 * pow(2, (note - 69) / 12)
 }
 
-// Frequency to MIDI note
+/// Convert frequency to MIDI note number
+/// @param freq - Frequency in Hz
+/// @returns MIDI note number
 spindle ftom(freq) {
     return.0 = 69 + 12 * log(freq / 440) / log(2)
 }
 
-// Semitone offset to frequency ratio
+/// Convert semitone offset to frequency ratio
+/// @param n - Number of semitones (can be fractional)
+/// @returns Frequency ratio (e.g., 12 semitones = 2.0)
+/// @example octave.val = baseFreq * semi(12)
 spindle semi(n) {
     return.0 = pow(2, n / 12)
 }
@@ -65,34 +88,51 @@ spindle semi(n) {
 // TIMING / BEATS
 // ============================================================================
 
-// Beat phase (0-1 sawtooth) at given BPM
+/// Beat phase at given BPM (0-1 sawtooth)
+/// @param bpm - Beats per minute
+/// @returns Phase within current beat (0-1)
+/// @example phase.val = beat(120)
 spindle beat(bpm) {
     return.0 = fract(me.t * bpm / 60)
 }
 
-// Current beat number (integer)
+/// Current beat number (integer)
+/// @param bpm - Beats per minute
+/// @returns Beat count since start
 spindle beatNum(bpm) {
     return.0 = floor(me.t * bpm / 60)
 }
 
-// Subdivided beat phase (div=4 for 16th notes at given BPM)
+/// Subdivided beat phase (e.g., 16th notes)
+/// @param bpm - Beats per minute
+/// @param div - Subdivisions per beat (4 = 16th notes)
+/// @returns Phase within current subdivision (0-1)
 spindle subdiv(bpm, div) {
     return.0 = fract(me.t * bpm / 60 * div)
 }
 
-// Step index for n-step pattern
+/// Step index for n-step pattern sequencer
+/// @param bpm - Beats per minute
+/// @param steps - Number of steps in pattern
+/// @returns Current step index (0 to steps-1)
 spindle stepIdx(bpm, steps) {
     return.0 = mod(floor(me.t * bpm / 60 * steps), steps)
 }
 
-// Sample offset for retriggering samples each step
+/// Sample offset for retriggering samples each step
+/// @param bpm - Beats per minute
+/// @param steps - Steps per beat
+/// @returns Sample position within current step
 spindle stepOffset(bpm, steps) {
     phase.val = fract(me.t * bpm / 60 * steps)
     samples.val = me.sampleRate * 60 / bpm / steps
     return.0 = phase.val * samples.val
 }
 
-// Trigger pulse at beat start (width = fraction of beat, 0-1)
+/// Trigger pulse at beat start
+/// @param bpm - Beats per minute
+/// @param width - Pulse width as fraction of beat (0-1)
+/// @returns 1 during pulse, 0 otherwise
 spindle btrig(bpm, width) {
     return.0 = 1 - step(width, fract(me.t * bpm / 60))
 }
@@ -106,18 +146,25 @@ spindle btrig(bpm, width) {
 // Usage pattern:
 //   env.val = ar(gate.val, 0.001, 0.9999, cache(env.val, 2, 1, me.i))
 
-// Attack-Release envelope
-// attack = per-sample increment (e.g., 0.001)
-// release = per-sample multiplier (e.g., 0.9999 for slow decay)
-// prev = previous envelope value (use cache(output, 2, 1, me.i))
+/// Attack-Release envelope (stateful, needs cache)
+/// @param gate - Gate signal (0 or 1)
+/// @param attack - Per-sample attack increment (e.g., 0.001)
+/// @param release - Per-sample release multiplier (e.g., 0.9999)
+/// @param prev - Previous envelope value (use cache)
+/// @returns Envelope value (0-1)
+/// @example env.val = ar(gate.val, 0.001, 0.9999, cache(env.val, 2, 1, me.i))
 spindle ar(gate, attack, release, prev) {
     up.val = min(prev + attack, 1)
     down.val = prev * release
     return.0 = lerp(down.val, up.val, gate)
 }
 
-// Attack-Decay envelope (ignores gate after trigger)
-// prev = previous value from cache
+/// Attack-Decay envelope (ignores gate after trigger)
+/// @param trig - Trigger signal
+/// @param attack - Per-sample attack increment
+/// @param decay - Per-sample decay multiplier
+/// @param prev - Previous value from cache
+/// @returns Envelope value (0-1)
 spindle ad(trig, attack, decay, prev) {
     // On trigger, reset to attack phase
     attacking.val = min(prev + attack, 1)
@@ -126,14 +173,21 @@ spindle ad(trig, attack, decay, prev) {
     return.0 = max(trig, lerp(decaying.val, attacking.val, prev < 1))
 }
 
-// Simple decay (multiply by rate each sample)
-// Usage: env.val = edecay(0.9999, cache(env.val, 2, 1, me.i))
+/// Simple exponential decay (multiply by rate each sample)
+/// @param rate - Decay rate (0.9999 = slow, 0.99 = fast)
+/// @param prev - Previous value from cache
+/// @returns Decayed value
+/// @example env.val = edecay(0.9999, cache(env.val, 2, 1, me.i))
 spindle edecay(rate, prev) {
     return.0 = prev * rate
 }
 
-// Retriggerable decay - resets to 1.0 on trigger
-// Usage: env.val = tdecay(trig.val, 0.999, cache(env.val, 2, 1, me.i))
+/// Retriggerable decay - resets to 1.0 on trigger
+/// @param trig - Trigger signal (1 to reset)
+/// @param rate - Decay rate
+/// @param prev - Previous value from cache
+/// @returns Decayed value, reset to 1 on trigger
+/// @example env.val = tdecay(trig.val, 0.999, cache(env.val, 2, 1, me.i))
 spindle tdecay(trig, rate, prev) {
     return.0 = lerp(prev * rate, 1, trig)
 }
@@ -146,29 +200,35 @@ spindle tdecay(trig, rate, prev) {
 // Usage pattern:
 //   filtered.val = lpf(input.val, 1000, cache(filtered.val, 2, 1, me.i))
 
-// One-pole lowpass filter
-// freq = cutoff frequency in Hz
-// prev = previous output (use cache)
+/// One-pole lowpass filter (6dB/octave)
+/// @param input - Input signal
+/// @param freq - Cutoff frequency in Hz
+/// @param prev - Previous output from cache
+/// @returns Filtered signal
+/// @example filt.val = lpf(in.val, 1000, cache(filt.val, 2, 1, me.i))
 spindle lpf(input, freq, prev) {
     alpha.val = 1 - pow(0.5, freq / me.sampleRate)
     return.0 = prev + alpha.val * (input - prev)
 }
 
-// One-pole highpass filter
-// prev_out = previous output (use cache(output, 2, 1, me.i))
-// prev_in = previous input (use cache(input, 2, 1, me.i))
+/// One-pole highpass filter (6dB/octave)
+/// @param input - Input signal
+/// @param freq - Cutoff frequency in Hz
+/// @param prev_out - Previous output from cache
+/// @param prev_in - Previous input from cache
+/// @returns Filtered signal
 spindle hpf(input, freq, prev_out, prev_in) {
     alpha.val = 1 / (1 + 6.28318 * freq / me.sampleRate)
     return.0 = alpha.val * (prev_out + input - prev_in)
 }
 
-// Attempt at resonant lowpass - needs two state variables
-// s1, s2 = state from cache
-// Usage:
-//   filt.val = rlpf(in.val, 1000, 0.5, cache(st1.val, 2, 1, me.i), cache(st2.val, 2, 1, me.i))
-//   st1.val = rlpf_s1(in.val, 1000, 0.5, cache(st1.val, 2, 1, me.i), cache(st2.val, 2, 1, me.i))
-//   st2.val = filt.val
-// (This is awkward - may need better pattern)
+/// Resonant lowpass filter (state variable, needs two caches)
+/// @param input - Input signal
+/// @param freq - Cutoff frequency in Hz
+/// @param res - Resonance (0-1)
+/// @param s1 - State variable 1 from cache
+/// @param s2 - State variable 2 from cache
+/// @returns Lowpass filtered signal
 spindle rlpf(input, freq, res, s1, s2) {
     f.val = 2 * sin(3.14159 * freq / me.sampleRate)
     q.val = 1 - res
@@ -180,38 +240,45 @@ spindle rlpf(input, freq, res, s1, s2) {
 // DELAY / EFFECTS
 // ============================================================================
 
-// Feedback delay - needs cache at call site
-// samples = delay time in samples
-// feedback = 0 to <1
-// prev = cache(output, delay_samples, delay_samples, me.i)
-//
-// Usage:
-//   delay_time.val = 12000  // quarter second at 48k
-//   delayed.val = fbdelay(input.val, 0.6, cache(delayed.val, 48000, delay_time.val, me.i))
+/// Feedback delay (needs cache at call site)
+/// @param input - Input signal
+/// @param feedback - Feedback amount (0 to <1)
+/// @param delayed - Delayed signal from cache
+/// @returns Input plus delayed feedback
+/// @example del.val = fbdelay(in.val, 0.6, cache(del.val, 48000, 12000, me.i))
 spindle fbdelay(input, feedback, delayed) {
     return.0 = input + delayed * feedback
 }
 
-// Simple delay (no feedback) - just use cache directly:
-//   delayed.val = cache(input.val, 48000, delay_samples, me.i)
-
-// Soft saturation / overdrive (stateless)
+/// Soft saturation / overdrive
+/// @param input - Input signal
+/// @param drive - Drive amount (1 = clean, higher = more saturation)
+/// @returns Saturated signal
 spindle saturate(input, drive) {
     x.val = input * drive
     return.0 = x.val / (1 + abs(x.val))
 }
 
-// Tanh saturation (warmer)
+/// Tanh saturation (warmer character)
+/// @param input - Input signal
+/// @param drive - Drive amount
+/// @returns Saturated signal using tanh approximation
 spindle tanh_sat(input, drive) {
     return.0 = (1 - pow(2.71828, -2 * input * drive)) / (1 + pow(2.71828, -2 * input * drive))
 }
 
-// Hard clip (stateless)
+/// Hard clip (distortion)
+/// @param input - Input signal
+/// @param threshold - Clipping threshold
+/// @returns Clipped signal
 spindle clip(input, threshold) {
     return.0 = clamp(input, -threshold, threshold)
 }
 
-// Bitcrush - reduce bit depth (stateless)
+/// Bitcrush - reduce bit depth
+/// @param input - Input signal
+/// @param bits - Bit depth (1-16)
+/// @returns Quantized signal
 spindle crush(input, bits) {
     levels.val = pow(2, bits)
     return.0 = floor(input * levels.val + 0.5) / levels.val
@@ -221,26 +288,41 @@ spindle crush(input, bits) {
 // TRIGGER / GATE UTILITIES
 // ============================================================================
 
-// Rising edge detector (1 on 0->1 transition)
-// Usage: trig.val = rising(gate.val, cache(gate.val, 2, 1, me.i))
+/// Rising edge detector (1 on 0->1 transition)
+/// @param gate - Gate signal
+/// @param prev_gate - Previous gate value from cache
+/// @returns 1 on rising edge, 0 otherwise
+/// @example trig.val = rising(gate.val, cache(gate.val, 2, 1, me.i))
 spindle rising(gate, prev_gate) {
     return.0 = gate * (1 - prev_gate)
 }
 
-// Falling edge detector (1 on 1->0 transition)
+/// Falling edge detector (1 on 1->0 transition)
+/// @param gate - Gate signal
+/// @param prev_gate - Previous gate value from cache
+/// @returns 1 on falling edge, 0 otherwise
 spindle falling(gate, prev_gate) {
     return.0 = (1 - gate) * prev_gate
 }
 
-// Sample and hold (sample input when trig goes high)
-// Usage: held.val = sah(input.val, trig.val, cache(held.val, 2, 1, me.i), cache(trig.val, 2, 1, me.i))
+/// Sample and hold (sample input when trigger goes high)
+/// @param input - Signal to sample
+/// @param trig - Trigger signal
+/// @param prev_out - Previous output from cache
+/// @param prev_trig - Previous trigger from cache
+/// @returns Held value
+/// @example held.val = sah(in.val, trig.val, cache(held.val, 2, 1, me.i), cache(trig.val, 2, 1, me.i))
 spindle sah(input, trig, prev_out, prev_trig) {
     edge.val = trig * (1 - prev_trig)
     return.0 = lerp(prev_out, input, edge.val)
 }
 
-// Track and hold (follow input when gate high, hold when low)
-// Usage: held.val = tah(input.val, gate.val, cache(held.val, 2, 1, me.i))
+/// Track and hold (follow input when gate high, hold when low)
+/// @param input - Signal to track
+/// @param gate - Gate signal (1 = track, 0 = hold)
+/// @param prev - Previous output from cache
+/// @returns Tracked or held value
+/// @example held.val = tah(in.val, gate.val, cache(held.val, 2, 1, me.i))
 spindle tah(input, gate, prev) {
     return.0 = lerp(prev, input, gate)
 }
@@ -249,34 +331,50 @@ spindle tah(input, gate, prev) {
 // MIXING / UTILITIES (stateless)
 // ============================================================================
 
-// Crossfade between a and b (mix 0=a, 1=b)
+/// Crossfade between two signals
+/// @param a - First signal
+/// @param b - Second signal
+/// @param mix - Mix amount (0 = a, 1 = b)
+/// @returns Crossfaded signal
 spindle xfade(a, b, mix) {
     return.0 = lerp(a, b, mix)
 }
 
-// Equal power pan (mono to stereo, pan 0=left, 1=right)
+/// Equal power pan (mono to stereo)
+/// @param mono - Mono input signal
+/// @param p - Pan position (0 = left, 1 = right)
+/// @returns [left, right] stereo output
 spindle pan(mono, p) {
     return.0 = mono * sqrt(1 - p)
     return.1 = mono * sqrt(p)
 }
 
-// Mono to stereo (duplicate)
+/// Mono to stereo (duplicate to both channels)
+/// @param mono - Mono input signal
+/// @returns [left, right] stereo output
 spindle m2s(mono) {
     return.0 = mono
     return.1 = mono
 }
 
-// Stereo to mono (average)
+/// Stereo to mono (average channels)
+/// @param left - Left channel
+/// @param right - Right channel
+/// @returns Mono average
 spindle s2m(left, right) {
     return.0 = (left + right) * 0.5
 }
 
-// dB to linear amplitude
+/// Convert decibels to linear amplitude
+/// @param db - Decibel value
+/// @returns Linear amplitude (0 dB = 1.0)
 spindle db2amp(db) {
     return.0 = pow(10, db / 20)
 }
 
-// Linear amplitude to dB
+/// Convert linear amplitude to decibels
+/// @param amp - Linear amplitude
+/// @returns Decibel value
 spindle amp2db(amp) {
     return.0 = 20 * log(max(amp, 0.00001)) / log(10)
 }
@@ -285,12 +383,15 @@ spindle amp2db(amp) {
 // NOISE (stateless - uses built-in noise seeded by time/sample)
 // ============================================================================
 
-// White noise
+/// White noise generator
+/// @returns Random value in range [-1, 1]
 spindle wnoise() {
     return.0 = noise(me.i, me.t * 1000) * 2 - 1
 }
 
-// Sample-and-hold noise (changes at given frequency)
+/// Sample-and-hold noise (changes at given frequency)
+/// @param freq - Update frequency in Hz
+/// @returns Random value that changes at freq rate
 spindle shnoise(freq) {
     idx.val = floor(me.t * freq)
     return.0 = noise(idx.val, idx.val * 0.7) * 2 - 1

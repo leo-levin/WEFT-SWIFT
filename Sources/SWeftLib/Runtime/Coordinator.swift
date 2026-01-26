@@ -13,6 +13,9 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var annotatedProgram: IRAnnotatedProgram?
     public private(set) var swatchGraph: SwatchGraph?
 
+    // Documentation
+    public let docManager = SpindleDocManager.shared
+
     // Backend registry
     public let registry: BackendRegistry
 
@@ -565,5 +568,12 @@ public class Coordinator: CameraCaptureDelegate {
         }
 
         return errors.isEmpty ? nil : errors.joined(separator: "\n")
+    }
+
+    // MARK: - Documentation
+
+    /// Get documentation for a spindle or builtin by name
+    public func documentation(for name: String) -> SpindleDoc? {
+        return docManager.documentation(for: name)
     }
 }
