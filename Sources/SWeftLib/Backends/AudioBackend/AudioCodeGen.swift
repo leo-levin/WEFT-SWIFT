@@ -206,8 +206,8 @@ public class AudioCodeGen {
         }
     }
 
-    // Audio input source (set by backend)
-    public weak var audioInput: AudioInputSource?
+    // Audio input provider (set by backend via setInputProviders)
+    public weak var audioInput: AudioInputProvider?
 
     /// Build binary operation evaluator
     private func buildBinaryOp(
@@ -514,9 +514,8 @@ public struct AudioContext {
 
 public typealias AudioRenderFunction = (Int, Double, Double) -> (Float, Float)
 
-// MARK: - Audio Input Source Protocol
+// MARK: - Audio Input Source Protocol (Deprecated)
 
-public protocol AudioInputSource: AnyObject {
-    /// Get audio sample at given sample index and channel (0 = left, 1 = right)
-    func getSample(at sampleIndex: Int, channel: Int) -> Float
-}
+/// Deprecated: Use AudioInputProvider instead
+/// This typealias exists for backward compatibility
+public typealias AudioInputSource = AudioInputProvider

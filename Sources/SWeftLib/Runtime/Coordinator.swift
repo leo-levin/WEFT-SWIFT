@@ -28,6 +28,9 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var audioCapture: AudioCapture?
     public private(set) var needsMicrophone = false
 
+    // Input providers registry
+    private var inputProviders: [String: any InputProvider] = [:]
+
     // Compiled units
     private var compiledUnits: [UUID: CompiledUnit] = [:]
 
@@ -53,6 +56,71 @@ public class Coordinator: CameraCaptureDelegate {
         self.registry = registry
         self.bufferManager = BufferManager()
         self.cacheManager = CacheManager()
+    }
+
+    // MARK: - Input Provider Management
+
+    /// Register an input provider
+    public func registerInputProvider(_ provider: any InputProvider) {
+        inputProviders[type(of: provider).builtinName] = provider
+    }
+
+    /// Get typed input provider by builtin name
+    public func inputProvider<T: InputProvider>(for builtinName: String) -> T? {
+        inputProviders[builtinName] as? T
+    }
+
+    /// Create and setup an input provider for the given builtin name
+    private func createProvider(for builtinName: String) -> (any InputProvider)? {
+        switch builtinName {
+        case "microphone":
+            let capture = AudioCapture()
+            try? capture.setup(device: metalBackend?.device)
+            return capture
+        case "camera":
+            guard let device = metalBackend?.device else { return nil }
+            let capture = CameraCapture(device: device)
+            capture.delegate = self
+            return capture
+        // Future: "midi", "osc", "gamepad", etc.
+        default:
+            return nil
+        }
+    }
+
+    /// Collect providers needed by a backend based on external builtins used
+    private func collectProvidersForBackend(
+        backendId: String,
+        swatch: Swatch,
+        program: IRProgram
+    ) -> [String: any InputProvider] {
+        let externalBuiltins = BackendRegistry.shared.externalBuiltins(for: backendId)
+        var neededProviders: [String: any InputProvider] = [:]
+
+        for builtinName in externalBuiltins {
+            // Check if this swatch actually uses this builtin
+            let usesBuiltin = swatch.bundles.contains { bundleName in
+                guard let bundle = program.bundles[bundleName] else { return false }
+                return bundle.strands.contains { strand in
+                    strand.expr.usesBuiltin(builtinName)
+                }
+            }
+
+            guard usesBuiltin else { continue }
+
+            // Lazily create provider if needed
+            if inputProviders[builtinName] == nil {
+                if let provider = createProvider(for: builtinName) {
+                    inputProviders[builtinName] = provider
+                }
+            }
+
+            if let provider = inputProviders[builtinName] {
+                neededProviders[builtinName] = provider
+            }
+        }
+
+        return neededProviders
     }
 
     // MARK: - CameraCaptureDelegate
@@ -189,6 +257,14 @@ public class Coordinator: CameraCaptureDelegate {
                     )
                 }
 
+                // Collect and set input providers for this backend
+                let visualProviders = collectProvidersForBackend(
+                    backendId: MetalBackend.identifier,
+                    swatch: swatch,
+                    program: program
+                )
+                metalBackend!.setInputProviders(visualProviders)
+
                 // Pass cache descriptors to codegen via backend
                 let unit = try metalBackend!.compile(
                     swatch: swatch,
@@ -201,9 +277,17 @@ public class Coordinator: CameraCaptureDelegate {
                 if let metalUnit = unit as? MetalCompiledUnit {
                     if metalUnit.usedInputs.contains("camera") {
                         needsCamera = true
+                        // Store camera provider reference for backward compatibility
+                        if let camProvider = inputProviders["camera"] as? CameraCapture {
+                            cameraCapture = camProvider
+                        }
                     }
                     if metalUnit.usedInputs.contains("microphone") {
                         needsMicrophone = true
+                        // Store audio provider reference for backward compatibility
+                        if let micProvider = inputProviders["microphone"] as? AudioCapture {
+                            audioCapture = micProvider
+                        }
                     }
                 }
 
@@ -216,24 +300,21 @@ public class Coordinator: CameraCaptureDelegate {
                     sampleManager = SampleManager()
                 }
 
-                // Check if this swatch uses any external builtins that need hardware setup
-                let externalBuiltins = BackendRegistry.shared.externalBuiltins(for: AudioBackend.identifier)
-                let usesExternalBuiltin = swatch.bundles.contains { bundleName in
-                    guard let bundle = program.bundles[bundleName] else { return false }
-                    return bundle.strands.contains { strand in
-                        externalBuiltins.contains { strand.expr.usesBuiltin($0) }
-                    }
-                }
+                // Collect and set input providers for this backend
+                let audioProviders = collectProvidersForBackend(
+                    backendId: AudioBackend.identifier,
+                    swatch: swatch,
+                    program: program
+                )
+                audioBackend!.setInputProviders(audioProviders)
 
-                // Set up audio input if needed (for microphone builtin)
-                if usesExternalBuiltin {
-                    if audioCapture == nil, let device = metalBackend?.device {
-                        audioCapture = AudioCapture()
-                        try? audioCapture?.setup(device: device)
-                        try? audioCapture?.startCapture()
-                        needsMicrophone = true
+                // Track if microphone is needed
+                if audioProviders["microphone"] != nil {
+                    needsMicrophone = true
+                    // Store audio provider reference for backward compatibility
+                    if let micProvider = inputProviders["microphone"] as? AudioCapture {
+                        audioCapture = micProvider
                     }
-                    audioBackend?.audioInput = audioCapture
                 }
 
                 // Load audio samples from program resources if any

@@ -9,10 +9,15 @@ public protocol CameraCaptureDelegate: AnyObject {
     func cameraCapture(_ capture: CameraCapture, didUpdateTexture texture: MTLTexture)
 }
 
-public class CameraCapture: NSObject {
+public class CameraCapture: NSObject, VisualInputProvider {
+    // MARK: - InputProvider Static Properties
+
+    public static var builtinName: String { "camera" }
+    public static var hardware: IRHardware { .camera }
+
     public weak var delegate: CameraCaptureDelegate?
 
-    private let device: MTLDevice
+    private var device: MTLDevice?
     private var textureCache: CVMetalTextureCache?
     private let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
@@ -22,9 +27,33 @@ public class CameraCapture: NSObject {
     private(set) public var isRunning = false
     private(set) public var latestTexture: MTLTexture?
 
+    /// VisualInputProvider conformance - alias for latestTexture
+    public var texture: MTLTexture? { latestTexture }
+
+    /// Initialize with Metal device (convenience for backward compatibility)
     public init(device: MTLDevice) {
         self.device = device
         super.init()
+        createTextureCache()
+    }
+
+    /// Default initializer - call setup(device:) before start()
+    public override init() {
+        super.init()
+    }
+
+    // MARK: - InputProvider Protocol
+
+    public func setup(device: MTLDevice?) throws {
+        guard let device = device else {
+            throw CameraCaptureError.noDevice
+        }
+        self.device = device
+        createTextureCache()
+    }
+
+    private func createTextureCache() {
+        guard let device = device else { return }
 
         // Create texture cache for efficient CVPixelBuffer -> MTLTexture conversion
         var cache: CVMetalTextureCache?
@@ -148,4 +177,11 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
             self.delegate?.cameraCapture(self, didUpdateTexture: texture)
         }
     }
+}
+
+// MARK: - Errors
+
+public enum CameraCaptureError: Error {
+    case noDevice
+    case textureCreationFailed
 }

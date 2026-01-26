@@ -80,10 +80,20 @@ public class AudioBackend: Backend {
     /// Loaded audio samples by resource ID - set by SampleManager via Coordinator
     public var loadedSamples: [Int: AudioSampleBuffer] = [:]
 
-    /// Audio input source (microphone) - set by Coordinator
+    /// Input providers set via setInputProviders
+    private var inputProviders: [String: any InputProvider] = [:]
+
+    /// Audio input source (microphone) - deprecated, use setInputProviders instead
+    @available(*, deprecated, message: "Use setInputProviders instead")
     public weak var audioInput: AudioInputSource?
 
     public init() {}
+
+    // MARK: - Input Provider Management
+
+    public func setInputProviders(_ providers: [String: any InputProvider]) {
+        self.inputProviders = providers
+    }
 
     /// Compile swatch to audio render function (without cache support)
     public func compile(swatch: Swatch, ir: IRProgram) throws -> CompiledUnit {
@@ -97,8 +107,13 @@ public class AudioBackend: Backend {
         // Pass loaded samples to codegen
         codegen.loadedSamples = loadedSamples
 
-        // Pass audio input (microphone) to codegen
-        codegen.audioInput = audioInput
+        // Pass audio input (microphone) to codegen from providers
+        if let micProvider = inputProviders["microphone"] as? AudioInputProvider {
+            codegen.audioInput = micProvider
+        } else if let legacyInput = audioInput {
+            // Fallback to legacy audioInput for backward compatibility
+            codegen.audioInput = legacyInput
+        }
 
         let renderFunction = try codegen.generateRenderFunction()
 

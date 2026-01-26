@@ -6,7 +6,11 @@ import Metal
 
 // MARK: - Audio Capture
 
-public class AudioCapture: NSObject, AudioInputSource {
+public class AudioCapture: NSObject, AudioInputProvider {
+    // MARK: - InputProvider Static Properties
+
+    public static var builtinName: String { "microphone" }
+    public static var hardware: IRHardware { .microphone }
     private let audioEngine = AVAudioEngine()
     private var inputNode: AVAudioInputNode?
     private var isCapturing = false
@@ -30,11 +34,23 @@ public class AudioCapture: NSObject, AudioInputSource {
         super.init()
     }
 
-    // MARK: - Setup
+    // MARK: - Setup (InputProvider Protocol)
 
-    public func setup(device: MTLDevice) throws {
+    public func setup(device: MTLDevice?) throws {
         self.device = device
-        try createTexture()
+        if device != nil {
+            try createTexture()
+        }
+    }
+
+    // MARK: - InputProvider Protocol Methods
+
+    public func start() throws {
+        try startCapture()
+    }
+
+    public func stop() {
+        stopCapture()
     }
 
     private func createTexture() throws {
@@ -113,7 +129,7 @@ public class AudioCapture: NSObject, AudioInputSource {
         }
     }
 
-    // MARK: - AudioInputSource Protocol
+    // MARK: - AudioInputProvider Protocol
 
     public func getSample(at sampleIndex: Int, channel: Int) -> Float {
         bufferLock.lock()
