@@ -109,6 +109,11 @@ public class MetalBackend: Backend {
             textureIndex: 1
         )),
         .input(InputBinding(
+            builtinName: "microphone",
+            shaderParam: "texture2d<float, access::sample> audioBuffer [[texture(2)]]",
+            textureIndex: 2
+        )),
+        .input(InputBinding(
             builtinName: "texture",
             shaderParam: nil,  // Dynamic: texture{N} [[texture(3+N)]]
             textureIndex: 3    // Base index
@@ -134,7 +139,11 @@ public class MetalBackend: Backend {
     public var width: Int = 512
     public var height: Int = 512
 
-    /// Camera texture - set externally by CameraCapture
+    /// Input providers set via setInputProviders
+    private var inputProviders: [String: any InputProvider] = [:]
+
+    /// Camera texture - deprecated, now accessed via provider
+    /// Still used by CameraCaptureDelegate callback for backward compatibility
     public var cameraTexture: MTLTexture?
 
     /// Audio buffer texture - for microphone/audio reactive visuals
@@ -170,6 +179,22 @@ public class MetalBackend: Backend {
         samplerDescriptor.sAddressMode = .clampToEdge
         samplerDescriptor.tAddressMode = .clampToEdge
         self.samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
+    }
+
+    // MARK: - Input Provider Management
+
+    public func setInputProviders(_ providers: [String: any InputProvider]) {
+        self.inputProviders = providers
+    }
+
+    /// Get camera texture from provider or legacy property
+    private func getCameraTexture() -> MTLTexture? {
+        // Try to get from provider first
+        if let camProvider = inputProviders["camera"] as? VisualInputProvider {
+            return camProvider.texture
+        }
+        // Fallback to legacy direct property for backward compatibility
+        return cameraTexture
     }
 
     /// Set output dimensions
@@ -376,7 +401,7 @@ public class MetalBackend: Backend {
                 if let textureIndex = input.textureIndex {
                     switch input.builtinName {
                     case "camera":
-                        if let camTex = cameraTexture {
+                        if let camTex = getCameraTexture() {
                             computeEncoder.setTexture(camTex, index: textureIndex)
                         }
                     case "microphone":

@@ -170,6 +170,21 @@ public protocol Backend {
         outputs: [String: any Buffer],
         time: Double
     )
+
+    /// Set input providers before compilation.
+    /// Called by Coordinator with providers matching this backend's externalBuiltins.
+    ///
+    /// - Parameter providers: Dictionary mapping builtin names to their providers
+    func setInputProviders(_ providers: [String: any InputProvider])
+}
+
+// MARK: - Backend Default Implementations
+
+public extension Backend {
+    /// Default empty implementation - backends that don't need input providers can ignore this
+    func setInputProviders(_ providers: [String: any InputProvider]) {
+        // Default: do nothing
+    }
 }
 
 // MARK: - Backend Errors
