@@ -184,104 +184,75 @@ enum PurityState {
 struct BundleRow: View {
     let bundle: IRBundle
     let isExpanded: Bool
-    /// Backend identifier (e.g., "visual", "audio")
     let backendId: String?
     let purityState: PurityState?
-    /// Signal annotations for this bundle's strands
     let signals: [String: IRSignal]?
     let onToggle: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: onToggle) {
-                HStack(spacing: Spacing.xs) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 10)
+        ExpandableRow(isExpanded: isExpanded, onToggle: onToggle) {
+            Text(bundle.name)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
 
-                    Text(bundle.name)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.primary)
-
-                    // Domain annotation (from first strand)
-                    if let domainText = bundleDomainText {
-                        Text(domainText)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    Spacer()
-
-                    // Badges
-                    if let bid = backendId {
-                        BackendBadge(backendId: bid)
-                    }
-                    if let ps = purityState {
-                        PurityBadge(purityState: ps)
-                    }
-                }
-                .padding(.vertical, Spacing.xxs)
+            if let domainText = bundleDomainText {
+                Text(domainText)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
             }
-            .buttonStyle(.plain)
 
-            if isExpanded {
-                VStack(alignment: .leading, spacing: Spacing.xxs) {
-                    ForEach(bundle.strands, id: \.name) { strand in
-                        let signalKey = "\(bundle.name).\(strand.name)"
-                        let signal = signals?[signalKey]
+            Spacer()
 
-                        HStack(alignment: .top, spacing: Spacing.xs) {
-                            Text("\(strand.name):")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 30, alignment: .trailing)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(strand.expr.description)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.primary)
-                                    .textSelection(.enabled)
-
-                                // Show signal annotations
-                                if let signal = signal {
-                                    SignalAnnotationView(signal: signal)
-                                }
-                            }
-                        }
-                    }
+            if let bid = backendId { Badge.backend(bid) }
+            if let ps = purityState { Badge.purity(ps) }
+        } detail: {
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                ForEach(bundle.strands, id: \.name) { strand in
+                    StrandRow(bundle: bundle, strand: strand, signal: signals?["\(bundle.name).\(strand.name)"])
                 }
-                .padding(.leading, 20)
-                .padding(.vertical, Spacing.xs)
-                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
-                .cornerRadius(4)
             }
         }
     }
 
-    /// Get domain text for the bundle (from first strand)
     private var bundleDomainText: String? {
         guard let signals = signals else { return nil }
-        // Find first strand's signal
         for strand in bundle.strands {
-            let key = "\(bundle.name).\(strand.name)"
-            if let signal = signals[key] {
+            if let signal = signals["\(bundle.name).\(strand.name)"] {
                 return formatDomain(signal.domain)
             }
         }
         return nil
     }
 
-    /// Format domain as compact string
     private func formatDomain(_ domain: [IRDimension]) -> String {
-        if domain.isEmpty {
-            return "[]"
+        guard !domain.isEmpty else { return "[]" }
+        return "[\(domain.map { "\($0.name)\($0.access == .bound ? "·" : "")" }.joined(separator: " "))]"
+    }
+}
+
+private struct StrandRow: View {
+    let bundle: IRBundle
+    let strand: IRStrand
+    let signal: IRSignal?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.xs) {
+            Text("\(strand.name):")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 30, alignment: .trailing)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(strand.expr.description)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+
+                if let signal = signal {
+                    SignalAnnotationView(signal: signal)
+                }
+            }
         }
-        let dims = domain.map { dim in
-            let marker = dim.access == .bound ? "·" : ""
-            return "\(dim.name)\(marker)"
-        }
-        return "[\(dims.joined(separator: " "))]"
     }
 }
 
@@ -342,61 +313,42 @@ struct SpindleRow: View {
     let onToggle: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: onToggle) {
-                HStack(spacing: Spacing.xs) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 10)
+        ExpandableRow(isExpanded: isExpanded, onToggle: onToggle) {
+            Text(spindle.name)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
 
-                    Text(spindle.name)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.primary)
+            Text("(\(spindle.params.joined(separator: ", ")))")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
 
-                    Text("(\(spindle.params.joined(separator: ", ")))")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
+            Text("-> \(spindle.returns.count) return\(spindle.returns.count == 1 ? "" : "s")")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
 
-                    Text("-> \(spindle.returns.count) return\(spindle.returns.count == 1 ? "" : "s")")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-
-                    Spacer()
-                }
-                .padding(.vertical, Spacing.xxs)
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                VStack(alignment: .leading, spacing: Spacing.xs) {
-                    // Local bundles
-                    if !spindle.locals.isEmpty {
-                        Text("Locals:")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                        ForEach(spindle.locals, id: \.name) { local in
-                            Text("  \(local.name) = ...")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    // Returns
-                    Text("Returns:")
+            Spacer()
+        } detail: {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                if !spindle.locals.isEmpty {
+                    Text("Locals:")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
-                    ForEach(Array(spindle.returns.enumerated()), id: \.offset) { idx, expr in
-                        Text("  [\(idx)] = \(expr.description)")
+                    ForEach(spindle.locals, id: \.name) { local in
+                        Text("  \(local.name) = ...")
                             .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.primary)
-                            .textSelection(.enabled)
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.leading, 20)
-                .padding(.vertical, Spacing.xs)
-                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
-                .cornerRadius(4)
+
+                Text("Returns:")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                ForEach(Array(spindle.returns.enumerated()), id: \.offset) { idx, expr in
+                    Text("  [\(idx)] = \(expr.description)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
@@ -665,7 +617,7 @@ struct AnalysisView: View {
                                         Text("[\(idx)] \(desc.bundleName).\(desc.strandIndex)")
                                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         Spacer()
-                                        CacheDomainBadge(domain: desc.domain)
+                                        Badge.cacheDomain(desc.domain)
                                     }
                                     HStack(spacing: Spacing.sm) {
                                         Text("History: \(desc.historySize)")
@@ -775,73 +727,48 @@ struct SwatchRow: View {
     let onToggle: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: onToggle) {
-                HStack(spacing: Spacing.xs) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
+        ExpandableRow(isExpanded: isExpanded, onToggle: onToggle) {
+            Badge.backend(swatch.backend)
+
+            Text(swatch.bundles.sorted().joined(separator: ", "))
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
+
+            Spacer()
+
+            if swatch.isSink { Badge.sink }
+        } detail: {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                HStack {
+                    Text("ID:")
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
-                        .frame(width: 10)
-
-                    BackendBadge(backendId: swatch.backend)
-
-                    Text(swatch.bundles.sorted().joined(separator: ", "))
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    if swatch.isSink {
-                        Text("SINK")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.red.opacity(0.8))
-                            .cornerRadius(3)
-                    }
+                    Text(swatch.id.uuidString.prefix(8) + "...")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, Spacing.xxs)
-            }
-            .buttonStyle(.plain)
 
-            if isExpanded {
-                VStack(alignment: .leading, spacing: Spacing.xs) {
-                    HStack {
-                        Text("ID:")
+                if !swatch.inputBuffers.isEmpty {
+                    HStack(alignment: .top) {
+                        Text("Inputs:")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.tertiary)
-                        Text(swatch.id.uuidString.prefix(8) + "...")
+                        Text(swatch.inputBuffers.sorted().joined(separator: ", "))
                             .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if !swatch.inputBuffers.isEmpty {
-                        HStack(alignment: .top) {
-                            Text("Inputs:")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.tertiary)
-                            Text(swatch.inputBuffers.sorted().joined(separator: ", "))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.blue)
-                        }
-                    }
-
-                    if !swatch.outputBuffers.isEmpty {
-                        HStack(alignment: .top) {
-                            Text("Outputs:")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.tertiary)
-                            Text(swatch.outputBuffers.sorted().joined(separator: ", "))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.green)
-                        }
+                            .foregroundStyle(.blue)
                     }
                 }
-                .padding(.leading, 20)
-                .padding(.vertical, Spacing.xs)
-                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
-                .cornerRadius(4)
+
+                if !swatch.outputBuffers.isEmpty {
+                    HStack(alignment: .top) {
+                        Text("Outputs:")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Text(swatch.outputBuffers.sorted().joined(separator: ", "))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.green)
+                    }
+                }
             }
         }
     }
@@ -891,57 +818,7 @@ struct InfoRow: View {
     }
 }
 
-struct BackendBadge: View {
-    let backendId: String
-
-    var body: some View {
-        Text(backendId.uppercased())
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(badgeColor)
-            .cornerRadius(3)
-    }
-
-    private var badgeColor: Color {
-        switch backendId {
-        case "visual": return .blue
-        case "audio": return .green
-        default: return .gray
-        }
-    }
-}
-
-struct PurityBadge: View {
-    let purityState: PurityState
-
-    var body: some View {
-        Text(purityText)
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(purityColor)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(purityColor.opacity(0.15))
-            .cornerRadius(3)
-    }
-
-    private var purityText: String {
-        switch purityState {
-        case .pure: return "pure"
-        case .stateful: return "stateful"
-        case .external: return "external"
-        }
-    }
-
-    private var purityColor: Color {
-        switch purityState {
-        case .pure: return .green
-        case .stateful: return .orange
-        case .external: return .purple
-        }
-    }
-}
+// BackendBadge, PurityBadge replaced by generic Badge in Theme.swift
 
 /// Helper to derive purity state from annotations
 func purityStateForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) -> PurityState? {
@@ -981,33 +858,7 @@ func signalsForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) ->
     return result.isEmpty ? nil : result
 }
 
-struct CacheDomainBadge: View {
-    let domain: CacheDomain
-
-    var body: some View {
-        Text(domainText)
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(domainColor)
-            .cornerRadius(3)
-    }
-
-    private var domainText: String {
-        switch domain {
-        case .visual: return "VISUAL"
-        case .audio: return "AUDIO"
-        }
-    }
-
-    private var domainColor: Color {
-        switch domain {
-        case .visual: return .blue
-        case .audio: return .green
-        }
-    }
-}
+// CacheDomainBadge replaced by Badge.cacheDomain() in Theme.swift
 
 struct EmptyDevModeView: View {
     let message: String

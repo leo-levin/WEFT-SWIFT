@@ -488,3 +488,107 @@ struct CompilationError {
         return CompilationError(message: message, location: location, codeContext: codeContext)
     }
 }
+
+// MARK: - Generic Badge Component
+
+/// A styled badge for displaying short labels with color coding.
+/// Replaces BackendBadge, PurityBadge, and CacheDomainBadge.
+struct Badge: View {
+    enum Style {
+        case filled    // White text on solid background
+        case tinted    // Colored text on light background
+    }
+
+    let text: String
+    let color: Color
+    let style: Style
+
+    init(_ text: String, color: Color, style: Style = .filled) {
+        self.text = text
+        self.color = color
+        self.style = style
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9, weight: style == .filled ? .bold : .medium))
+            .foregroundStyle(style == .filled ? .white : color)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(style == .filled ? color : color.opacity(0.15))
+            .cornerRadius(3)
+    }
+}
+
+// MARK: - Badge Factory Methods
+
+extension Badge {
+    /// Badge for backend type (visual/audio)
+    static func backend(_ id: String) -> Badge {
+        let color: Color = switch id {
+        case "visual": .blue
+        case "audio": .green
+        default: .gray
+        }
+        return Badge(id.uppercased(), color: color, style: .filled)
+    }
+
+    /// Badge for purity state
+    static func purity(_ state: PurityState) -> Badge {
+        let (text, color): (String, Color) = switch state {
+        case .pure: ("pure", .green)
+        case .stateful: ("stateful", .orange)
+        case .external: ("external", .purple)
+        }
+        return Badge(text, color: color, style: .tinted)
+    }
+
+    /// Badge for cache domain
+    static func cacheDomain(_ domain: CacheDomain) -> Badge {
+        let (text, color): (String, Color) = switch domain {
+        case .visual: ("VISUAL", .blue)
+        case .audio: ("AUDIO", .green)
+        }
+        return Badge(text, color: color, style: .filled)
+    }
+
+    /// Badge for sink status
+    static var sink: Badge {
+        Badge("SINK", color: .red.opacity(0.8), style: .filled)
+    }
+}
+
+// MARK: - Expandable Row Component
+
+/// A reusable expandable row with chevron toggle, header content, and detail view.
+/// Replaces the common pattern in BundleRow, SpindleRow, and SwatchRow.
+struct ExpandableRow<Header: View, Detail: View>: View {
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    @ViewBuilder let header: () -> Header
+    @ViewBuilder let detail: () -> Detail
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onToggle) {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 10)
+                    header()
+                }
+                .padding(.vertical, Spacing.xxs)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                detail()
+                    .padding(.leading, 20)
+                    .padding(.vertical, Spacing.xs)
+                    .background(Color(NSColor.textBackgroundColor).opacity(0.5))
+                    .cornerRadius(4)
+            }
+        }
+    }
+}

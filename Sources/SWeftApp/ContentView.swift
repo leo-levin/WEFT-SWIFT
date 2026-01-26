@@ -379,32 +379,14 @@ struct ContentView: View {
 // MARK: - Example Programs
 
 enum WeftExample: CaseIterable {
-    case gradient
-    case plasma
-    case circle
-    case sine
-    case crossdomain
+    case gradient, plasma, circle, sine, crossdomain
 
-    var name: String {
-        switch self {
-        case .gradient: return "Gradient"
-        case .plasma: return "Plasma"
-        case .circle: return "Circle"
-        case .sine: return "Sine Wave"
-        case .crossdomain: return "Audio-Visual"
-        }
-    }
-
-    var source: String {
-        switch self {
-        case .gradient:
-            return """
+    private static let examples: [WeftExample: (name: String, source: String)] = [
+        .gradient: ("Gradient", """
             // Animated gradient
             display[r, g, b] = [me.x, me.y, fract(me.t)]
-            """
-
-        case .plasma:
-            return """
+            """),
+        .plasma: ("Plasma", """
             // Plasma effect
             v.x = sin(me.x * 10.0 + me.t)
             v.y = sin(me.y * 10.0 + me.t * 1.5)
@@ -414,10 +396,8 @@ enum WeftExample: CaseIterable {
                 sin(v.y + v.z) * 0.5 + 0.5,
                 sin(v.z + v.x) * 0.5 + 0.5
             ]
-            """
-
-        case .circle:
-            return """
+            """),
+        .circle: ("Circle", """
             // Circle with antialiasing
             cx.v = 0.5
             cy.v = 0.5
@@ -427,27 +407,25 @@ enum WeftExample: CaseIterable {
             dist.v = sqrt(dx.v * dx.v + dy.v * dy.v)
             edge.v = smoothstep(radius.v + 0.01, radius.v - 0.01, dist.v)
             display[r, g, b] = [edge.v, edge.v * 0.5, edge.v * 0.8]
-            """
-
-        case .sine:
-            return """
+            """),
+        .sine: ("Sine Wave", """
             // 440Hz sine wave
             freq.v = 440.0
             phase.v = me.i / me.sampleRate * freq.v * 6.28318
             play[0] = sin(phase.v) * 0.3
-            """
-
-        case .crossdomain:
-            return """
+            """),
+        .crossdomain: ("Audio-Visual", """
             // Audio-reactive visual
             amp.v = abs(sin(me.t * 3.0))
             freq.v = 440.0
             phase.v = me.i / me.sampleRate * freq.v * 6.28318
             play[0] = sin(phase.v) * amp.v * 0.3
             display[r, g, b] = [amp.v, me.y, me.x]
-            """
-        }
-    }
+            """),
+    ]
+
+    var name: String { Self.examples[self]!.name }
+    var source: String { Self.examples[self]!.source }
 }
 
 // MARK: - View Model
