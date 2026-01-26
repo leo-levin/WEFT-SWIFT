@@ -134,6 +134,18 @@ public class WeftTokenizer {
         "return": .return
     ]
 
+    private static let twoCharOps: [String: Token] = [
+        "->": .arrow, "..": .dotDot, "==": .equalEqual, "!=": .bangEqual,
+        "<=": .lessEqual, ">=": .greaterEqual, "&&": .ampAmp, "||": .pipePipe
+    ]
+
+    private static let singleCharTokens: [Character: Token] = [
+        "(": .leftParen, ")": .rightParen, "[": .leftBracket, "]": .rightBracket,
+        "{": .leftBrace, "}": .rightBrace, ",": .comma, "=": .equal, ".": .dot,
+        "+": .plus, "-": .minus, "*": .star, "/": .slash, "^": .caret,
+        "%": .percent, "~": .tilde, "<": .less, ">": .greater, "!": .bang
+    ]
+
     public init(source: String) {
         self.source = source
         self.index = source.startIndex
@@ -259,81 +271,18 @@ public class WeftTokenizer {
             return scanIdentifier(startLocation: startLocation)
         }
 
-        // Multi-character operators
-        if char == "-" && peek() == ">" {
-            advance()
-            advance()
-            return makeToken(.arrow, text: "->", startLocation: startLocation)
-        }
-
-        if char == "." && peek() == "." {
-            advance()
-            advance()
-            return makeToken(.dotDot, text: "..", startLocation: startLocation)
-        }
-
-        if char == "=" && peek() == "=" {
-            advance()
-            advance()
-            return makeToken(.equalEqual, text: "==", startLocation: startLocation)
-        }
-
-        if char == "!" && peek() == "=" {
-            advance()
-            advance()
-            return makeToken(.bangEqual, text: "!=", startLocation: startLocation)
-        }
-
-        if char == "<" && peek() == "=" {
-            advance()
-            advance()
-            return makeToken(.lessEqual, text: "<=", startLocation: startLocation)
-        }
-
-        if char == ">" && peek() == "=" {
-            advance()
-            advance()
-            return makeToken(.greaterEqual, text: ">=", startLocation: startLocation)
-        }
-
-        if char == "&" && peek() == "&" {
-            advance()
-            advance()
-            return makeToken(.ampAmp, text: "&&", startLocation: startLocation)
-        }
-
-        if char == "|" && peek() == "|" {
-            advance()
-            advance()
-            return makeToken(.pipePipe, text: "||", startLocation: startLocation)
+        // Multi-character operators (check two-char first)
+        if let nextChar = peek() {
+            let twoChar = String(char) + String(nextChar)
+            if let token = Self.twoCharOps[twoChar] {
+                advance()
+                advance()
+                return makeToken(token, text: twoChar, startLocation: startLocation)
+            }
         }
 
         // Single-character tokens
-        let singleCharToken: Token?
-        switch char {
-        case "(": singleCharToken = .leftParen
-        case ")": singleCharToken = .rightParen
-        case "[": singleCharToken = .leftBracket
-        case "]": singleCharToken = .rightBracket
-        case "{": singleCharToken = .leftBrace
-        case "}": singleCharToken = .rightBrace
-        case ",": singleCharToken = .comma
-        case "=": singleCharToken = .equal
-        case ".": singleCharToken = .dot
-        case "+": singleCharToken = .plus
-        case "-": singleCharToken = .minus
-        case "*": singleCharToken = .star
-        case "/": singleCharToken = .slash
-        case "^": singleCharToken = .caret
-        case "%": singleCharToken = .percent
-        case "~": singleCharToken = .tilde
-        case "<": singleCharToken = .less
-        case ">": singleCharToken = .greater
-        case "!": singleCharToken = .bang
-        default: singleCharToken = nil
-        }
-
-        if let token = singleCharToken {
+        if let token = Self.singleCharTokens[char] {
             let text = String(char)
             advance()
             return makeToken(token, text: text, startLocation: startLocation)

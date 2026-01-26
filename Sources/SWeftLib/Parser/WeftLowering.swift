@@ -576,11 +576,7 @@ public class WeftLowering {
     private func lowerBareStrandAccess(_ accessor: StrandAccessor, subs: [IRExpr]) throws -> IRExpr {
         switch accessor {
         case .index(let idx):
-            let resolved = idx < 0 ? subs.count + idx : idx
-            if resolved < 0 || resolved >= subs.count {
-                throw LoweringError.rangeOutOfBounds(idx, subs.count)
-            }
-            return subs[resolved]
+            return subs[try resolveIndexChecked(idx, count: subs.count)]
 
         case .name(let name):
             throw LoweringError.invalidExpression("Bare named strand access .\(name) not supported")
@@ -601,11 +597,7 @@ public class WeftLowering {
             let lowered = try elements.map { try lowerExpr($0, subs: subs) }
             switch access.accessor {
             case .index(let idx):
-                let resolved = idx < 0 ? lowered.count + idx : idx
-                if resolved < 0 || resolved >= lowered.count {
-                    throw LoweringError.rangeOutOfBounds(idx, lowered.count)
-                }
-                return lowered[resolved]
+                return lowered[try resolveIndexChecked(idx, count: lowered.count)]
             case .expr(let indexExpr):
                 let irIndex = try lowerExpr(indexExpr, subs: subs)
                 return buildSelector(lowered, index: irIndex)
@@ -628,10 +620,7 @@ public class WeftLowering {
                 return .index(bundle: bundleName, indexExpr: .num(Double(idx)))
 
             case .index(let idx):
-                let resolved = idx < 0 ? info.width + idx : idx
-                if resolved < 0 || resolved >= info.width {
-                    throw LoweringError.rangeOutOfBounds(idx, info.width)
-                }
+                let resolved = try resolveIndexChecked(idx, count: info.width)
                 return .index(bundle: bundleName, indexExpr: .num(Double(resolved)))
 
             case .expr(let indexExpr):
@@ -661,8 +650,7 @@ public class WeftLowering {
             return .index(bundle: "me", indexExpr: .param(name))
 
         case .index(let idx):
-            let resolved = idx < 0 ? meWidth + idx : idx
-            return .index(bundle: "me", indexExpr: .num(Double(resolved)))
+            return .index(bundle: "me", indexExpr: .num(Double(resolveIndex(idx, count: meWidth))))
 
         case .expr(let indexExpr):
             let irIndex = try lowerExpr(indexExpr, subs: subs)
@@ -760,19 +748,9 @@ public class WeftLowering {
             guard case .string(let path) = args[0] else {
                 throw LoweringError.invalidExpression("texture() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = resourceIndex[path] {
-                resourceId = existing
-            } else {
-                resourceId = resources.count
-                resources.append(path)
-                resourceIndex[path] = resourceId
-            }
-
+            let resourceId = getOrCreateResourceId(path)
             let u = try lowerExpr(args[1], subs: subs)
             let v = try lowerExpr(args[2], subs: subs)
-
             return (0..<spec.width).map { channel in
                 .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
             }
@@ -783,28 +761,9 @@ public class WeftLowering {
             guard case .string(let path) = args[0] else {
                 throw LoweringError.invalidExpression("load() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = resourceIndex[path] {
-                resourceId = existing
-            } else {
-                resourceId = resources.count
-                resources.append(path)
-                resourceIndex[path] = resourceId
-            }
-
-            // Determine UV coordinates
-            let u: IRExpr
-            let v: IRExpr
-            if args.count >= 3 {
-                u = try lowerExpr(args[1], subs: subs)
-                v = try lowerExpr(args[2], subs: subs)
-            } else {
-                // Default to me.x, me.y
-                u = .index(bundle: "me", indexExpr: .param("x"))
-                v = .index(bundle: "me", indexExpr: .param("y"))
-            }
-
+            let resourceId = getOrCreateResourceId(path)
+            let u = args.count >= 3 ? try lowerExpr(args[1], subs: subs) : .index(bundle: "me", indexExpr: .param("x"))
+            let v = args.count >= 3 ? try lowerExpr(args[2], subs: subs) : .index(bundle: "me", indexExpr: .param("y"))
             return (0..<spec.width).map { channel in
                 .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
             }
@@ -815,25 +774,8 @@ public class WeftLowering {
             guard case .string(let path) = args[0] else {
                 throw LoweringError.invalidExpression("sample() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = resourceIndex[path] {
-                resourceId = existing
-            } else {
-                resourceId = resources.count
-                resources.append(path)
-                resourceIndex[path] = resourceId
-            }
-
-            // Determine sample offset
-            let offset: IRExpr
-            if args.count >= 2 {
-                offset = try lowerExpr(args[1], subs: subs)
-            } else {
-                // Default to me.i (sample index)
-                offset = .index(bundle: "me", indexExpr: .param("i"))
-            }
-
+            let resourceId = getOrCreateResourceId(path)
+            let offset = args.count >= 2 ? try lowerExpr(args[1], subs: subs) : .index(bundle: "me", indexExpr: .param("i"))
             return (0..<spec.width).map { channel in
                 .builtin(name: "sample", args: [.num(Double(resourceId)), offset, .num(Double(channel))])
             }
@@ -849,19 +791,9 @@ public class WeftLowering {
             guard case .string(let content) = args[0] else {
                 throw LoweringError.invalidExpression("text() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = textResourceIndex[content] {
-                resourceId = existing
-            } else {
-                resourceId = textResources.count
-                textResources.append(content)
-                textResourceIndex[content] = resourceId
-            }
-
+            let resourceId = getOrCreateTextResourceId(content)
             let x = try lowerExpr(args[1], subs: subs)
             let y = try lowerExpr(args[2], subs: subs)
-
             return [.builtin(name: "text", args: [.num(Double(resourceId)), x, y])]
 
         default:
@@ -870,6 +802,38 @@ public class WeftLowering {
     }
 
     // MARK: - Helper Functions
+
+    /// Resolve a potentially negative index (e.g., -1 means last element)
+    private func resolveIndex(_ idx: Int, count: Int) -> Int {
+        idx < 0 ? count + idx : idx
+    }
+
+    /// Resolve index with bounds checking
+    private func resolveIndexChecked(_ idx: Int, count: Int) throws -> Int {
+        let resolved = resolveIndex(idx, count: count)
+        guard resolved >= 0 && resolved < count else {
+            throw LoweringError.rangeOutOfBounds(idx, count)
+        }
+        return resolved
+    }
+
+    /// Get or create a resource ID for a path
+    private func getOrCreateResourceId(_ path: String) -> Int {
+        if let existing = resourceIndex[path] { return existing }
+        let id = resources.count
+        resources.append(path)
+        resourceIndex[path] = id
+        return id
+    }
+
+    /// Get or create a text resource ID for content
+    private func getOrCreateTextResourceId(_ content: String) -> Int {
+        if let existing = textResourceIndex[content] { return existing }
+        let id = textResources.count
+        textResources.append(content)
+        textResourceIndex[content] = id
+        return id
+    }
 
     private func getBundleInfo(_ name: String) throws -> BundleInfo {
         if let scope = scope, let local = scope.locals[name] {

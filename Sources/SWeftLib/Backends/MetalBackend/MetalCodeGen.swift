@@ -507,57 +507,22 @@ public class MetalCodeGen {
             guard args.count >= 3 else {
                 throw BackendError.unsupportedExpression("camera requires 3 arguments: u, v, channel")
             }
-            let uCode = argCodes[0]
-            let vCode = argCodes[1]
-            let channel = args[2]
-            let channelNames = ["r", "g", "b", "a"]
-            let channelIdx: Int
-            if case .num(let ch) = channel {
-                channelIdx = Int(ch)
-            } else {
-                channelIdx = 0
-            }
-            let channelName = channelIdx < channelNames.count ? channelNames[channelIdx] : "r"
-            return "cameraTexture.sample(textureSampler, float2(\(uCode), \(vCode))).\(channelName)"
+            return "cameraTexture.sample(textureSampler, float2(\(argCodes[0]), \(argCodes[1]))).\(channelName(from: args[2]))"
 
         case "texture":
             // texture(resourceId, u, v, channel)
             guard args.count >= 4 else {
                 throw BackendError.unsupportedExpression("texture requires 4 arguments: resourceId, u, v, channel")
             }
-            let resourceId: Int
-            if case .num(let rid) = args[0] {
-                resourceId = Int(rid)
-            } else {
-                resourceId = 0
-            }
-            let uCode = argCodes[1]
-            let vCode = argCodes[2]
-            let channel = args[3]
-            let texChannelNames = ["r", "g", "b", "a"]
-            let texChannelIdx: Int
-            if case .num(let ch) = channel {
-                texChannelIdx = Int(ch)
-            } else {
-                texChannelIdx = 0
-            }
-            let texChannelName = texChannelIdx < texChannelNames.count ? texChannelNames[texChannelIdx] : "r"
-            return "texture\(resourceId).sample(textureSampler, float2(\(uCode), \(vCode))).\(texChannelName)"
+            let resourceId: Int = { if case .num(let n) = args[0] { return Int(n) }; return 0 }()
+            return "texture\(resourceId).sample(textureSampler, float2(\(argCodes[1]), \(argCodes[2]))).\(channelName(from: args[3]))"
 
         case "microphone":
             // microphone(offset, channel)
             guard args.count >= 2 else {
                 throw BackendError.unsupportedExpression("microphone requires 2 arguments: offset, channel")
             }
-            let offsetCode = argCodes[0]
-            let channel = args[1]
-            let micChannelName: String
-            if case .num(let ch) = channel {
-                micChannelName = Int(ch) == 0 ? "r" : "g"
-            } else {
-                micChannelName = "r"
-            }
-            return "audioBuffer.sample(textureSampler, float2(\(offsetCode), 0.5)).\(micChannelName)"
+            return "audioBuffer.sample(textureSampler, float2(\(argCodes[0]), 0.5)).\(channelName(from: args[1], names: ["r", "g"]))"
 
         // Universal input builtins
         case "mouse":
@@ -648,5 +613,12 @@ public class MetalCodeGen {
             return "\(Int(value)).0"
         }
         return String(format: "%.6f", value)
+    }
+
+    /// Get channel name from IRExpr (e.g., .num(0) -> "r")
+    private func channelName(from expr: IRExpr, names: [String] = ["r", "g", "b", "a"]) -> String {
+        guard case .num(let ch) = expr else { return names[0] }
+        let idx = Int(ch)
+        return idx < names.count ? names[idx] : names[0]
     }
 }

@@ -110,6 +110,27 @@ public class WeftParser {
         throw ParseError.unexpectedToken(expected: message, found: peek().token, location: currentLocation)
     }
 
+    private func consumeIdentifier(_ message: String) throws -> String {
+        let token = try consume(.identifier(""), message)
+        guard case .identifier(let name) = token.token else {
+            throw ParseError.invalidSyntax("Expected identifier", token.location)
+        }
+        return name
+    }
+
+    /// Parse left-associative binary operator sequence: nextLevel (op nextLevel)*
+    private func parseBinaryOps(
+        _ operators: [(Token, BinaryOperator)],
+        nextLevel: () throws -> Expr
+    ) throws -> Expr {
+        var expr = try nextLevel()
+        while true {
+            guard let op = operators.first(where: { match($0.0) })?.1 else { break }
+            expr = .binaryOp(BinaryOp(left: expr, op: op, right: try nextLevel()))
+        }
+        return expr
+    }
+
     // MARK: - Statement Parsing
 
     private func parseStatement() throws -> Statement {
@@ -121,20 +142,12 @@ public class WeftParser {
 
     private func parseBundleDecl() throws -> BundleDecl {
         // ident ("." ident | "[" OutputList "]") "=" Expr
-        let nameToken = try consume(.identifier(""), "bundle name")
-        guard case .identifier(let name) = nameToken.token else {
-            throw ParseError.invalidSyntax("Expected identifier", nameToken.location)
-        }
-
+        let name = try consumeIdentifier("bundle name")
         var outputs: [OutputItem] = []
 
         if match(.dot) {
             // Shorthand: name.strand = expr
-            let strandToken = try consume(.identifier(""), "strand name")
-            guard case .identifier(let strandName) = strandToken.token else {
-                throw ParseError.invalidSyntax("Expected strand name", strandToken.location)
-            }
-            outputs = [.name(strandName)]
+            outputs = [.name(try consumeIdentifier("strand name"))]
         } else if match(.leftBracket) {
             // Full: name[r, g, b] = expr
             outputs = try parseOutputList()
@@ -175,11 +188,7 @@ public class WeftParser {
         // "spindle" ident "(" IdentList? ")" "{" Body "}"
         try consume(.spindle, "spindle")
 
-        let nameToken = try consume(.identifier(""), "spindle name")
-        guard case .identifier(let name) = nameToken.token else {
-            throw ParseError.invalidSyntax("Expected spindle name", nameToken.location)
-        }
-
+        let name = try consumeIdentifier("spindle name")
         try consume(.leftParen, "(")
         var params: [String] = []
         if !check(.rightParen) {
@@ -200,15 +209,9 @@ public class WeftParser {
 
     private func parseIdentList() throws -> [String] {
         var idents: [String] = []
-
         repeat {
-            let token = try consume(.identifier(""), "parameter name")
-            guard case .identifier(let name) = token.token else {
-                throw ParseError.invalidSyntax("Expected identifier", token.location)
-            }
-            idents.append(name)
+            idents.append(try consumeIdentifier("parameter name"))
         } while match(.comma)
-
         return idents
     }
 
@@ -259,61 +262,20 @@ public class WeftParser {
     }
 
     private func parseComparisonExpr() throws -> Expr {
-        // AddExpr (compareOp AddExpr)*
-        var expr = try parseAddExpr()
-
-        while true {
-            let op: BinaryOperator?
-            if match(.equalEqual) { op = .equal }
-            else if match(.bangEqual) { op = .notEqual }
-            else if match(.less) { op = .less }
-            else if match(.greater) { op = .greater }
-            else if match(.lessEqual) { op = .lessEqual }
-            else if match(.greaterEqual) { op = .greaterEqual }
-            else if match(.ampAmp) { op = .and }
-            else if match(.pipePipe) { op = .or }
-            else { break }
-
-            let right = try parseAddExpr()
-            expr = .binaryOp(BinaryOp(left: expr, op: op!, right: right))
-        }
-
-        return expr
+        try parseBinaryOps([
+            (.equalEqual, .equal), (.bangEqual, .notEqual),
+            (.less, .less), (.greater, .greater),
+            (.lessEqual, .lessEqual), (.greaterEqual, .greaterEqual),
+            (.ampAmp, .and), (.pipePipe, .or)
+        ], nextLevel: parseAddExpr)
     }
 
     private func parseAddExpr() throws -> Expr {
-        // MultExpr (("+" | "-") MultExpr)*
-        var expr = try parseMultExpr()
-
-        while true {
-            let op: BinaryOperator?
-            if match(.plus) { op = .add }
-            else if match(.minus) { op = .subtract }
-            else { break }
-
-            let right = try parseMultExpr()
-            expr = .binaryOp(BinaryOp(left: expr, op: op!, right: right))
-        }
-
-        return expr
+        try parseBinaryOps([(.plus, .add), (.minus, .subtract)], nextLevel: parseMultExpr)
     }
 
     private func parseMultExpr() throws -> Expr {
-        // ExpoExpr (("*" | "/" | "%") ExpoExpr)*
-        var expr = try parseExpoExpr()
-
-        while true {
-            let op: BinaryOperator?
-            if match(.star) { op = .multiply }
-            else if match(.slash) { op = .divide }
-            else if match(.percent) { op = .modulo }
-            else { break }
-
-            let right = try parseExpoExpr()
-            expr = .binaryOp(BinaryOp(left: expr, op: op!, right: right))
-        }
-
-        return expr
+        try parseBinaryOps([(.star, .multiply), (.slash, .divide), (.percent, .modulo)], nextLevel: parseExpoExpr)
     }
 
     private func parseExpoExpr() throws -> Expr {
@@ -610,11 +572,7 @@ public class WeftParser {
             throw ParseError.invalidSyntax("Expected strand accessor", loc)
         }
 
-        let nameToken = try consume(.identifier(""), "bundle name")
-        guard case .identifier(let bundleName) = nameToken.token else {
-            throw ParseError.invalidSyntax("Expected bundle name", loc)
-        }
-
+        let bundleName = try consumeIdentifier("bundle name")
         try consume(.dot, ".")
 
         if case .identifier(let strandName) = peek().token {
