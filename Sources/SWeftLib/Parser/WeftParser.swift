@@ -139,8 +139,12 @@ public class WeftParser {
             // Full: name[r, g, b] = expr
             outputs = try parseOutputList()
             try consume(.rightBracket, "]")
+        } else if check(.equal) {
+            // Inferred: name = expr (width inferred from expression)
+            // Leave outputs empty - signals width inference needed in lowering
+            outputs = []
         } else {
-            throw ParseError.unexpectedToken(expected: ". or [", found: peek().token, location: currentLocation)
+            throw ParseError.unexpectedToken(expected: "., [, or =", found: peek().token, location: currentLocation)
         }
 
         try consume(.equal, "=")

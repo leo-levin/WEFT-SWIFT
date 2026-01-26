@@ -21,6 +21,9 @@ public enum Statement: Equatable {
 
 public struct BundleDecl: Equatable {
     public let name: String
+    /// The output strands for this bundle.
+    /// If empty, width is inferred from the expression and strands are named "0", "1", "2", etc.
+    /// This supports the syntax: `name = expr` where width is determined by the expression type.
     public let outputs: [OutputItem]
     public let expr: Expr
 
