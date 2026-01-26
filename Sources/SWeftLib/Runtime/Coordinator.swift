@@ -162,8 +162,14 @@ public class Coordinator: CameraCaptureDelegate {
         let swatches = partitioner.partition()
         self.swatchGraph = swatches
 
-        // Analyze cache nodes
-        cacheManager.analyze(program: program, annotations: annotations)
+        // Inline spindle calls with cache target substitution before cache analysis
+        // This transforms cache(localRef, ...) inside spindles to cache(targetBundle, ...)
+        var mutableProgramForInlining = program
+        IRTransformations.inlineSpindleCacheCalls(program: &mutableProgramForInlining)
+        self.program = mutableProgramForInlining
+
+        // Analyze cache nodes (now sees correct target references after spindle inlining)
+        cacheManager.analyze(program: mutableProgramForInlining, annotations: annotations)
 
         // Transform program to break cache cycles (replace back-references with cacheRead)
         if var mutableProgram = self.program {

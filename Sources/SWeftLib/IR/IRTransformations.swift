@@ -447,4 +447,535 @@ public enum IRTransformations {
             return expr
         }
     }
+
+    // MARK: - Spindle Cache Inlining
+
+    /// Describes a cache in a spindle that has a cyclic dependency
+    public struct SpindleCyclicCache {
+        public let cacheLocalName: String      // Local containing the cache
+        public let cacheStrandName: String     // Strand containing the cache
+        public let cyclicLocalName: String     // Local referenced in cache value that forms cycle
+        public let cyclicStrandIndex: Int      // Strand index referenced
+    }
+
+    /// Collect all local bundle names referenced by an expression
+    public static func collectLocalReferences(
+        _ expr: IRExpr,
+        localNames: Set<String>
+    ) -> Set<String> {
+        var result = Set<String>()
+
+        func visit(_ e: IRExpr) {
+            switch e {
+            case .num, .param, .cacheRead:
+                break
+
+            case .index(let bundle, let indexExpr):
+                if localNames.contains(bundle) {
+                    result.insert(bundle)
+                }
+                visit(indexExpr)
+
+            case .binaryOp(_, let left, let right):
+                visit(left)
+                visit(right)
+
+            case .unaryOp(_, let operand):
+                visit(operand)
+
+            case .builtin(_, let args):
+                args.forEach { visit($0) }
+
+            case .call(_, let args):
+                args.forEach { visit($0) }
+
+            case .extract(let call, _):
+                visit(call)
+
+            case .remap(let base, let subs):
+                visit(base)
+                subs.values.forEach { visit($0) }
+            }
+        }
+
+        visit(expr)
+        return result
+    }
+
+    /// Get transitive dependencies of a local (what other locals it depends on, recursively)
+    public static func transitiveLocalDeps(
+        _ localName: String,
+        locals: [IRBundle],
+        visited: Set<String> = []
+    ) -> Set<String> {
+        guard !visited.contains(localName) else { return [] }
+
+        let localNames = Set(locals.map { $0.name })
+        guard let local = locals.first(where: { $0.name == localName }) else {
+            return []
+        }
+
+        var newVisited = visited
+        newVisited.insert(localName)
+
+        var result = Set<String>()
+        for strand in local.strands {
+            let directDeps = collectLocalReferences(strand.expr, localNames: localNames)
+            result.formUnion(directDeps)
+
+            // Recursively get transitive deps
+            for dep in directDeps {
+                result.formUnion(transitiveLocalDeps(dep, locals: locals, visited: newVisited))
+            }
+        }
+
+        return result
+    }
+
+    /// Find all local.strand references in an expression
+    private static func findLocalStrandRefs(
+        _ expr: IRExpr,
+        localNames: Set<String>
+    ) -> [(localName: String, strandIndex: Int)] {
+        var refs: [(String, Int)] = []
+
+        func visit(_ e: IRExpr) {
+            switch e {
+            case .index(let bundle, let indexExpr):
+                if localNames.contains(bundle) {
+                    let strandIdx: Int
+                    if case .num(let idx) = indexExpr {
+                        strandIdx = Int(idx)
+                    } else {
+                        strandIdx = 0
+                    }
+                    refs.append((bundle, strandIdx))
+                }
+                visit(indexExpr)
+
+            case .binaryOp(_, let left, let right):
+                visit(left)
+                visit(right)
+
+            case .unaryOp(_, let operand):
+                visit(operand)
+
+            case .builtin(_, let args):
+                args.forEach { visit($0) }
+
+            case .call(_, let args):
+                args.forEach { visit($0) }
+
+            case .extract(let call, _):
+                visit(call)
+
+            case .remap(let base, let subs):
+                visit(base)
+                subs.values.forEach { visit($0) }
+
+            default:
+                break
+            }
+        }
+
+        visit(expr)
+        return refs
+    }
+
+    /// Find all cache builtin calls in an expression and extract their value expression local refs
+    public static func findCachesWithLocalRefs(
+        _ expr: IRExpr,
+        localNames: Set<String>
+    ) -> [(valueLocalName: String, valueStrandIndex: Int)] {
+        var results: [(String, Int)] = []
+
+        func visit(_ e: IRExpr) {
+            switch e {
+            case .builtin(let name, let args) where name == "cache":
+                guard args.count >= 1 else { return }
+                // Find all local refs in the value expression (first arg)
+                let valueLocalRefs = findLocalStrandRefs(args[0], localNames: localNames)
+                results.append(contentsOf: valueLocalRefs)
+                // Also check recursively in other args for nested caches
+                args.forEach { visit($0) }
+
+            case .binaryOp(_, let left, let right):
+                visit(left)
+                visit(right)
+
+            case .unaryOp(_, let operand):
+                visit(operand)
+
+            case .builtin(_, let args):
+                args.forEach { visit($0) }
+
+            case .call(_, let args):
+                args.forEach { visit($0) }
+
+            case .extract(let call, _):
+                visit(call)
+
+            case .remap(let base, let subs):
+                visit(base)
+                subs.values.forEach { visit($0) }
+
+            default:
+                break
+            }
+        }
+
+        visit(expr)
+        return results
+    }
+
+    /// Find caches in spindle that have cyclic dependencies through their value expression
+    public static func findCyclicCachesInSpindle(
+        _ spindleDef: IRSpindle
+    ) -> [SpindleCyclicCache] {
+        var cycles: [SpindleCyclicCache] = []
+        let localNames = Set(spindleDef.locals.map { $0.name })
+
+        // For each return, find which locals it depends on (directly + transitively)
+        for returnExpr in spindleDef.returns {
+            let returnLocalRefs = collectLocalReferences(returnExpr, localNames: localNames)
+
+            // Get transitive deps for all directly referenced locals
+            var allReturnDeps = returnLocalRefs
+            for localName in returnLocalRefs {
+                allReturnDeps.formUnion(transitiveLocalDeps(localName, locals: spindleDef.locals))
+            }
+
+            // For each local that feeds into the return path
+            for localName in allReturnDeps {
+                guard let local = spindleDef.locals.first(where: { $0.name == localName }) else {
+                    continue
+                }
+
+                for strand in local.strands {
+                    // Find caches in this strand's expression
+                    let cacheRefs = findCachesWithLocalRefs(strand.expr, localNames: localNames)
+
+                    for (refLocalName, refStrandIdx) in cacheRefs {
+                        // Check if the referenced local is in the return path
+                        guard allReturnDeps.contains(refLocalName) else { continue }
+
+                        // Check if the referenced local transitively depends back on this local (cycle)
+                        let refDeps = transitiveLocalDeps(refLocalName, locals: spindleDef.locals)
+                        if refDeps.contains(localName) || refLocalName == localName {
+                            // Found a cycle!
+                            cycles.append(SpindleCyclicCache(
+                                cacheLocalName: localName,
+                                cacheStrandName: strand.name,
+                                cyclicLocalName: refLocalName,
+                                cyclicStrandIndex: refStrandIdx
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+
+        return cycles
+    }
+
+    /// Substitute references to a specific local.strand with replacement expression
+    public static func substituteCyclicRef(
+        in expr: IRExpr,
+        localName: String,
+        strandIndex: Int,
+        replacement: IRExpr
+    ) -> IRExpr {
+        switch expr {
+        case .num, .param, .cacheRead:
+            return expr
+
+        case .index(let bundle, let indexExpr):
+            // Check if this is the reference to replace
+            if bundle == localName {
+                if case .num(let idx) = indexExpr, Int(idx) == strandIndex {
+                    return replacement
+                }
+                if case .param(let field) = indexExpr {
+                    // Check if field matches the strand index (by name or numeric)
+                    if Int(field) == strandIndex {
+                        return replacement
+                    }
+                }
+            }
+            return .index(
+                bundle: bundle,
+                indexExpr: substituteCyclicRef(in: indexExpr, localName: localName, strandIndex: strandIndex, replacement: replacement)
+            )
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: substituteCyclicRef(in: left, localName: localName, strandIndex: strandIndex, replacement: replacement),
+                right: substituteCyclicRef(in: right, localName: localName, strandIndex: strandIndex, replacement: replacement)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: substituteCyclicRef(in: operand, localName: localName, strandIndex: strandIndex, replacement: replacement)
+            )
+
+        case .builtin(let name, let args):
+            return .builtin(
+                name: name,
+                args: args.map { substituteCyclicRef(in: $0, localName: localName, strandIndex: strandIndex, replacement: replacement) }
+            )
+
+        case .call(let spindle, let args):
+            return .call(
+                spindle: spindle,
+                args: args.map { substituteCyclicRef(in: $0, localName: localName, strandIndex: strandIndex, replacement: replacement) }
+            )
+
+        case .extract(let call, let index):
+            return .extract(
+                call: substituteCyclicRef(in: call, localName: localName, strandIndex: strandIndex, replacement: replacement),
+                index: index
+            )
+
+        case .remap(let base, let subs):
+            var newSubs: [String: IRExpr] = [:]
+            for (key, value) in subs {
+                newSubs[key] = substituteCyclicRef(in: value, localName: localName, strandIndex: strandIndex, replacement: replacement)
+            }
+            return .remap(
+                base: substituteCyclicRef(in: base, localName: localName, strandIndex: strandIndex, replacement: replacement),
+                substitutions: newSubs
+            )
+        }
+    }
+
+    /// Inline a spindle call, substituting cyclic cache refs with the assignment target
+    public static func inlineSpindleCallWithTarget(
+        spindleDef: IRSpindle,
+        args: [IRExpr],
+        targetBundle: String,
+        targetStrandIndex: Int,
+        returnIndex: Int = 0
+    ) -> IRExpr {
+        // 1. Find cyclic caches in this spindle
+        let cycles = findCyclicCachesInSpindle(spindleDef)
+
+        // 2. If no cycles, use standard inlining
+        guard !cycles.isEmpty else {
+            let subs = buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            guard returnIndex < spindleDef.returns.count else {
+                return .num(0)
+            }
+            var result = substituteParams(in: spindleDef.returns[returnIndex], substitutions: subs)
+            result = substituteIndexRefs(in: result, substitutions: subs)
+            return result
+        }
+
+        // 3. Build the target reference
+        let targetRef = IRExpr.index(
+            bundle: targetBundle,
+            indexExpr: .num(Double(targetStrandIndex))
+        )
+
+        // 4. Create modified locals where cyclic references are replaced with target
+        var modifiedLocals: [IRBundle] = []
+
+        for local in spindleDef.locals {
+            var modifiedStrands: [IRStrand] = []
+
+            for strand in local.strands {
+                // Check if this strand has any cyclic cache
+                let relevantCycles = cycles.filter { cycle in
+                    cycle.cacheLocalName == local.name && cycle.cacheStrandName == strand.name
+                }
+
+                if !relevantCycles.isEmpty {
+                    // Substitute all cyclic references in this strand's expression
+                    var modifiedExpr = strand.expr
+                    for cycle in relevantCycles {
+                        modifiedExpr = substituteCyclicRef(
+                            in: modifiedExpr,
+                            localName: cycle.cyclicLocalName,
+                            strandIndex: cycle.cyclicStrandIndex,
+                            replacement: targetRef
+                        )
+                    }
+                    modifiedStrands.append(IRStrand(
+                        name: strand.name,
+                        index: strand.index,
+                        expr: modifiedExpr
+                    ))
+                } else {
+                    modifiedStrands.append(strand)
+                }
+            }
+
+            modifiedLocals.append(IRBundle(name: local.name, strands: modifiedStrands))
+        }
+
+        // 5. Create modified spindle for substitution building
+        let modifiedSpindle = IRSpindle(
+            name: spindleDef.name,
+            params: spindleDef.params,
+            locals: modifiedLocals,
+            returns: spindleDef.returns
+        )
+
+        // 6. Build substitutions with modified locals
+        let subs = buildSpindleSubstitutions(spindleDef: modifiedSpindle, args: args)
+
+        // 7. Inline the return expression
+        guard returnIndex < spindleDef.returns.count else {
+            return .num(0)
+        }
+        var result = substituteParams(in: spindleDef.returns[returnIndex], substitutions: subs)
+        result = substituteIndexRefs(in: result, substitutions: subs)
+
+        return result
+    }
+
+    /// Recursively inline spindle calls in expression with given target
+    private static func inlineExprWithTarget(
+        expr: IRExpr,
+        targetBundle: String,
+        targetStrandIndex: Int,
+        program: IRProgram
+    ) -> IRExpr {
+        switch expr {
+        case .num, .param, .cacheRead:
+            return expr
+
+        case .index(let bundle, let indexExpr):
+            return .index(
+                bundle: bundle,
+                indexExpr: inlineExprWithTarget(expr: indexExpr, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+            )
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: inlineExprWithTarget(expr: left, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program),
+                right: inlineExprWithTarget(expr: right, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: inlineExprWithTarget(expr: operand, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+            )
+
+        case .builtin(let name, let args):
+            let inlinedArgs = args.map { arg in
+                inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+            }
+            return .builtin(name: name, args: inlinedArgs)
+
+        case .call(let spindle, let args):
+            guard let spindleDef = program.spindles[spindle],
+                  !spindleDef.returns.isEmpty else {
+                // Unknown spindle or no returns, inline args and keep call
+                let inlinedArgs = args.map { arg in
+                    inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+                }
+                return .call(spindle: spindle, args: inlinedArgs)
+            }
+
+            // First inline args
+            let inlinedArgs = args.map { arg in
+                inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+            }
+
+            // Then inline spindle with target substitution
+            let inlined = inlineSpindleCallWithTarget(
+                spindleDef: spindleDef,
+                args: inlinedArgs,
+                targetBundle: targetBundle,
+                targetStrandIndex: targetStrandIndex,
+                returnIndex: 0
+            )
+
+            // Recursively process the inlined result
+            return inlineExprWithTarget(
+                expr: inlined,
+                targetBundle: targetBundle,
+                targetStrandIndex: targetStrandIndex,
+                program: program
+            )
+
+        case .extract(let callExpr, let index):
+            guard case .call(let spindle, let args) = callExpr,
+                  let spindleDef = program.spindles[spindle],
+                  index < spindleDef.returns.count else {
+                // Keep as-is if can't inline
+                return .extract(
+                    call: inlineExprWithTarget(expr: callExpr, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program),
+                    index: index
+                )
+            }
+
+            // First inline args
+            let inlinedArgs = args.map { arg in
+                inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+            }
+
+            // Inline spindle with target substitution for the specific return
+            let inlined = inlineSpindleCallWithTarget(
+                spindleDef: spindleDef,
+                args: inlinedArgs,
+                targetBundle: targetBundle,
+                targetStrandIndex: targetStrandIndex,
+                returnIndex: index
+            )
+
+            // Recursively process the inlined result
+            return inlineExprWithTarget(
+                expr: inlined,
+                targetBundle: targetBundle,
+                targetStrandIndex: targetStrandIndex,
+                program: program
+            )
+
+        case .remap(let base, let subs):
+            let inlinedBase = inlineExprWithTarget(
+                expr: base,
+                targetBundle: targetBundle,
+                targetStrandIndex: targetStrandIndex,
+                program: program
+            )
+            var inlinedSubs: [String: IRExpr] = [:]
+            for (key, value) in subs {
+                inlinedSubs[key] = inlineExprWithTarget(
+                    expr: value,
+                    targetBundle: targetBundle,
+                    targetStrandIndex: targetStrandIndex,
+                    program: program
+                )
+            }
+            return .remap(base: inlinedBase, substitutions: inlinedSubs)
+        }
+    }
+
+    /// Transform program by inlining all spindle calls with proper cache target substitution
+    public static func inlineSpindleCacheCalls(program: inout IRProgram) {
+        for (bundleName, bundle) in program.bundles {
+            var modifiedStrands: [IRStrand] = []
+
+            for strand in bundle.strands {
+                let inlinedExpr = inlineExprWithTarget(
+                    expr: strand.expr,
+                    targetBundle: bundleName,
+                    targetStrandIndex: strand.index,
+                    program: program
+                )
+                modifiedStrands.append(IRStrand(
+                    name: strand.name,
+                    index: strand.index,
+                    expr: inlinedExpr
+                ))
+            }
+
+            program.bundles[bundleName] = IRBundle(name: bundleName, strands: modifiedStrands)
+        }
+    }
 }
