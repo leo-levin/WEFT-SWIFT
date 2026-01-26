@@ -275,6 +275,17 @@ public class MetalCodeGen {
             needsSampler = true
         }
 
+        // Generate helper code for text texture dimensions/aspect ratios
+        var textHelpers = ""
+        for textId in usedTexts.sorted() {
+            textHelpers += """
+                float textTex\(textId)_w = float(textTexture\(textId).get_width());
+                float textTex\(textId)_h = float(textTexture\(textId).get_height());
+                float textTex\(textId)_aspect = textTex\(textId)_w / textTex\(textId)_h;
+
+            """
+        }
+
         if needsSampler {
             extraParams += "\n    sampler textureSampler [[sampler(0)]],"
         }
@@ -344,7 +355,7 @@ public class MetalCodeGen {
             float t = uniforms.time;
             float w = uniforms.width;
             float h = uniforms.height;
-        \(cacheHelpers)
+            \(textHelpers)\(cacheHelpers)
             float r = \(colorExprs[0]);
             float g = \(colorExprs[1]);
             float b = \(colorExprs.count > 2 ? colorExprs[2] : "0.0");
@@ -692,6 +703,7 @@ public class MetalCodeGen {
 
         case "text":
             // text(resourceId, x, y) -> sample from text texture (alpha mask)
+            // Adjusts for aspect ratio to prevent stretching
             guard args.count >= 3 else {
                 throw BackendError.unsupportedExpression("text requires 3 arguments: resourceId, x, y")
             }
@@ -703,8 +715,12 @@ public class MetalCodeGen {
             }
             let xCode = argCodes[1]
             let yCode = argCodes[2]
-            // Sample text texture (R channel contains alpha)
-            return "textTexture\(resourceId).sample(textureSampler, float2(\(xCode), \(yCode))).r"
+            // Correct for aspect ratio: scale x coordinate based on screen vs text aspect ratio
+            // This ensures text maintains its natural proportions regardless of screen dimensions
+            // adjustedX = x * screenAspect / textAspect
+            // Return 0 (transparent) when sampling outside texture bounds
+            let adjustedX = "((\(xCode)) * (w/h) / textTex\(resourceId)_aspect)"
+            return "(\(adjustedX) >= 0.0 && \(adjustedX) <= 1.0 && (\(yCode)) >= 0.0 && (\(yCode)) <= 1.0 ? textTexture\(resourceId).sample(textureSampler, float2(\(adjustedX), (\(yCode)))).r : 0.0)"
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")
