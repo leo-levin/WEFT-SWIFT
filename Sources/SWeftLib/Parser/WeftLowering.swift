@@ -349,6 +349,12 @@ public class WeftLowering {
             return .unaryOp(op: op.op.rawValue, operand: operand)
 
         case .spindleCall(let call):
+            // Check for single-width resource builtins (like text) that need special string handling
+            if let spec = RESOURCE_BUILTINS[call.name], spec.width == 1 {
+                let results = try lowerResourceCall(call.name, args: call.args, width: 1, subs: subs)
+                return results[0]
+            }
+
             let irCall = try lowerCall(call.name, args: call.args, subs: subs)
 
             if BUILTINS.contains(call.name) {
