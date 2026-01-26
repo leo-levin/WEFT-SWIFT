@@ -209,43 +209,27 @@ public class AudioCodeGen {
     // Audio input provider (set by backend via setInputProviders)
     public weak var audioInput: AudioInputProvider?
 
-    /// Build binary operation evaluator
+    /// Build binary operation evaluator (uses shared OperatorRegistry)
     private func buildBinaryOp(
         op: String,
         left: @escaping (AudioContext) -> Float,
         right: @escaping (AudioContext) -> Float
     ) throws -> (AudioContext) -> Float {
-        switch op {
-        case "+": return { ctx in left(ctx) + right(ctx) }
-        case "-": return { ctx in left(ctx) - right(ctx) }
-        case "*": return { ctx in left(ctx) * right(ctx) }
-        case "/": return { ctx in left(ctx) / right(ctx) }
-        case "%": return { ctx in fmodf(left(ctx), right(ctx)) }
-        case "^": return { ctx in powf(left(ctx), right(ctx)) }
-        case "<": return { ctx in left(ctx) < right(ctx) ? 1.0 : 0.0 }
-        case ">": return { ctx in left(ctx) > right(ctx) ? 1.0 : 0.0 }
-        case "<=": return { ctx in left(ctx) <= right(ctx) ? 1.0 : 0.0 }
-        case ">=": return { ctx in left(ctx) >= right(ctx) ? 1.0 : 0.0 }
-        case "==": return { ctx in left(ctx) == right(ctx) ? 1.0 : 0.0 }
-        case "!=": return { ctx in left(ctx) != right(ctx) ? 1.0 : 0.0 }
-        case "&&": return { ctx in (left(ctx) != 0 && right(ctx) != 0) ? 1.0 : 0.0 }
-        case "||": return { ctx in (left(ctx) != 0 || right(ctx) != 0) ? 1.0 : 0.0 }
-        default:
+        guard let result = OperatorRegistry.audioBinary(op, left: left, right: right) else {
             throw BackendError.unsupportedExpression("Unknown binary operator: \(op)")
         }
+        return result
     }
 
-    /// Build unary operation evaluator
+    /// Build unary operation evaluator (uses shared OperatorRegistry)
     private func buildUnaryOp(
         op: String,
         operand: @escaping (AudioContext) -> Float
     ) throws -> (AudioContext) -> Float {
-        switch op {
-        case "-": return { ctx in -operand(ctx) }
-        case "!": return { ctx in operand(ctx) == 0 ? 1.0 : 0.0 }
-        default:
+        guard let result = OperatorRegistry.audioUnary(op, operand: operand) else {
             throw BackendError.unsupportedExpression("Unknown unary operator: \(op)")
         }
+        return result
     }
 
     /// Build builtin function evaluator
@@ -275,75 +259,18 @@ public class AudioCodeGen {
 
         let argEvals = try args.map { try buildEvaluator(for: $0) }
 
+        // Try shared math builtins first
+        if let result = SharedBuiltins.audioMath(name, args: argEvals) {
+            return result
+        }
+
+        // Noise uses shared implementation
+        if name == "noise" {
+            let yEval = argEvals.count > 1 ? argEvals[1] : { (_: AudioContext) in Float(0.0) }
+            return SharedBuiltins.audioNoise(x: argEvals[0], y: yEval)
+        }
+
         switch name {
-        // Math functions
-        case "sin": return { ctx in sinf(argEvals[0](ctx)) }
-        case "cos": return { ctx in cosf(argEvals[0](ctx)) }
-        case "tan": return { ctx in tanf(argEvals[0](ctx)) }
-        case "asin": return { ctx in asinf(argEvals[0](ctx)) }
-        case "acos": return { ctx in acosf(argEvals[0](ctx)) }
-        case "atan": return { ctx in atanf(argEvals[0](ctx)) }
-        case "atan2": return { ctx in atan2f(argEvals[0](ctx), argEvals[1](ctx)) }
-        case "abs": return { ctx in abs(argEvals[0](ctx)) }
-        case "floor": return { ctx in floorf(argEvals[0](ctx)) }
-        case "ceil": return { ctx in ceilf(argEvals[0](ctx)) }
-        case "round": return { ctx in roundf(argEvals[0](ctx)) }
-        case "sqrt": return { ctx in sqrtf(argEvals[0](ctx)) }
-        case "pow": return { ctx in powf(argEvals[0](ctx), argEvals[1](ctx)) }
-        case "exp": return { ctx in expf(argEvals[0](ctx)) }
-        case "log": return { ctx in logf(argEvals[0](ctx)) }
-        case "log2": return { ctx in log2f(argEvals[0](ctx)) }
-
-        // Utility functions
-        case "min": return { ctx in min(argEvals[0](ctx), argEvals[1](ctx)) }
-        case "max": return { ctx in max(argEvals[0](ctx), argEvals[1](ctx)) }
-        case "clamp": return { ctx in min(max(argEvals[0](ctx), argEvals[1](ctx)), argEvals[2](ctx)) }
-        case "lerp", "mix":
-            return { ctx in
-                let a = argEvals[0](ctx)
-                let b = argEvals[1](ctx)
-                let t = argEvals[2](ctx)
-                return a + (b - a) * t
-            }
-        case "step":
-            return { ctx in argEvals[1](ctx) < argEvals[0](ctx) ? 0.0 : 1.0 }
-        case "smoothstep":
-            return { ctx in
-                let edge0 = argEvals[0](ctx)
-                let edge1 = argEvals[1](ctx)
-                let x = argEvals[2](ctx)
-                let t = min(max((x - edge0) / (edge1 - edge0), 0.0), 1.0)
-                return t * t * (3.0 - 2.0 * t)
-            }
-        case "fract":
-            return { ctx in
-                let v = argEvals[0](ctx)
-                return v - floorf(v)
-            }
-        case "mod":
-            return { ctx in fmodf(argEvals[0](ctx), argEvals[1](ctx)) }
-        case "sign":
-            return { ctx in
-                let v = argEvals[0](ctx)
-                if v > 0 { return 1.0 }
-                if v < 0 { return -1.0 }
-                return 0.0
-            }
-
-        // Noise (hash-based pseudo-random - same formula as Metal)
-        case "noise":
-            let xEval = argEvals[0]
-            let yEval = argEvals.count > 1 ? argEvals[1] : { _ in Float(0.0) }
-            return { ctx in
-                let x = xEval(ctx)
-                let y = yEval(ctx)
-                // dot(float2(x, y), float2(12.9898, 78.233))
-                let dot = x * 12.9898 + y * 78.233
-                // fract(sin(dot) * 43758.5453)
-                let sinVal = sinf(dot)
-                let scaled = sinVal * 43758.5453
-                return scaled - floorf(scaled)
-            }
 
         // Hardware inputs - now handled as builtins
         case "microphone":

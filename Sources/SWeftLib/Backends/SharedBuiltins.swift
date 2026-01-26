@@ -179,3 +179,206 @@ extension SharedBuiltins {
         return Array(missing).sorted()
     }
 }
+
+// MARK: - Operator Registry
+
+/// Shared definitions and code generation for binary and unary operators.
+/// Both Metal and Audio backends use identical logic for these operators.
+public enum OperatorRegistry {
+    /// All supported binary operators
+    public static let binaryOps = ["+", "-", "*", "/", "%", "^", "<", ">", "<=", ">=", "==", "!=", "&&", "||"]
+
+    /// All supported unary operators
+    public static let unaryOps = ["-", "!"]
+
+    /// Generate Metal code for binary operation
+    public static func metalBinary(_ op: String, left: String, right: String) -> String? {
+        switch op {
+        case "+": return "(\(left) + \(right))"
+        case "-": return "(\(left) - \(right))"
+        case "*": return "(\(left) * \(right))"
+        case "/": return "(\(left) / \(right))"
+        case "%": return "fmod(\(left), \(right))"
+        case "^": return "pow(\(left), \(right))"
+        case "<": return "(\(left) < \(right) ? 1.0 : 0.0)"
+        case ">": return "(\(left) > \(right) ? 1.0 : 0.0)"
+        case "<=": return "(\(left) <= \(right) ? 1.0 : 0.0)"
+        case ">=": return "(\(left) >= \(right) ? 1.0 : 0.0)"
+        case "==": return "(\(left) == \(right) ? 1.0 : 0.0)"
+        case "!=": return "(\(left) != \(right) ? 1.0 : 0.0)"
+        case "&&": return "((\(left) != 0.0 && \(right) != 0.0) ? 1.0 : 0.0)"
+        case "||": return "((\(left) != 0.0 || \(right) != 0.0) ? 1.0 : 0.0)"
+        default: return nil
+        }
+    }
+
+    /// Generate Metal code for unary operation
+    public static func metalUnary(_ op: String, operand: String) -> String? {
+        switch op {
+        case "-": return "(-\(operand))"
+        case "!": return "(\(operand) == 0.0 ? 1.0 : 0.0)"
+        default: return nil
+        }
+    }
+
+    /// Generate Audio evaluator for binary operation
+    public static func audioBinary(
+        _ op: String,
+        left: @escaping (AudioContext) -> Float,
+        right: @escaping (AudioContext) -> Float
+    ) -> ((AudioContext) -> Float)? {
+        switch op {
+        case "+": return { ctx in left(ctx) + right(ctx) }
+        case "-": return { ctx in left(ctx) - right(ctx) }
+        case "*": return { ctx in left(ctx) * right(ctx) }
+        case "/": return { ctx in left(ctx) / right(ctx) }
+        case "%": return { ctx in fmodf(left(ctx), right(ctx)) }
+        case "^": return { ctx in powf(left(ctx), right(ctx)) }
+        case "<": return { ctx in left(ctx) < right(ctx) ? 1.0 : 0.0 }
+        case ">": return { ctx in left(ctx) > right(ctx) ? 1.0 : 0.0 }
+        case "<=": return { ctx in left(ctx) <= right(ctx) ? 1.0 : 0.0 }
+        case ">=": return { ctx in left(ctx) >= right(ctx) ? 1.0 : 0.0 }
+        case "==": return { ctx in left(ctx) == right(ctx) ? 1.0 : 0.0 }
+        case "!=": return { ctx in left(ctx) != right(ctx) ? 1.0 : 0.0 }
+        case "&&": return { ctx in (left(ctx) != 0 && right(ctx) != 0) ? 1.0 : 0.0 }
+        case "||": return { ctx in (left(ctx) != 0 || right(ctx) != 0) ? 1.0 : 0.0 }
+        default: return nil
+        }
+    }
+
+    /// Generate Audio evaluator for unary operation
+    public static func audioUnary(
+        _ op: String,
+        operand: @escaping (AudioContext) -> Float
+    ) -> ((AudioContext) -> Float)? {
+        switch op {
+        case "-": return { ctx in -operand(ctx) }
+        case "!": return { ctx in operand(ctx) == 0 ? 1.0 : 0.0 }
+        default: return nil
+        }
+    }
+}
+
+// MARK: - Math Builtin Code Generation
+
+extension SharedBuiltins {
+    /// Generate Metal code for a math builtin based on arity
+    public static func metalMath(_ name: String, args: [String]) -> String? {
+        guard let def = builtin(named: name) else { return nil }
+
+        switch def.arity {
+        case 1:
+            guard args.count >= 1 else { return nil }
+            switch name {
+            case "sin", "cos", "tan", "asin", "acos", "atan",
+                 "abs", "floor", "ceil", "round", "sqrt", "exp", "log", "log2", "fract", "sign":
+                return "\(name)(\(args[0]))"
+            default: return nil
+            }
+        case 2:
+            guard args.count >= 2 else { return nil }
+            switch name {
+            case "pow", "min", "max", "atan2": return "\(name)(\(args[0]), \(args[1]))"
+            case "mod": return "fmod(\(args[0]), \(args[1]))"
+            case "step": return "step(\(args[0]), \(args[1]))"
+            default: return nil
+            }
+        case 3:
+            guard args.count >= 3 else { return nil }
+            switch name {
+            case "clamp": return "clamp(\(args[0]), \(args[1]), \(args[2]))"
+            case "lerp", "mix": return "mix(\(args[0]), \(args[1]), \(args[2]))"
+            case "smoothstep": return "smoothstep(\(args[0]), \(args[1]), \(args[2]))"
+            default: return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// Generate Metal code for noise
+    public static func metalNoise(_ x: String, _ y: String) -> String {
+        "fract(sin(dot(float2(\(x), \(y)), float2(12.9898, 78.233))) * 43758.5453)"
+    }
+
+    /// Generate Audio evaluator for a math builtin based on arity
+    public static func audioMath(
+        _ name: String,
+        args: [(AudioContext) -> Float]
+    ) -> ((AudioContext) -> Float)? {
+        guard let def = builtin(named: name) else { return nil }
+
+        switch def.arity {
+        case 1:
+            guard args.count >= 1 else { return nil }
+            let a = args[0]
+            switch name {
+            case "sin": return { ctx in sinf(a(ctx)) }
+            case "cos": return { ctx in cosf(a(ctx)) }
+            case "tan": return { ctx in tanf(a(ctx)) }
+            case "asin": return { ctx in asinf(a(ctx)) }
+            case "acos": return { ctx in acosf(a(ctx)) }
+            case "atan": return { ctx in atanf(a(ctx)) }
+            case "abs": return { ctx in abs(a(ctx)) }
+            case "floor": return { ctx in floorf(a(ctx)) }
+            case "ceil": return { ctx in ceilf(a(ctx)) }
+            case "round": return { ctx in roundf(a(ctx)) }
+            case "sqrt": return { ctx in sqrtf(a(ctx)) }
+            case "exp": return { ctx in expf(a(ctx)) }
+            case "log": return { ctx in logf(a(ctx)) }
+            case "log2": return { ctx in log2f(a(ctx)) }
+            case "fract": return { ctx in let v = a(ctx); return v - floorf(v) }
+            case "sign": return { ctx in
+                let v = a(ctx)
+                if v > 0 { return 1.0 }
+                if v < 0 { return -1.0 }
+                return 0.0
+            }
+            default: return nil
+            }
+        case 2:
+            guard args.count >= 2 else { return nil }
+            let a = args[0], b = args[1]
+            switch name {
+            case "pow": return { ctx in powf(a(ctx), b(ctx)) }
+            case "min": return { ctx in min(a(ctx), b(ctx)) }
+            case "max": return { ctx in max(a(ctx), b(ctx)) }
+            case "atan2": return { ctx in atan2f(a(ctx), b(ctx)) }
+            case "mod": return { ctx in fmodf(a(ctx), b(ctx)) }
+            case "step": return { ctx in b(ctx) < a(ctx) ? 0.0 : 1.0 }
+            default: return nil
+            }
+        case 3:
+            guard args.count >= 3 else { return nil }
+            let a = args[0], b = args[1], c = args[2]
+            switch name {
+            case "clamp": return { ctx in min(max(a(ctx), b(ctx)), c(ctx)) }
+            case "lerp", "mix": return { ctx in
+                let av = a(ctx), bv = b(ctx), t = c(ctx)
+                return av + (bv - av) * t
+            }
+            case "smoothstep": return { ctx in
+                let edge0 = a(ctx), edge1 = b(ctx), x = c(ctx)
+                let t = min(max((x - edge0) / (edge1 - edge0), 0.0), 1.0)
+                return t * t * (3.0 - 2.0 * t)
+            }
+            default: return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// Generate Audio evaluator for noise
+    public static func audioNoise(
+        x: @escaping (AudioContext) -> Float,
+        y: @escaping (AudioContext) -> Float
+    ) -> (AudioContext) -> Float {
+        return { ctx in
+            let xv = x(ctx), yv = y(ctx)
+            let dot = xv * 12.9898 + yv * 78.233
+            let scaled = sinf(dot) * 43758.5453
+            return scaled - floorf(scaled)
+        }
+    }
+}

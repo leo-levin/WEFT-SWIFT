@@ -16,71 +16,28 @@ public enum IRTransformations {
         in expr: IRExpr,
         substitutions: [String: IRExpr]
     ) -> IRExpr {
-        switch expr {
-        case .num:
-            return expr
+        return expr.transform { e in
+            switch e {
+            case .param(let name):
+                return substitutions[name]
 
-        case .param(let name):
-            return substitutions[name] ?? expr
-
-        case .index(let bundle, let indexExpr):
-            if let subst = substitutions[bundle] {
-                if case .index(let newBundle, _) = subst {
-                    return .index(
-                        bundle: newBundle,
-                        indexExpr: substituteParams(in: indexExpr, substitutions: substitutions)
-                    )
+            case .index(let bundle, let indexExpr):
+                // Special handling: if bundle maps to another index, replace bundle name
+                let newBundle: String
+                if let subst = substitutions[bundle],
+                   case .index(let substBundle, _) = subst {
+                    newBundle = substBundle
+                } else {
+                    newBundle = bundle
                 }
+                return .index(
+                    bundle: newBundle,
+                    indexExpr: substituteParams(in: indexExpr, substitutions: substitutions)
+                )
+
+            default:
+                return nil  // Use default recursive transform
             }
-            return .index(
-                bundle: bundle,
-                indexExpr: substituteParams(in: indexExpr, substitutions: substitutions)
-            )
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: substituteParams(in: left, substitutions: substitutions),
-                right: substituteParams(in: right, substitutions: substitutions)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(
-                op: op,
-                operand: substituteParams(in: operand, substitutions: substitutions)
-            )
-
-        case .call(let spindle, let args):
-            return .call(
-                spindle: spindle,
-                args: args.map { substituteParams(in: $0, substitutions: substitutions) }
-            )
-
-        case .builtin(let name, let args):
-            return .builtin(
-                name: name,
-                args: args.map { substituteParams(in: $0, substitutions: substitutions) }
-            )
-
-        case .extract(let call, let index):
-            return .extract(
-                call: substituteParams(in: call, substitutions: substitutions),
-                index: index
-            )
-
-        case .remap(let base, let remapSubs):
-            var newRemapSubs: [String: IRExpr] = [:]
-            for (key, value) in remapSubs {
-                newRemapSubs[key] = substituteParams(in: value, substitutions: substitutions)
-            }
-            return .remap(
-                base: substituteParams(in: base, substitutions: substitutions),
-                substitutions: newRemapSubs
-            )
-
-        case .cacheRead:
-            // cacheRead has no params to substitute
-            return expr
         }
     }
 
@@ -128,78 +85,31 @@ public enum IRTransformations {
         in expr: IRExpr,
         substitutions: [String: IRExpr]
     ) -> IRExpr {
-        switch expr {
-        case .num:
-            return expr
+        return expr.transform { e in
+            guard case .index(let bundle, let indexExpr) = e else {
+                return nil  // Use default recursive transform
+            }
 
-        case .param:
-            return expr
-
-        case .index(let bundle, let indexExpr):
-            // Try to look up this index reference in substitutions
-            var keysToTry: [String] = []
-
+            // Build keys to look up in substitutions
+            let key: String?
             if case .param(let field) = indexExpr {
-                keysToTry.append("\(bundle).\(field)")
+                key = "\(bundle).\(field)"
             } else if case .num(let idx) = indexExpr {
-                keysToTry.append("\(bundle).\(Int(idx))")
+                key = "\(bundle).\(Int(idx))"
+            } else {
+                key = nil
             }
 
-            for key in keysToTry {
-                if let replacement = substitutions[key] {
-                    return replacement
-                }
+            // If we find a substitution, use it
+            if let key = key, let replacement = substitutions[key] {
+                return replacement
             }
 
-            // No substitution found, recurse into indexExpr
+            // Otherwise, recurse into indexExpr
             return .index(
                 bundle: bundle,
                 indexExpr: substituteIndexRefs(in: indexExpr, substitutions: substitutions)
             )
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: substituteIndexRefs(in: left, substitutions: substitutions),
-                right: substituteIndexRefs(in: right, substitutions: substitutions)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(
-                op: op,
-                operand: substituteIndexRefs(in: operand, substitutions: substitutions)
-            )
-
-        case .call(let spindle, let args):
-            return .call(
-                spindle: spindle,
-                args: args.map { substituteIndexRefs(in: $0, substitutions: substitutions) }
-            )
-
-        case .builtin(let name, let args):
-            return .builtin(
-                name: name,
-                args: args.map { substituteIndexRefs(in: $0, substitutions: substitutions) }
-            )
-
-        case .extract(let call, let index):
-            return .extract(
-                call: substituteIndexRefs(in: call, substitutions: substitutions),
-                index: index
-            )
-
-        case .remap(let base, let remapSubs):
-            var newRemapSubs: [String: IRExpr] = [:]
-            for (key, value) in remapSubs {
-                newRemapSubs[key] = substituteIndexRefs(in: value, substitutions: substitutions)
-            }
-            return .remap(
-                base: substituteIndexRefs(in: base, substitutions: substitutions),
-                substitutions: newRemapSubs
-            )
-
-        case .cacheRead:
-            return expr
         }
     }
 
@@ -353,98 +263,54 @@ public enum IRTransformations {
 
     // MARK: - Remap Application
 
+    // Coordinate field to index mappings (shared for remap operations)
+    private static let visualCoordIndices = ["x": 0, "y": 1, "u": 2, "v": 3, "w": 4, "h": 5, "t": 6]
+    private static let audioCoordIndices = ["i": 0, "sampleRate": 2]
+
     /// Apply remap substitutions to an expression (coordinate remapping).
     /// Substitution keys are in "bundle.field" format (e.g., "me.x", "me.y").
     public static func applyRemap(
         to expr: IRExpr,
         substitutions: [String: IRExpr]
     ) -> IRExpr {
-        switch expr {
-        case .num:
-            return expr
+        return expr.transform { e in
+            switch e {
+            case .param(let name):
+                // Try direct lookup, then prefixed with "me."
+                return substitutions[name] ?? substitutions["me.\(name)"]
 
-        case .param(let name):
-            if let remapped = substitutions[name] {
-                return remapped
-            }
-            if let remapped = substitutions["me.\(name)"] {
-                return remapped
-            }
-            return expr
+            case .index(let bundle, let indexExpr):
+                // Build keys to try
+                var keysToTry: [String] = []
 
-        case .index(let bundle, let indexExpr):
-            var keysToTry: [String] = []
-
-            if case .param(let field) = indexExpr {
-                keysToTry.append("\(bundle).\(field)")
-                if bundle == "me" {
-                    // Visual coordinate indices
-                    let visualIndices = ["x": 0, "y": 1, "u": 2, "v": 3, "w": 4, "h": 5, "t": 6]
-                    // Audio coordinate indices
-                    let audioIndices = ["i": 0, "sampleRate": 2]
-
-                    if let idx = visualIndices[field] {
-                        keysToTry.append("\(bundle).\(idx)")
+                if case .param(let field) = indexExpr {
+                    keysToTry.append("\(bundle).\(field)")
+                    if bundle == "me" {
+                        // Also try numeric index for coordinate fields
+                        if let idx = visualCoordIndices[field] {
+                            keysToTry.append("\(bundle).\(idx)")
+                        }
+                        if let idx = audioCoordIndices[field] {
+                            keysToTry.append("\(bundle).\(idx)")
+                        }
                     }
-                    if let idx = audioIndices[field] {
-                        keysToTry.append("\(bundle).\(idx)")
+                } else if case .num(let idx) = indexExpr {
+                    keysToTry.append("\(bundle).\(Int(idx))")
+                }
+
+                // Try each key
+                for key in keysToTry {
+                    if let remapped = substitutions[key] {
+                        return remapped
                     }
                 }
-            } else if case .num(let idx) = indexExpr {
-                keysToTry.append("\(bundle).\(Int(idx))")
+
+                // No match, recurse into indexExpr
+                return .index(bundle: bundle, indexExpr: applyRemap(to: indexExpr, substitutions: substitutions))
+
+            default:
+                return nil  // Use default recursive transform
             }
-
-            for key in keysToTry {
-                if let remapped = substitutions[key] {
-                    return remapped
-                }
-            }
-            return .index(bundle: bundle, indexExpr: applyRemap(to: indexExpr, substitutions: substitutions))
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: applyRemap(to: left, substitutions: substitutions),
-                right: applyRemap(to: right, substitutions: substitutions)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(
-                op: op,
-                operand: applyRemap(to: operand, substitutions: substitutions)
-            )
-
-        case .call(let spindle, let args):
-            return .call(
-                spindle: spindle,
-                args: args.map { applyRemap(to: $0, substitutions: substitutions) }
-            )
-
-        case .builtin(let name, let args):
-            return .builtin(
-                name: name,
-                args: args.map { applyRemap(to: $0, substitutions: substitutions) }
-            )
-
-        case .extract(let call, let index):
-            return .extract(
-                call: applyRemap(to: call, substitutions: substitutions),
-                index: index
-            )
-
-        case .remap(let base, let innerSubs):
-            var composedSubs: [String: IRExpr] = [:]
-            for (key, value) in innerSubs {
-                composedSubs[key] = applyRemap(to: value, substitutions: substitutions)
-            }
-            return .remap(
-                base: applyRemap(to: base, substitutions: substitutions),
-                substitutions: composedSubs
-            )
-
-        case .cacheRead:
-            // cacheRead has no coordinates to remap
-            return expr
         }
     }
 
@@ -464,41 +330,11 @@ public enum IRTransformations {
         localNames: Set<String>
     ) -> Set<String> {
         var result = Set<String>()
-
-        func visit(_ e: IRExpr) {
-            switch e {
-            case .num, .param, .cacheRead:
-                break
-
-            case .index(let bundle, let indexExpr):
-                if localNames.contains(bundle) {
-                    result.insert(bundle)
-                }
-                visit(indexExpr)
-
-            case .binaryOp(_, let left, let right):
-                visit(left)
-                visit(right)
-
-            case .unaryOp(_, let operand):
-                visit(operand)
-
-            case .builtin(_, let args):
-                args.forEach { visit($0) }
-
-            case .call(_, let args):
-                args.forEach { visit($0) }
-
-            case .extract(let call, _):
-                visit(call)
-
-            case .remap(let base, let subs):
-                visit(base)
-                subs.values.forEach { visit($0) }
+        expr.forEach { e in
+            if case .index(let bundle, _) = e, localNames.contains(bundle) {
+                result.insert(bundle)
             }
         }
-
-        visit(expr)
         return result
     }
 
@@ -538,47 +374,17 @@ public enum IRTransformations {
         localNames: Set<String>
     ) -> [(localName: String, strandIndex: Int)] {
         var refs: [(String, Int)] = []
-
-        func visit(_ e: IRExpr) {
-            switch e {
-            case .index(let bundle, let indexExpr):
-                if localNames.contains(bundle) {
-                    let strandIdx: Int
-                    if case .num(let idx) = indexExpr {
-                        strandIdx = Int(idx)
-                    } else {
-                        strandIdx = 0
-                    }
-                    refs.append((bundle, strandIdx))
+        expr.forEach { e in
+            if case .index(let bundle, let indexExpr) = e, localNames.contains(bundle) {
+                let strandIdx: Int
+                if case .num(let idx) = indexExpr {
+                    strandIdx = Int(idx)
+                } else {
+                    strandIdx = 0
                 }
-                visit(indexExpr)
-
-            case .binaryOp(_, let left, let right):
-                visit(left)
-                visit(right)
-
-            case .unaryOp(_, let operand):
-                visit(operand)
-
-            case .builtin(_, let args):
-                args.forEach { visit($0) }
-
-            case .call(_, let args):
-                args.forEach { visit($0) }
-
-            case .extract(let call, _):
-                visit(call)
-
-            case .remap(let base, let subs):
-                visit(base)
-                subs.values.forEach { visit($0) }
-
-            default:
-                break
+                refs.append((bundle, strandIdx))
             }
         }
-
-        visit(expr)
         return refs
     }
 
@@ -588,43 +394,12 @@ public enum IRTransformations {
         localNames: Set<String>
     ) -> [(valueLocalName: String, valueStrandIndex: Int)] {
         var results: [(String, Int)] = []
-
-        func visit(_ e: IRExpr) {
-            switch e {
-            case .builtin(let name, let args) where name == "cache":
-                guard args.count >= 1 else { return }
+        expr.forEach { e in
+            if case .builtin(let name, let args) = e, name == "cache", args.count >= 1 {
                 // Find all local refs in the value expression (first arg)
-                let valueLocalRefs = findLocalStrandRefs(args[0], localNames: localNames)
-                results.append(contentsOf: valueLocalRefs)
-                // Also check recursively in other args for nested caches
-                args.forEach { visit($0) }
-
-            case .binaryOp(_, let left, let right):
-                visit(left)
-                visit(right)
-
-            case .unaryOp(_, let operand):
-                visit(operand)
-
-            case .builtin(_, let args):
-                args.forEach { visit($0) }
-
-            case .call(_, let args):
-                args.forEach { visit($0) }
-
-            case .extract(let call, _):
-                visit(call)
-
-            case .remap(let base, let subs):
-                visit(base)
-                subs.values.forEach { visit($0) }
-
-            default:
-                break
+                results.append(contentsOf: findLocalStrandRefs(args[0], localNames: localNames))
             }
         }
-
-        visit(expr)
         return results
     }
 
@@ -685,67 +460,25 @@ public enum IRTransformations {
         strandIndex: Int,
         replacement: IRExpr
     ) -> IRExpr {
-        switch expr {
-        case .num, .param, .cacheRead:
-            return expr
+        return expr.transform { e in
+            guard case .index(let bundle, let indexExpr) = e else {
+                return nil  // Use default recursive transform
+            }
 
-        case .index(let bundle, let indexExpr):
             // Check if this is the reference to replace
             if bundle == localName {
                 if case .num(let idx) = indexExpr, Int(idx) == strandIndex {
                     return replacement
                 }
-                if case .param(let field) = indexExpr {
-                    // Check if field matches the strand index (by name or numeric)
-                    if Int(field) == strandIndex {
-                        return replacement
-                    }
+                if case .param(let field) = indexExpr, Int(field) == strandIndex {
+                    return replacement
                 }
             }
+
+            // Recurse into indexExpr
             return .index(
                 bundle: bundle,
                 indexExpr: substituteCyclicRef(in: indexExpr, localName: localName, strandIndex: strandIndex, replacement: replacement)
-            )
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: substituteCyclicRef(in: left, localName: localName, strandIndex: strandIndex, replacement: replacement),
-                right: substituteCyclicRef(in: right, localName: localName, strandIndex: strandIndex, replacement: replacement)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(
-                op: op,
-                operand: substituteCyclicRef(in: operand, localName: localName, strandIndex: strandIndex, replacement: replacement)
-            )
-
-        case .builtin(let name, let args):
-            return .builtin(
-                name: name,
-                args: args.map { substituteCyclicRef(in: $0, localName: localName, strandIndex: strandIndex, replacement: replacement) }
-            )
-
-        case .call(let spindle, let args):
-            return .call(
-                spindle: spindle,
-                args: args.map { substituteCyclicRef(in: $0, localName: localName, strandIndex: strandIndex, replacement: replacement) }
-            )
-
-        case .extract(let call, let index):
-            return .extract(
-                call: substituteCyclicRef(in: call, localName: localName, strandIndex: strandIndex, replacement: replacement),
-                index: index
-            )
-
-        case .remap(let base, let subs):
-            var newSubs: [String: IRExpr] = [:]
-            for (key, value) in subs {
-                newSubs[key] = substituteCyclicRef(in: value, localName: localName, strandIndex: strandIndex, replacement: replacement)
-            }
-            return .remap(
-                base: substituteCyclicRef(in: base, localName: localName, strandIndex: strandIndex, replacement: replacement),
-                substitutions: newSubs
             )
         }
     }
@@ -842,117 +575,49 @@ public enum IRTransformations {
         targetStrandIndex: Int,
         program: IRProgram
     ) -> IRExpr {
-        switch expr {
-        case .num, .param, .cacheRead:
-            return expr
+        // Helper to recursively inline
+        func recurse(_ e: IRExpr) -> IRExpr {
+            inlineExprWithTarget(expr: e, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+        }
 
-        case .index(let bundle, let indexExpr):
-            return .index(
-                bundle: bundle,
-                indexExpr: inlineExprWithTarget(expr: indexExpr, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
-            )
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: inlineExprWithTarget(expr: left, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program),
-                right: inlineExprWithTarget(expr: right, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(
-                op: op,
-                operand: inlineExprWithTarget(expr: operand, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
-            )
-
-        case .builtin(let name, let args):
-            let inlinedArgs = args.map { arg in
-                inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
-            }
-            return .builtin(name: name, args: inlinedArgs)
-
-        case .call(let spindle, let args):
-            guard let spindleDef = program.spindles[spindle],
-                  !spindleDef.returns.isEmpty else {
-                // Unknown spindle or no returns, inline args and keep call
-                let inlinedArgs = args.map { arg in
-                    inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
+        return expr.transform { e in
+            switch e {
+            case .call(let spindle, let args):
+                let inlinedArgs = args.map(recurse)
+                guard let spindleDef = program.spindles[spindle],
+                      !spindleDef.returns.isEmpty else {
+                    return .call(spindle: spindle, args: inlinedArgs)
                 }
-                return .call(spindle: spindle, args: inlinedArgs)
-            }
 
-            // First inline args
-            let inlinedArgs = args.map { arg in
-                inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
-            }
-
-            // Then inline spindle with target substitution
-            let inlined = inlineSpindleCallWithTarget(
-                spindleDef: spindleDef,
-                args: inlinedArgs,
-                targetBundle: targetBundle,
-                targetStrandIndex: targetStrandIndex,
-                returnIndex: 0
-            )
-
-            // Recursively process the inlined result
-            return inlineExprWithTarget(
-                expr: inlined,
-                targetBundle: targetBundle,
-                targetStrandIndex: targetStrandIndex,
-                program: program
-            )
-
-        case .extract(let callExpr, let index):
-            guard case .call(let spindle, let args) = callExpr,
-                  let spindleDef = program.spindles[spindle],
-                  index < spindleDef.returns.count else {
-                // Keep as-is if can't inline
-                return .extract(
-                    call: inlineExprWithTarget(expr: callExpr, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program),
-                    index: index
-                )
-            }
-
-            // First inline args
-            let inlinedArgs = args.map { arg in
-                inlineExprWithTarget(expr: arg, targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, program: program)
-            }
-
-            // Inline spindle with target substitution for the specific return
-            let inlined = inlineSpindleCallWithTarget(
-                spindleDef: spindleDef,
-                args: inlinedArgs,
-                targetBundle: targetBundle,
-                targetStrandIndex: targetStrandIndex,
-                returnIndex: index
-            )
-
-            // Recursively process the inlined result
-            return inlineExprWithTarget(
-                expr: inlined,
-                targetBundle: targetBundle,
-                targetStrandIndex: targetStrandIndex,
-                program: program
-            )
-
-        case .remap(let base, let subs):
-            let inlinedBase = inlineExprWithTarget(
-                expr: base,
-                targetBundle: targetBundle,
-                targetStrandIndex: targetStrandIndex,
-                program: program
-            )
-            var inlinedSubs: [String: IRExpr] = [:]
-            for (key, value) in subs {
-                inlinedSubs[key] = inlineExprWithTarget(
-                    expr: value,
+                let inlined = inlineSpindleCallWithTarget(
+                    spindleDef: spindleDef,
+                    args: inlinedArgs,
                     targetBundle: targetBundle,
                     targetStrandIndex: targetStrandIndex,
-                    program: program
+                    returnIndex: 0
                 )
+                return recurse(inlined)
+
+            case .extract(let callExpr, let index):
+                guard case .call(let spindle, let args) = callExpr,
+                      let spindleDef = program.spindles[spindle],
+                      index < spindleDef.returns.count else {
+                    return .extract(call: recurse(callExpr), index: index)
+                }
+
+                let inlinedArgs = args.map(recurse)
+                let inlined = inlineSpindleCallWithTarget(
+                    spindleDef: spindleDef,
+                    args: inlinedArgs,
+                    targetBundle: targetBundle,
+                    targetStrandIndex: targetStrandIndex,
+                    returnIndex: index
+                )
+                return recurse(inlined)
+
+            default:
+                return nil  // Use default recursive transform
             }
-            return .remap(base: inlinedBase, substitutions: inlinedSubs)
         }
     }
 

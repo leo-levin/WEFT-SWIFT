@@ -155,39 +155,10 @@ public class SampleManager {
 
     /// Resolve a sample path to a URL
     private func resolveSamplePath(_ path: String, relativeTo sourceFileURL: URL?) throws -> URL {
-        // 1. Try as absolute path
-        if path.hasPrefix("/") || path.hasPrefix("~") {
-            let expandedPath = NSString(string: path).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
+        guard let url = ResourcePathResolver.resolve(path, relativeTo: sourceFileURL) else {
+            throw SampleError.fileNotFound(path)
         }
-
-        // 2. Try relative to source file
-        if let sourceURL = sourceFileURL {
-            let sourceDir = sourceURL.deletingLastPathComponent()
-            let relativeURL = sourceDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: relativeURL.path) {
-                return relativeURL
-            }
-
-            // 3. Try in .weft-resources folder next to source file
-            let resourcesDir = sourceDir.appendingPathComponent(".weft-resources")
-            let resourceURL = resourcesDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: resourceURL.path) {
-                return resourceURL
-            }
-        }
-
-        // 4. Try relative to current working directory
-        let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(path)
-        if FileManager.default.fileExists(atPath: cwdURL.path) {
-            return cwdURL
-        }
-
-        throw SampleError.fileNotFound(path)
+        return url
     }
 
     /// Load an audio sample from a URL

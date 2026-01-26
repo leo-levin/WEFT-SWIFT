@@ -248,6 +248,85 @@ public indirect enum IRExpr: Codable, Equatable {
     }
 }
 
+// MARK: - Expression Transformation
+
+extension IRExpr {
+    /// Transform this expression recursively, applying a handler at each node.
+    /// The handler can return a transformed expression to replace the node,
+    /// or return nil to use the default recursive transformation.
+    ///
+    /// This is the core abstraction for expression traversal, eliminating
+    /// duplicated visitor patterns across the codebase.
+    ///
+    /// - Parameter handler: A closure that receives the current expression.
+    ///   Return a transformed expression to replace it, or nil to recurse normally.
+    /// - Returns: The transformed expression.
+    public func transform(_ handler: (IRExpr) -> IRExpr?) -> IRExpr {
+        // If handler provides a replacement, use it
+        if let result = handler(self) {
+            return result
+        }
+
+        // Otherwise, recurse into children
+        switch self {
+        case .num, .param, .cacheRead:
+            return self
+
+        case .index(let bundle, let indexExpr):
+            return .index(bundle: bundle, indexExpr: indexExpr.transform(handler))
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: left.transform(handler),
+                right: right.transform(handler)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(op: op, operand: operand.transform(handler))
+
+        case .call(let spindle, let args):
+            return .call(spindle: spindle, args: args.map { $0.transform(handler) })
+
+        case .builtin(let name, let args):
+            return .builtin(name: name, args: args.map { $0.transform(handler) })
+
+        case .extract(let call, let index):
+            return .extract(call: call.transform(handler), index: index)
+
+        case .remap(let base, let subs):
+            return .remap(
+                base: base.transform(handler),
+                substitutions: subs.mapValues { $0.transform(handler) }
+            )
+        }
+    }
+
+    /// Visit all nodes in this expression tree, calling the visitor for each.
+    /// Useful for collecting information without transformation.
+    public func forEach(_ visitor: (IRExpr) -> Void) {
+        visitor(self)
+        switch self {
+        case .num, .param, .cacheRead:
+            break
+        case .index(_, let indexExpr):
+            indexExpr.forEach(visitor)
+        case .binaryOp(_, let left, let right):
+            left.forEach(visitor)
+            right.forEach(visitor)
+        case .unaryOp(_, let operand):
+            operand.forEach(visitor)
+        case .call(_, let args), .builtin(_, let args):
+            args.forEach { $0.forEach(visitor) }
+        case .extract(let call, _):
+            call.forEach(visitor)
+        case .remap(let base, let subs):
+            base.forEach(visitor)
+            subs.values.forEach { $0.forEach(visitor) }
+        }
+    }
+}
+
 // MARK: - Expression Utilities
 
 extension IRExpr {
@@ -328,19 +407,11 @@ extension IRExpr {
         case .call(_, let args):
             return args.reduce(into: Set<String>()) { $0.formUnion($1.allBuiltins()) }
         case .builtin(let name, let args):
-            var builtins = Set([name])
-            for arg in args {
-                builtins.formUnion(arg.allBuiltins())
-            }
-            return builtins
+            return args.reduce(into: Set([name])) { $0.formUnion($1.allBuiltins()) }
         case .extract(let call, _):
             return call.allBuiltins()
         case .remap(let base, let substitutions):
-            var builtins = base.allBuiltins()
-            for (_, expr) in substitutions {
-                builtins.formUnion(expr.allBuiltins())
-            }
-            return builtins
+            return substitutions.values.reduce(into: base.allBuiltins()) { $0.formUnion($1.allBuiltins()) }
         }
     }
 }

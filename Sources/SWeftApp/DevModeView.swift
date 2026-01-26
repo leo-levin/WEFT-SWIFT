@@ -3,6 +3,19 @@
 import SwiftUI
 import SWeftLib
 
+// MARK: - Set Extension
+
+extension Set {
+    /// Toggle membership of an element (insert if absent, remove if present)
+    mutating func toggle(_ element: Element) {
+        if contains(element) {
+            remove(element)
+        } else {
+            insert(element)
+        }
+    }
+}
+
 // MARK: - Dev Mode View
 
 struct DevModeView: View {
@@ -126,11 +139,7 @@ struct IRView: View {
                                         purityState: purityState,
                                         signals: bundleSignals
                                     ) {
-                                        if expandedBundles.contains(bundleName) {
-                                            expandedBundles.remove(bundleName)
-                                        } else {
-                                            expandedBundles.insert(bundleName)
-                                        }
+                                        expandedBundles.toggle(bundleName)
                                     }
                                 }
                             }
@@ -147,11 +156,7 @@ struct IRView: View {
                                             spindle: spindle,
                                             isExpanded: expandedSpindles.contains(spindleName)
                                         ) {
-                                            if expandedSpindles.contains(spindleName) {
-                                                expandedSpindles.remove(spindleName)
-                                            } else {
-                                                expandedSpindles.insert(spindleName)
-                                            }
+                                            expandedSpindles.toggle(spindleName)
                                         }
                                     }
                                 }
@@ -714,11 +719,7 @@ struct SwatchesView: View {
                                     swatch: swatch,
                                     isExpanded: expandedSwatches.contains(swatch.id)
                                 ) {
-                                    if expandedSwatches.contains(swatch.id) {
-                                        expandedSwatches.remove(swatch.id)
-                                    } else {
-                                        expandedSwatches.insert(swatch.id)
-                                    }
+                                    expandedSwatches.toggle(swatch.id)
                                 }
                             }
                         }

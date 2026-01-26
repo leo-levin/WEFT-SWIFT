@@ -27,128 +27,34 @@ public class MetalCodeGen {
         self.cacheDescriptors = cacheDescriptors.filter { $0.domain == .visual }
     }
 
-    /// Get set of texture resource IDs used in this swatch
-    public func usedTextureIds() -> Set<Int> {
-        var textureIds = Set<Int>()
-
+    /// Collect resource IDs for a specific builtin from all expressions in this swatch
+    private func collectResourceIds(builtinName: String) -> Set<Int> {
+        var ids = Set<Int>()
         for bundleName in swatch.bundles {
             if let bundle = program.bundles[bundleName] {
                 for strand in bundle.strands {
-                    collectTextureIds(from: strand.expr, into: &textureIds)
+                    strand.expr.forEach { e in
+                        if case .builtin(let name, let args) = e,
+                           name == builtinName,
+                           args.count >= 1,
+                           case .num(let id) = args[0] {
+                            ids.insert(Int(id))
+                        }
+                    }
                 }
             }
         }
-
-        return textureIds
+        return ids
     }
 
-    /// Recursively collect texture resource IDs from an expression
-    private func collectTextureIds(from expr: IRExpr, into textureIds: inout Set<Int>) {
-        switch expr {
-        case .builtin(let name, let args) where name == "texture":
-            // texture(resourceId, u, v, channel) - extract resourceId
-            if args.count >= 1, case .num(let id) = args[0] {
-                textureIds.insert(Int(id))
-            }
-            // Also check args for nested texture calls
-            for arg in args {
-                collectTextureIds(from: arg, into: &textureIds)
-            }
-
-        case .builtin(_, let args):
-            for arg in args {
-                collectTextureIds(from: arg, into: &textureIds)
-            }
-
-        case .binaryOp(_, let left, let right):
-            collectTextureIds(from: left, into: &textureIds)
-            collectTextureIds(from: right, into: &textureIds)
-
-        case .unaryOp(_, let operand):
-            collectTextureIds(from: operand, into: &textureIds)
-
-        case .call(_, let args):
-            for arg in args {
-                collectTextureIds(from: arg, into: &textureIds)
-            }
-
-        case .extract(let call, _):
-            collectTextureIds(from: call, into: &textureIds)
-
-        case .remap(let base, let substitutions):
-            collectTextureIds(from: base, into: &textureIds)
-            for (_, sub) in substitutions {
-                collectTextureIds(from: sub, into: &textureIds)
-            }
-
-        case .index(_, let indexExpr):
-            collectTextureIds(from: indexExpr, into: &textureIds)
-
-        case .num, .param, .cacheRead:
-            break
-        }
+    /// Get set of texture resource IDs used in this swatch
+    public func usedTextureIds() -> Set<Int> {
+        collectResourceIds(builtinName: "texture")
     }
 
     /// Get set of text resource IDs used in this swatch
     public func usedTextIds() -> Set<Int> {
-        var textIds = Set<Int>()
-
-        for bundleName in swatch.bundles {
-            if let bundle = program.bundles[bundleName] {
-                for strand in bundle.strands {
-                    collectTextIds(from: strand.expr, into: &textIds)
-                }
-            }
-        }
-
-        return textIds
-    }
-
-    /// Recursively collect text resource IDs from an expression
-    private func collectTextIds(from expr: IRExpr, into textIds: inout Set<Int>) {
-        switch expr {
-        case .builtin(let name, let args) where name == "text":
-            // text(resourceId, x, y) - extract resourceId
-            if args.count >= 1, case .num(let id) = args[0] {
-                textIds.insert(Int(id))
-            }
-            // Also check args for nested calls
-            for arg in args {
-                collectTextIds(from: arg, into: &textIds)
-            }
-
-        case .builtin(_, let args):
-            for arg in args {
-                collectTextIds(from: arg, into: &textIds)
-            }
-
-        case .binaryOp(_, let left, let right):
-            collectTextIds(from: left, into: &textIds)
-            collectTextIds(from: right, into: &textIds)
-
-        case .unaryOp(_, let operand):
-            collectTextIds(from: operand, into: &textIds)
-
-        case .call(_, let args):
-            for arg in args {
-                collectTextIds(from: arg, into: &textIds)
-            }
-
-        case .extract(let call, _):
-            collectTextIds(from: call, into: &textIds)
-
-        case .remap(let base, let substitutions):
-            collectTextIds(from: base, into: &textIds)
-            for (_, sub) in substitutions {
-                collectTextIds(from: sub, into: &textIds)
-            }
-
-        case .index(_, let indexExpr):
-            collectTextIds(from: indexExpr, into: &textIds)
-
-        case .num, .param, .cacheRead:
-            break
-        }
+        collectResourceIds(builtinName: "text")
     }
 
     /// Generate complete Metal shader source
@@ -545,36 +451,20 @@ public class MetalCodeGen {
         }
     }
 
-    /// Generate binary operation
+    /// Generate binary operation (uses shared OperatorRegistry)
     private func generateBinaryOp(op: String, left: String, right: String) throws -> String {
-        switch op {
-        case "+": return "(\(left) + \(right))"
-        case "-": return "(\(left) - \(right))"
-        case "*": return "(\(left) * \(right))"
-        case "/": return "(\(left) / \(right))"
-        case "%": return "fmod(\(left), \(right))"
-        case "^": return "pow(\(left), \(right))"
-        case "<": return "(\(left) < \(right) ? 1.0 : 0.0)"
-        case ">": return "(\(left) > \(right) ? 1.0 : 0.0)"
-        case "<=": return "(\(left) <= \(right) ? 1.0 : 0.0)"
-        case ">=": return "(\(left) >= \(right) ? 1.0 : 0.0)"
-        case "==": return "(\(left) == \(right) ? 1.0 : 0.0)"
-        case "!=": return "(\(left) != \(right) ? 1.0 : 0.0)"
-        case "&&": return "((\(left) != 0.0 && \(right) != 0.0) ? 1.0 : 0.0)"
-        case "||": return "((\(left) != 0.0 || \(right) != 0.0) ? 1.0 : 0.0)"
-        default:
+        guard let result = OperatorRegistry.metalBinary(op, left: left, right: right) else {
             throw BackendError.unsupportedExpression("Unknown binary operator: \(op)")
         }
+        return result
     }
 
-    /// Generate unary operation
+    /// Generate unary operation (uses shared OperatorRegistry)
     private func generateUnaryOp(op: String, operand: String) throws -> String {
-        switch op {
-        case "-": return "(-\(operand))"
-        case "!": return "(\(operand) == 0.0 ? 1.0 : 0.0)"
-        default:
+        guard let result = OperatorRegistry.metalUnary(op, operand: operand) else {
             throw BackendError.unsupportedExpression("Unknown unary operator: \(op)")
         }
+        return result
     }
 
     /// Generate builtin function call
@@ -613,38 +503,18 @@ public class MetalCodeGen {
 
         let argCodes = try args.map { try generateExpression($0) }
 
+        // Try shared math builtins first
+        if let result = SharedBuiltins.metalMath(name, args: argCodes) {
+            return result
+        }
+
+        // Noise uses shared implementation
+        if name == "noise" {
+            let y = argCodes.count > 1 ? argCodes[1] : "0.0"
+            return SharedBuiltins.metalNoise(argCodes[0], y)
+        }
+
         switch name {
-        // Math functions
-        case "sin": return "sin(\(argCodes[0]))"
-        case "cos": return "cos(\(argCodes[0]))"
-        case "tan": return "tan(\(argCodes[0]))"
-        case "asin": return "asin(\(argCodes[0]))"
-        case "acos": return "acos(\(argCodes[0]))"
-        case "atan": return "atan(\(argCodes[0]))"
-        case "atan2": return "atan2(\(argCodes[0]), \(argCodes[1]))"
-        case "abs": return "abs(\(argCodes[0]))"
-        case "floor": return "floor(\(argCodes[0]))"
-        case "ceil": return "ceil(\(argCodes[0]))"
-        case "round": return "round(\(argCodes[0]))"
-        case "sqrt": return "sqrt(\(argCodes[0]))"
-        case "pow": return "pow(\(argCodes[0]), \(argCodes[1]))"
-        case "exp": return "exp(\(argCodes[0]))"
-        case "log": return "log(\(argCodes[0]))"
-        case "log2": return "log2(\(argCodes[0]))"
-
-        // Utility functions
-        case "min": return "min(\(argCodes[0]), \(argCodes[1]))"
-        case "max": return "max(\(argCodes[0]), \(argCodes[1]))"
-        case "clamp": return "clamp(\(argCodes[0]), \(argCodes[1]), \(argCodes[2]))"
-        case "lerp", "mix": return "mix(\(argCodes[0]), \(argCodes[1]), \(argCodes[2]))"
-        case "step": return "step(\(argCodes[0]), \(argCodes[1]))"
-        case "smoothstep": return "smoothstep(\(argCodes[0]), \(argCodes[1]), \(argCodes[2]))"
-        case "fract": return "fract(\(argCodes[0]))"
-        case "mod": return "fmod(\(argCodes[0]), \(argCodes[1]))"
-        case "sign": return "sign(\(argCodes[0]))"
-
-        // Noise (simplified - would need actual implementation)
-        case "noise": return "fract(sin(dot(float2(\(argCodes[0]), \(argCodes.count > 1 ? argCodes[1] : "0.0")), float2(12.9898, 78.233))) * 43758.5453)"
 
         // Hardware inputs - now handled as builtins
         case "camera":

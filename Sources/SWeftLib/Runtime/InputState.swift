@@ -30,6 +30,13 @@ public class InputState {
 
     private init() {}
 
+    /// Execute a closure while holding the lock
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
     // MARK: - Mouse Updates
 
     /// Update mouse position (normalized 0-1 coordinates)
@@ -37,18 +44,16 @@ public class InputState {
     ///   - x: Normalized X position (0 = left, 1 = right)
     ///   - y: Normalized Y position (0 = bottom, 1 = top) - WEFT convention
     public func updateMousePosition(x: Float, y: Float) {
-        lock.lock()
-        defer { lock.unlock() }
-        mouseX = max(0, min(1, x))
-        mouseY = max(0, min(1, y))
+        withLock {
+            mouseX = max(0, min(1, x))
+            mouseY = max(0, min(1, y))
+        }
     }
 
     /// Update mouse button state
     /// - Parameter isDown: true if mouse button is pressed
     public func updateMouseButton(isDown: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        mouseDown = isDown ? 1.0 : 0.0
+        withLock { mouseDown = isDown ? 1.0 : 0.0 }
     }
 
     // MARK: - Keyboard Updates
@@ -58,50 +63,48 @@ public class InputState {
     ///   - keyCode: Virtual key code (0-255)
     ///   - isDown: true if key is pressed
     public func updateKey(keyCode: UInt16, isDown: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        let index = Int(keyCode) & 0xFF
-        keyStates[index] = isDown ? 1.0 : 0.0
+        withLock {
+            let index = Int(keyCode) & 0xFF
+            keyStates[index] = isDown ? 1.0 : 0.0
+        }
     }
 
     /// Get state of a specific key
     /// - Parameter keyCode: Virtual key code to check
     /// - Returns: 1.0 if pressed, 0.0 otherwise
     public func getKeyState(keyCode: Int) -> Float {
-        lock.lock()
-        defer { lock.unlock() }
-        let index = keyCode & 0xFF
-        return keyStates[index]
+        withLock {
+            let index = keyCode & 0xFF
+            return keyStates[index]
+        }
     }
 
     // MARK: - Bulk Access
 
     /// Get current mouse state as (x, y, down) tuple
     public func getMouseState() -> (x: Float, y: Float, down: Float) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (mouseX, mouseY, mouseDown)
+        withLock { (mouseX, mouseY, mouseDown) }
     }
 
     /// Copy all key states into provided buffer
     /// - Parameter buffer: Buffer to copy key states into (must have at least 256 elements)
     public func copyKeyStates(to buffer: UnsafeMutablePointer<Float>) {
-        lock.lock()
-        defer { lock.unlock() }
-        for i in 0..<256 {
-            buffer[i] = keyStates[i]
+        withLock {
+            for i in 0..<256 {
+                buffer[i] = keyStates[i]
+            }
         }
     }
 
     /// Reset all input state
     public func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        mouseX = 0.5
-        mouseY = 0.5
-        mouseDown = 0.0
-        for i in 0..<256 {
-            keyStates[i] = 0.0
+        withLock {
+            mouseX = 0.5
+            mouseY = 0.5
+            mouseDown = 0.0
+            for i in 0..<256 {
+                keyStates[i] = 0.0
+            }
         }
     }
 }
