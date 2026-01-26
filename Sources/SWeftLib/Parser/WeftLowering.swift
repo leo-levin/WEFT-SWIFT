@@ -937,44 +937,13 @@ public class WeftLowering {
     }
 
     private func substituteInExpr(_ expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
-        switch expr {
-        case .num, .param, .cacheRead:
-            return expr
-
-        case .index(let bundle, let indexExpr):
-            if case .num(let idx) = indexExpr {
-                let key = "\(bundle).\(Int(idx))"
-                if let sub = substitutions[key] {
-                    return sub
-                }
+        return expr.transform { e in
+            guard case .index(let bundle, let indexExpr) = e,
+                  case .num(let idx) = indexExpr,
+                  let sub = substitutions["\(bundle).\(Int(idx))"] else {
+                return nil  // Use default recursion
             }
-            return .index(bundle: bundle, indexExpr: substituteInExpr(indexExpr, substitutions: substitutions))
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: substituteInExpr(left, substitutions: substitutions),
-                right: substituteInExpr(right, substitutions: substitutions)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(op: op, operand: substituteInExpr(operand, substitutions: substitutions))
-
-        case .builtin(let name, let args):
-            return .builtin(name: name, args: args.map { substituteInExpr($0, substitutions: substitutions) })
-
-        case .call(let spindle, let args):
-            return .call(spindle: spindle, args: args.map { substituteInExpr($0, substitutions: substitutions) })
-
-        case .extract(let call, let index):
-            return .extract(call: substituteInExpr(call, substitutions: substitutions), index: index)
-
-        case .remap(let base, let subs):
-            var newSubs: [String: IRExpr] = [:]
-            for (k, v) in subs {
-                newSubs[k] = substituteInExpr(v, substitutions: substitutions)
-            }
-            return .remap(base: substituteInExpr(base, substitutions: substitutions), substitutions: newSubs)
+            return sub
         }
     }
 

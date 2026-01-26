@@ -103,13 +103,13 @@ public class MetalCodeGen {
         var visitedBundles = Set<String>()
 
         func collectBuiltins(from expr: IRExpr) {
-            switch expr {
-            case .num, .param, .cacheRead:
-                break
-            case .index(let bundle, let indexExpr):
-                collectBuiltins(from: indexExpr)
-                // Follow bundle reference if not already visited
-                if bundle != "me" && !visitedBundles.contains(bundle) {
+            expr.forEach { e in
+                if case .builtin(let name, _) = e {
+                    usedBuiltins.insert(name)
+                }
+                // Follow bundle references
+                if case .index(let bundle, _) = e,
+                   bundle != "me", !visitedBundles.contains(bundle) {
                     visitedBundles.insert(bundle)
                     if let targetBundle = program.bundles[bundle] {
                         for strand in targetBundle.strands {
@@ -117,21 +117,6 @@ public class MetalCodeGen {
                         }
                     }
                 }
-            case .binaryOp(_, let left, let right):
-                collectBuiltins(from: left)
-                collectBuiltins(from: right)
-            case .unaryOp(_, let operand):
-                collectBuiltins(from: operand)
-            case .call(_, let args):
-                for arg in args { collectBuiltins(from: arg) }
-            case .builtin(let name, let args):
-                usedBuiltins.insert(name)
-                for arg in args { collectBuiltins(from: arg) }
-            case .extract(let call, _):
-                collectBuiltins(from: call)
-            case .remap(let base, let substitutions):
-                collectBuiltins(from: base)
-                for (_, subExpr) in substitutions { collectBuiltins(from: subExpr) }
             }
         }
 
