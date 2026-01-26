@@ -80,6 +80,9 @@ public class AudioBackend: Backend {
     /// Loaded audio samples by resource ID - set by SampleManager via Coordinator
     public var loadedSamples: [Int: AudioSampleBuffer] = [:]
 
+    /// Audio input source (microphone) - set by Coordinator
+    public weak var audioInput: AudioInputSource?
+
     public init() {}
 
     /// Compile swatch to audio render function (without cache support)
@@ -93,6 +96,9 @@ public class AudioBackend: Backend {
 
         // Pass loaded samples to codegen
         codegen.loadedSamples = loadedSamples
+
+        // Pass audio input (microphone) to codegen
+        codegen.audioInput = audioInput
 
         let renderFunction = try codegen.generateRenderFunction()
 

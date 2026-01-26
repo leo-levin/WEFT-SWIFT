@@ -374,6 +374,14 @@ public class WeftLowering {
             guard case .spindleCall(let call) = extract.call else {
                 throw LoweringError.invalidExpression("Call extract requires spindle call")
             }
+            // Handle resource builtins specially (they may have string arguments)
+            if let spec = RESOURCE_BUILTINS[call.name] {
+                if extract.index < 0 || extract.index >= spec.width {
+                    throw LoweringError.rangeOutOfBounds(extract.index, spec.width)
+                }
+                let results = try lowerResourceCall(call.name, args: call.args, width: spec.width, subs: subs)
+                return results[extract.index]
+            }
             let irCall = try lowerCall(call.name, args: call.args, subs: subs)
             return .extract(call: irCall, index: extract.index)
 
