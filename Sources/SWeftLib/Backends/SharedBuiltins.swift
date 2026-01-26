@@ -18,6 +18,17 @@ public enum BuiltinCategory: String, CaseIterable {
     case hardware       // camera, microphone, texture
 }
 
+// MARK: - Builtin Argument Types
+
+/// Type of argument for a builtin function.
+/// Used by the lowering pass to determine how to handle arguments.
+public enum BuiltinArgType: Equatable {
+    /// Standard numeric expression
+    case numeric
+    /// String literal that becomes a resource ID after lowering
+    case string
+}
+
 // MARK: - Builtin Definitions
 
 /// Definition of a builtin function.
@@ -37,18 +48,33 @@ public struct BuiltinDef {
     /// Whether this is domain-specific (false = should work in all backends)
     public let domainSpecific: Bool
 
+    /// Types for each argument (nil = all numeric, the default)
+    public let argTypes: [BuiltinArgType]?
+
+    /// Output width for multi-strand returns (nil = 1 for scalar builtins)
+    public let outputWidth: Int?
+
+    /// Whether this builtin requires string argument handling at lowering time
+    public var isResourceBuiltin: Bool {
+        argTypes?.contains(.string) ?? false
+    }
+
     public init(
         name: String,
         arity: Int,
         category: BuiltinCategory,
         description: String,
-        domainSpecific: Bool = false
+        domainSpecific: Bool = false,
+        argTypes: [BuiltinArgType]? = nil,
+        outputWidth: Int? = nil
     ) {
         self.name = name
         self.arity = arity
         self.category = category
         self.description = description
         self.domainSpecific = domainSpecific
+        self.argTypes = argTypes
+        self.outputWidth = outputWidth
     }
 }
 
@@ -105,6 +131,7 @@ public enum SharedBuiltins {
         BuiltinDef(name: "camera", arity: 3, category: .hardware, description: "Camera input (u, v, channel)", domainSpecific: true),
         BuiltinDef(name: "texture", arity: 4, category: .hardware, description: "Texture sample (id, u, v, channel)", domainSpecific: true),
         BuiltinDef(name: "microphone", arity: 2, category: .hardware, description: "Microphone input (offset, channel)", domainSpecific: true),
+        BuiltinDef(name: "text", arity: 3, category: .hardware, description: "Render text (content, x, y) -> alpha", domainSpecific: true, argTypes: [.string, .numeric, .numeric], outputWidth: 1),
     ]
 
     /// Get builtin by name

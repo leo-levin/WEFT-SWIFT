@@ -359,8 +359,10 @@ public class AudioCodeGen {
             } else {
                 channel = 0
             }
-            return { [weak self] ctx in
-                guard let audioInput = self?.audioInput else { return 0.0 }
+            // Capture audioInput directly (not through self, since AudioCodeGen is temporary)
+            let audioInput = self.audioInput
+            return { ctx in
+                guard let audioInput = audioInput else { return 0.0 }
                 let sampleOffset = Int(offsetEval(ctx))
                 return audioInput.getSample(at: ctx.sampleIndex + sampleOffset, channel: channel)
             }

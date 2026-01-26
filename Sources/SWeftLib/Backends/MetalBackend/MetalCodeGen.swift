@@ -17,6 +17,9 @@ public class MetalCodeGen {
     /// Base texture index for loaded textures (camera=1, audio=2, textures start at 3)
     public static let textureBaseIndex = 3
 
+    /// Base texture index for text textures (text textures start at 100)
+    public static let textTextureBaseIndex = 100
+
     public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = []) {
         self.program = program
         self.swatch = swatch
@@ -80,6 +83,68 @@ public class MetalCodeGen {
 
         case .index(_, let indexExpr):
             collectTextureIds(from: indexExpr, into: &textureIds)
+
+        case .num, .param, .cacheRead:
+            break
+        }
+    }
+
+    /// Get set of text resource IDs used in this swatch
+    public func usedTextIds() -> Set<Int> {
+        var textIds = Set<Int>()
+
+        for bundleName in swatch.bundles {
+            if let bundle = program.bundles[bundleName] {
+                for strand in bundle.strands {
+                    collectTextIds(from: strand.expr, into: &textIds)
+                }
+            }
+        }
+
+        return textIds
+    }
+
+    /// Recursively collect text resource IDs from an expression
+    private func collectTextIds(from expr: IRExpr, into textIds: inout Set<Int>) {
+        switch expr {
+        case .builtin(let name, let args) where name == "text":
+            // text(resourceId, x, y) - extract resourceId
+            if args.count >= 1, case .num(let id) = args[0] {
+                textIds.insert(Int(id))
+            }
+            // Also check args for nested calls
+            for arg in args {
+                collectTextIds(from: arg, into: &textIds)
+            }
+
+        case .builtin(_, let args):
+            for arg in args {
+                collectTextIds(from: arg, into: &textIds)
+            }
+
+        case .binaryOp(_, let left, let right):
+            collectTextIds(from: left, into: &textIds)
+            collectTextIds(from: right, into: &textIds)
+
+        case .unaryOp(_, let operand):
+            collectTextIds(from: operand, into: &textIds)
+
+        case .call(_, let args):
+            for arg in args {
+                collectTextIds(from: arg, into: &textIds)
+            }
+
+        case .extract(let call, _):
+            collectTextIds(from: call, into: &textIds)
+
+        case .remap(let base, let substitutions):
+            collectTextIds(from: base, into: &textIds)
+            for (_, sub) in substitutions {
+                collectTextIds(from: sub, into: &textIds)
+            }
+
+        case .index(_, let indexExpr):
+            collectTextIds(from: indexExpr, into: &textIds)
 
         case .num, .param, .cacheRead:
             break
@@ -202,6 +267,25 @@ public class MetalCodeGen {
             needsSampler = true
         }
 
+        // Add texture parameters for text textures
+        let usedTexts = usedTextIds()
+        for textId in usedTexts.sorted() {
+            let textureIndex = MetalCodeGen.textTextureBaseIndex + textId
+            extraParams += "\n    texture2d<float, access::sample> textTexture\(textId) [[texture(\(textureIndex))]],"
+            needsSampler = true
+        }
+
+        // Generate helper code for text texture dimensions/aspect ratios
+        var textHelpers = ""
+        for textId in usedTexts.sorted() {
+            textHelpers += """
+                float textTex\(textId)_w = float(textTexture\(textId).get_width());
+                float textTex\(textId)_h = float(textTexture\(textId).get_height());
+                float textTex\(textId)_aspect = textTex\(textId)_w / textTex\(textId)_h;
+
+            """
+        }
+
         if needsSampler {
             extraParams += "\n    sampler textureSampler [[sampler(0)]],"
         }
@@ -271,7 +355,7 @@ public class MetalCodeGen {
             float t = uniforms.time;
             float w = uniforms.width;
             float h = uniforms.height;
-        \(cacheHelpers)
+            \(textHelpers)\(cacheHelpers)
             float r = \(colorExprs[0]);
             float g = \(colorExprs[1]);
             float b = \(colorExprs.count > 2 ? colorExprs[2] : "0.0");
@@ -616,6 +700,27 @@ public class MetalCodeGen {
             let keyCodeExpr = argCodes[0]
             // Access key state from buffer - clamp to valid range
             return "keyStates[clamp(int(\(keyCodeExpr)), 0, 255)]"
+
+        case "text":
+            // text(resourceId, x, y) -> sample from text texture (alpha mask)
+            // Adjusts for aspect ratio to prevent stretching
+            guard args.count >= 3 else {
+                throw BackendError.unsupportedExpression("text requires 3 arguments: resourceId, x, y")
+            }
+            let resourceId: Int
+            if case .num(let rid) = args[0] {
+                resourceId = Int(rid)
+            } else {
+                resourceId = 0
+            }
+            let xCode = argCodes[1]
+            let yCode = argCodes[2]
+            // Correct for aspect ratio: scale x coordinate based on screen vs text aspect ratio
+            // This ensures text maintains its natural proportions regardless of screen dimensions
+            // adjustedX = x * screenAspect / textAspect
+            // Return 0 (transparent) when sampling outside texture bounds
+            let adjustedX = "((\(xCode)) * (w/h) / textTex\(resourceId)_aspect)"
+            return "(\(adjustedX) >= 0.0 && \(adjustedX) <= 1.0 && (\(yCode)) >= 0.0 && (\(yCode)) <= 1.0 ? textTexture\(resourceId).sample(textureSampler, float2(\(adjustedX), (\(yCode)))).r : 0.0)"
 
         default:
             throw BackendError.unsupportedExpression("Unknown builtin: \(name)")

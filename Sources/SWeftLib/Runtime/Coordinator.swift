@@ -36,6 +36,7 @@ public class Coordinator: CameraCaptureDelegate {
     public private(set) var cacheManager: CacheManager
     public private(set) var textureManager: TextureManager?
     public private(set) var sampleManager: SampleManager?
+    public private(set) var textManager: TextManager?
 
     // Source file URL for relative resource resolution
     public var sourceFileURL: URL?
@@ -149,6 +150,7 @@ public class Coordinator: CameraCaptureDelegate {
                     // Initialize texture manager
                     if let device = metalBackend?.device {
                         textureManager = TextureManager(device: device)
+                        textManager = TextManager(device: device)
                     }
                 }
 
@@ -163,6 +165,17 @@ public class Coordinator: CameraCaptureDelegate {
                         print("Coordinator: Loaded \(loadedTextures.count) textures")
                     } catch {
                         print("Coordinator: Warning - texture loading failed: \(error)")
+                    }
+                }
+
+                // Render text textures from textResources if any
+                if !program.textResources.isEmpty, let txtMgr = textManager {
+                    do {
+                        let renderedTexts = try txtMgr.renderTexts(program.textResources)
+                        metalBackend?.textTextures = renderedTexts
+                        print("Coordinator: Rendered \(renderedTexts.count) text textures")
+                    } catch {
+                        print("Coordinator: Warning - text rendering failed: \(error)")
                     }
                 }
 
@@ -201,6 +214,26 @@ public class Coordinator: CameraCaptureDelegate {
 
                     // Initialize sample manager
                     sampleManager = SampleManager()
+                }
+
+                // Check if this swatch uses any external builtins that need hardware setup
+                let externalBuiltins = BackendRegistry.shared.externalBuiltins(for: AudioBackend.identifier)
+                let usesExternalBuiltin = swatch.bundles.contains { bundleName in
+                    guard let bundle = program.bundles[bundleName] else { return false }
+                    return bundle.strands.contains { strand in
+                        externalBuiltins.contains { strand.expr.usesBuiltin($0) }
+                    }
+                }
+
+                // Set up audio input if needed (for microphone builtin)
+                if usesExternalBuiltin {
+                    if audioCapture == nil, let device = metalBackend?.device {
+                        audioCapture = AudioCapture()
+                        try? audioCapture?.setup(device: device)
+                        try? audioCapture?.startCapture()
+                        needsMicrophone = true
+                    }
+                    audioBackend?.audioInput = audioCapture
                 }
 
                 // Load audio samples from program resources if any

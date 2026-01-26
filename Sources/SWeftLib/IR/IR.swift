@@ -9,15 +9,18 @@ public struct IRProgram: Codable, Equatable {
     public var spindles: [String: IRSpindle]
     public var order: [OrderEntry]
     public var resources: [String]
+    public var textResources: [String]
 
     public init(bundles: [String: IRBundle] = [:],
                 spindles: [String: IRSpindle] = [:],
                 order: [OrderEntry] = [],
-                resources: [String] = []) {
+                resources: [String] = [],
+                textResources: [String] = []) {
         self.bundles = bundles
         self.spindles = spindles
         self.order = order
         self.resources = resources
+        self.textResources = textResources
     }
 
     public struct OrderEntry: Codable, Equatable {

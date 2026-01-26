@@ -83,7 +83,8 @@ private let RESOURCE_BUILTINS: [String: ResourceBuiltin] = [
     "microphone": ResourceBuiltin(width: 2, argCount: 1),
     "mouse": ResourceBuiltin(width: 3, argCount: 0),  // Returns [x, y, down]
     "load": ResourceBuiltin(width: 3, minArgs: 1, maxArgs: 3),  // load(path) or load(path, u, v)
-    "sample": ResourceBuiltin(width: 2, minArgs: 1, maxArgs: 2)  // sample(path) or sample(path, offset)
+    "sample": ResourceBuiltin(width: 2, minArgs: 1, maxArgs: 2),  // sample(path) or sample(path, offset)
+    "text": ResourceBuiltin(width: 1, argCount: 3)  // text(content, x, y)
 ]
 
 private let ME_STRANDS: [String: Int] = [
@@ -102,6 +103,8 @@ public class WeftLowering {
     private var declarations: [Declaration] = []
     private var resources: [String] = []
     private var resourceIndex: [String: Int] = [:]
+    private var textResources: [String] = []
+    private var textResourceIndex: [String: Int] = [:]
 
     // Current scope for spindle body lowering
     private var scope: Scope?
@@ -145,6 +148,8 @@ public class WeftLowering {
         declarations = []
         resources = []
         resourceIndex = [:]
+        textResources = []
+        textResourceIndex = [:]
         scope = nil
 
         // First pass: register all bundles and spindles
@@ -170,7 +175,7 @@ public class WeftLowering {
         // Compute topological order
         let order = try topologicalSort()
 
-        return IRProgram(bundles: bundles, spindles: spindles, order: order, resources: resources)
+        return IRProgram(bundles: bundles, spindles: spindles, order: order, resources: resources, textResources: textResources)
     }
 
     // MARK: - Registration Pass
@@ -344,6 +349,12 @@ public class WeftLowering {
             return .unaryOp(op: op.op.rawValue, operand: operand)
 
         case .spindleCall(let call):
+            // Check for single-width resource builtins (like text) that need special string handling
+            if let spec = RESOURCE_BUILTINS[call.name], spec.width == 1 {
+                let results = try lowerResourceCall(call.name, args: call.args, width: 1, subs: subs)
+                return results[0]
+            }
+
             let irCall = try lowerCall(call.name, args: call.args, subs: subs)
 
             if BUILTINS.contains(call.name) {
@@ -362,6 +373,14 @@ public class WeftLowering {
         case .callExtract(let extract):
             guard case .spindleCall(let call) = extract.call else {
                 throw LoweringError.invalidExpression("Call extract requires spindle call")
+            }
+            // Handle resource builtins specially (they may have string arguments)
+            if let spec = RESOURCE_BUILTINS[call.name] {
+                if extract.index < 0 || extract.index >= spec.width {
+                    throw LoweringError.rangeOutOfBounds(extract.index, spec.width)
+                }
+                let results = try lowerResourceCall(call.name, args: call.args, width: spec.width, subs: subs)
+                return results[extract.index]
             }
             let irCall = try lowerCall(call.name, args: call.args, subs: subs)
             return .extract(call: irCall, index: extract.index)
@@ -778,6 +797,26 @@ public class WeftLowering {
             return (0..<spec.width).map { channel in
                 .builtin(name: "mouse", args: [.num(Double(channel))])
             }
+
+        case "text":
+            // text(content, x, y) -> alpha mask value
+            guard case .string(let content) = args[0] else {
+                throw LoweringError.invalidExpression("text() first argument must be a string literal")
+            }
+
+            let resourceId: Int
+            if let existing = textResourceIndex[content] {
+                resourceId = existing
+            } else {
+                resourceId = textResources.count
+                textResources.append(content)
+                textResourceIndex[content] = resourceId
+            }
+
+            let x = try lowerExpr(args[1], subs: subs)
+            let y = try lowerExpr(args[2], subs: subs)
+
+            return [.builtin(name: "text", args: [.num(Double(resourceId)), x, y])]
 
         default:
             throw LoweringError.unknownSpindle(name)

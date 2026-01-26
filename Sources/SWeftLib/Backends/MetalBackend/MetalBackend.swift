@@ -12,13 +12,15 @@ public class MetalCompiledUnit: CompiledUnit {
     public let shaderSource: String
     public let usedInputs: Set<String>
     public let usedTextureIds: Set<Int>
+    public let usedTextIds: Set<Int>
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = []) {
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = []) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
         self.usedInputs = usedInputs
         self.usedTextureIds = usedTextureIds
+        self.usedTextIds = usedTextIds
     }
 }
 
@@ -39,7 +41,7 @@ public struct MetalUniforms {
 public class MetalBackend: Backend {
     public static let identifier = "visual"
     public static let hardwareOwned: Set<IRHardware> = [.camera, .gpu]
-    public static let ownedBuiltins: Set<String> = ["camera", "texture", "load"]
+    public static let ownedBuiltins: Set<String> = ["camera", "texture", "load", "text"]
     public static let externalBuiltins: Set<String> = ["camera", "texture"]
     public static let statefulBuiltins: Set<String> = ["cache"]
     public static let coordinateFields = ["x", "y", "t", "w", "h"]
@@ -88,6 +90,15 @@ public class MetalBackend: Backend {
             hardwareRequired: [],
             addsState: true
         ),
+        "text": PrimitiveSpec(
+            name: "text",
+            outputDomain: [
+                IRDimension(name: "x", access: .free),
+                IRDimension(name: "y", access: .free)
+            ],
+            hardwareRequired: [.gpu],
+            addsState: false
+        ),
     ]
 
     public static let bindings: [BackendBinding] = [
@@ -131,6 +142,9 @@ public class MetalBackend: Backend {
 
     /// Loaded textures by resource ID - set by TextureManager via Coordinator
     public var loadedTextures: [Int: MTLTexture] = [:]
+
+    /// Text textures by resource ID - set by TextManager via Coordinator
+    public var textTextures: [Int: MTLTexture] = [:]
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -190,6 +204,7 @@ public class MetalBackend: Backend {
         let shaderSource = try codegen.generate()
         var usedInputs = codegen.usedInputs()
         let usedTextureIds = codegen.usedTextureIds()
+        let usedTextIds = codegen.usedTextIds()
 
         // Add "cache" to usedInputs if there are cache descriptors
         if codegen.usesCache() {
@@ -199,6 +214,11 @@ public class MetalBackend: Backend {
         // Add "texture" to usedInputs if textures are used
         if !usedTextureIds.isEmpty {
             usedInputs.insert("texture")
+        }
+
+        // Add "text" to usedInputs if text is used
+        if !usedTextIds.isEmpty {
+            usedInputs.insert("text")
         }
 
         // Debug: print generated shader
@@ -229,7 +249,8 @@ public class MetalBackend: Backend {
             pipelineState: pipelineState,
             shaderSource: shaderSource,
             usedInputs: usedInputs,
-            usedTextureIds: usedTextureIds
+            usedTextureIds: usedTextureIds,
+            usedTextIds: usedTextIds
         )
     }
 
@@ -373,6 +394,14 @@ public class MetalBackend: Backend {
         for textureId in metalUnit.usedTextureIds {
             if let tex = loadedTextures[textureId] {
                 let textureIndex = MetalCodeGen.textureBaseIndex + textureId
+                computeEncoder.setTexture(tex, index: textureIndex)
+            }
+        }
+
+        // Bind text textures for text() builtin
+        for textId in metalUnit.usedTextIds {
+            if let tex = textTextures[textId] {
+                let textureIndex = MetalCodeGen.textTextureBaseIndex + textId
                 computeEncoder.setTexture(tex, index: textureIndex)
             }
         }
