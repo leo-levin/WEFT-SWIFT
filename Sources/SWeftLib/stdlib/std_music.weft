@@ -51,10 +51,6 @@ spindle mtof(note) {
     return.0 = 440 * pow(2, (note - 69) / 12)
 }
 
-// Frequency to MIDI note
-spindle ftom(freq) {
-    return.0 = 69 + 12 * log(freq / 440) / log(2)
-}
 
 // Semitone offset to frequency ratio
 spindle semi(n) {
@@ -276,22 +272,4 @@ spindle db2amp(db) {
     return.0 = pow(10, db / 20)
 }
 
-// Linear amplitude to dB
-spindle amp2db(amp) {
-    return.0 = 20 * log(max(amp, 0.00001)) / log(10)
-}
 
-// ============================================================================
-// NOISE (stateless - uses built-in noise seeded by time/sample)
-// ============================================================================
-
-// White noise
-spindle wnoise() {
-    return.0 = noise(me.i, me.t * 1000) * 2 - 1
-}
-
-// Sample-and-hold noise (changes at given frequency)
-spindle shnoise(freq) {
-    idx.val = floor(me.t * freq)
-    return.0 = noise(idx.val, idx.val * 0.7) * 2 - 1
-}
