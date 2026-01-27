@@ -52,10 +52,12 @@ spindle _grad_dot(px, py, pz, fx, fy, fz) {
 // Perlin Noise 3D
 // ============================================================================
 
-// 3D Perlin noise returning value in approximately [-1, 1]
-// Usage: perlin3(x, y, z)
-// For 2D: perlin3(x, y, 0)
-// For animated 2D: perlin3(x * scale, y * scale, t * speed)
+/// 3D Perlin noise (classic gradient noise)
+/// @param x - X coordinate
+/// @param y - Y coordinate
+/// @param z - Z coordinate (use 0 for 2D, or me.t for animation)
+/// @returns Noise value in approximately [-1, 1]
+/// @example n.val = perlin3(me.x * 5, me.y * 5, me.t)
 spindle perlin3(x, y, z) {
     // Integer grid coordinates
     ix.v = floor(x)
@@ -106,8 +108,12 @@ spindle perlin3(x, y, z) {
 // Simplex Noise 3D
 // ============================================================================
 
-// 3D Simplex noise returning value in approximately [-1, 1]
-// Faster than Perlin for higher dimensions, no visible grid artifacts
+/// 3D Simplex noise (faster, no grid artifacts)
+/// @param x - X coordinate
+/// @param y - Y coordinate
+/// @param z - Z coordinate (use 0 for 2D, or me.t for animation)
+/// @returns Noise value in approximately [-1, 1]
+/// @example n.val = simplex3(me.x * 4, me.y * 4, me.t * 0.5)
 spindle simplex3(x, y, z) {
     // Skewing factors for 3D
     // F3 = 1/3, G3 = 1/6
@@ -194,9 +200,14 @@ spindle simplex3(x, y, z) {
 // Fractal Brownian Motion (fBm) - Harmonic Summation
 // ============================================================================
 
-// 8-octave fBm using Perlin noise
-// spread: frequency multiplier per octave (typically 2)
-// roughness: amplitude decay per octave (typically 0.5)
+/// Fractal Brownian Motion using 8 octaves of Perlin noise
+/// @param x - X coordinate
+/// @param y - Y coordinate
+/// @param z - Z coordinate
+/// @param spread - Frequency multiplier per octave (typically 2)
+/// @param roughness - Amplitude decay per octave (typically 0.5)
+/// @returns Summed noise with multiple frequency scales
+/// @example n.val = fbm3(me.x * 2, me.y * 2, me.t, 2, 0.5)
 spindle fbm3(x, y, z, spread, roughness) {
     amp.v = 0.5
     freq.v = 1
@@ -237,8 +248,12 @@ spindle fbm3(x, y, z, spread, roughness) {
 // Cell/Worley/Voronoi Noise
 // ============================================================================
 
-// Returns distance to nearest random feature point
-// Creates organic cell/crack patterns
+/// Worley/Voronoi cell noise (distance to nearest point)
+/// @param x - X coordinate
+/// @param y - Y coordinate
+/// @param z - Z coordinate
+/// @returns Distance to nearest random feature point (creates cell/crack patterns)
+/// @example cells.val = cell3(me.x * 5, me.y * 5, 0)
 spindle cell3(x, y, z) {
     ix.v = floor(x)
     iy.v = floor(y)

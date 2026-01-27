@@ -846,13 +846,208 @@ struct CodeEditor: NSViewRepresentable {
 class FocusableTextView: NSTextView {
     override var acceptsFirstResponder: Bool { true }
 
+    // Documentation popover state
+    private var docPopover: NSPopover?
+
     override func becomeFirstResponder() -> Bool {
         super.becomeFirstResponder()
     }
 
     override func mouseDown(with event: NSEvent) {
+        // Check for Option+Click to show documentation
+        if event.modifierFlags.contains(.option) {
+            let point = convert(event.locationInWindow, from: nil)
+            if let word = wordAtPoint(point), !word.isEmpty {
+                showDocumentationPopover(for: word, at: point)
+                return  // Don't pass to super - we handled it
+            }
+        }
+
         super.mouseDown(with: event)
         window?.makeFirstResponder(self)
+        dismissPopover()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        dismissPopover()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Escape dismisses popover
+        if event.keyCode == 53 {  // Escape key
+            dismissPopover()
+        }
+        super.keyDown(with: event)
+    }
+
+    // MARK: - Word Detection
+
+    private func wordAtPoint(_ point: NSPoint) -> String? {
+        guard let layoutManager = layoutManager,
+              let textContainer = textContainer else { return nil }
+
+        // Convert point to text container coordinates
+        let textContainerOffset = textContainerOrigin
+        let locationInTextContainer = NSPoint(
+            x: point.x - textContainerOffset.x,
+            y: point.y - textContainerOffset.y
+        )
+
+        // Get character index at point
+        var fraction: CGFloat = 0
+        let charIndex = layoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: &fraction
+        )
+
+        guard charIndex < string.count else { return nil }
+
+        // Find word boundaries
+        let nsString = string as NSString
+        let wordRange = nsString.rangeOfWord(at: charIndex)
+
+        guard wordRange.location != NSNotFound && wordRange.length > 0 else { return nil }
+
+        return nsString.substring(with: wordRange)
+    }
+
+    // MARK: - Popover Management
+
+    /// Shows documentation popover for a spindle/builtin at the given click position.
+    /// Trigger: Option+Click on a word in the editor.
+    private func showDocumentationPopover(for word: String, at point: NSPoint) {
+        guard let doc = SpindleDocManager.shared.documentation(for: word) else { return }
+
+        // Create popover content
+        let contentView = DocumentationPopoverView(doc: doc)
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+
+        // Size to fit content
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = NSRect(origin: .zero, size: fittingSize)
+
+        // Create popover
+        let popover = NSPopover()
+        popover.contentViewController = NSViewController()
+        popover.contentViewController?.view = hostingView
+        popover.behavior = .transient
+        popover.animates = true
+
+        // Calculate rect at click position
+        let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
+
+        popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
+        docPopover = popover
+    }
+
+    private func dismissPopover() {
+        docPopover?.close()
+        docPopover = nil
+    }
+}
+
+// MARK: - NSString Extension for Word Finding
+
+extension NSString {
+    func rangeOfWord(at index: Int) -> NSRange {
+        guard index >= 0 && index < length else {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+
+        // Define word characters (letters, digits, underscore)
+        let wordChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+
+        // Check if current character is a word character
+        let char = character(at: index)
+        guard let scalar = Unicode.Scalar(char), wordChars.contains(scalar) else {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+
+        // Find start of word
+        var start = index
+        while start > 0 {
+            let prevChar = character(at: start - 1)
+            guard let prevScalar = Unicode.Scalar(prevChar), wordChars.contains(prevScalar) else { break }
+            start -= 1
+        }
+
+        // Find end of word
+        var end = index
+        while end < length - 1 {
+            let nextChar = character(at: end + 1)
+            guard let nextScalar = Unicode.Scalar(nextChar), wordChars.contains(nextScalar) else { break }
+            end += 1
+        }
+
+        return NSRange(location: start, length: end - start + 1)
+    }
+}
+
+// MARK: - Documentation Popover View
+
+struct DocumentationPopoverView: View {
+    let doc: SpindleDoc
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Signature
+            Text(doc.signature)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(.primary)
+
+            // Description
+            Text(doc.description)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Parameters
+            if !doc.params.isEmpty {
+                Divider()
+                ForEach(doc.params, id: \.name) { param in
+                    HStack(alignment: .top, spacing: 4) {
+                        Text(param.name)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.blue)
+                        Text("-")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Text(param.desc)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            // Returns
+            if let returns = doc.returns {
+                Divider()
+                HStack(alignment: .top, spacing: 4) {
+                    Text("Returns:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(returns)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Example
+            if let example = doc.example {
+                Divider()
+                Text(example)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.green)
+                    .padding(4)
+                    .background(Color.black.opacity(0.1))
+                    .cornerRadius(4)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: 320)
     }
 }
 
