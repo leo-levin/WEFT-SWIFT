@@ -114,14 +114,14 @@ public class SampleManager {
             do {
                 let sample = try loadSample(path: path, relativeTo: sourceFileURL)
                 samples[index] = sample
-                print("SampleManager: Loaded sample \(index) from '\(path)' (\(sample.frameCount) frames, \(sample.channels) channels)")
+                log.info("Loaded sample \(index) from '\(path)' (\(sample.frameCount) frames, \(sample.channels) ch)", subsystem: LogSubsystem.sample)
             } catch let error as SampleError {
-                print("SampleManager: Failed to load sample \(index) from '\(path)': \(error)")
+                log.warning("Failed to load sample \(index) from '\(path)': \(error)", subsystem: LogSubsystem.sample)
                 loadErrors[index] = (path: path, error: error)
                 // Create a silent placeholder
                 samples[index] = createSilentSample()
             } catch {
-                print("SampleManager: Failed to load sample \(index) from '\(path)': \(error)")
+                log.warning("Failed to load sample \(index) from '\(path)': \(error)", subsystem: LogSubsystem.sample)
                 loadErrors[index] = (path: path, error: .loadFailed(error.localizedDescription))
                 samples[index] = createSilentSample()
             }
@@ -153,41 +153,14 @@ public class SampleManager {
         return sample
     }
 
-    /// Resolve a sample path to a URL
+    /// Resolve a sample path to a URL using shared path resolver
     private func resolveSamplePath(_ path: String, relativeTo sourceFileURL: URL?) throws -> URL {
-        // 1. Try as absolute path
-        if path.hasPrefix("/") || path.hasPrefix("~") {
-            let expandedPath = NSString(string: path).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
+        let resolver = ResourcePathResolver(sourceFileURL: sourceFileURL)
+        do {
+            return try resolver.resolve(path)
+        } catch {
+            throw SampleError.fileNotFound(path)
         }
-
-        // 2. Try relative to source file
-        if let sourceURL = sourceFileURL {
-            let sourceDir = sourceURL.deletingLastPathComponent()
-            let relativeURL = sourceDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: relativeURL.path) {
-                return relativeURL
-            }
-
-            // 3. Try in .weft-resources folder next to source file
-            let resourcesDir = sourceDir.appendingPathComponent(".weft-resources")
-            let resourceURL = resourcesDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: resourceURL.path) {
-                return resourceURL
-            }
-        }
-
-        // 4. Try relative to current working directory
-        let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(path)
-        if FileManager.default.fileExists(atPath: cwdURL.path) {
-            return cwdURL
-        }
-
-        throw SampleError.fileNotFound(path)
     }
 
     /// Load an audio sample from a URL

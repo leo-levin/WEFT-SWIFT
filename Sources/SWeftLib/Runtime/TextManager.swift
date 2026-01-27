@@ -49,7 +49,7 @@ public class TextManager {
         for (index, text) in textResources.enumerated() {
             let texture = try renderText(text)
             textures[index] = texture
-            print("TextManager: Rendered text \(index): '\(text)' (\(texture.width)x\(texture.height))")
+            log.info("Rendered text \(index): '\(text)' (\(texture.width)x\(texture.height))", subsystem: LogSubsystem.text)
         }
 
         return textures

@@ -179,3 +179,92 @@ extension SharedBuiltins {
         return Array(missing).sorted()
     }
 }
+
+// MARK: - Shared Operator Definitions
+
+/// Operator semantics that all backends must implement identically.
+/// This serves as the canonical reference for operator behavior.
+public enum SharedOperators {
+
+    /// Binary operators with their WEFT semantics
+    public enum Binary: String, CaseIterable {
+        case add = "+"
+        case subtract = "-"
+        case multiply = "*"
+        case divide = "/"
+        case modulo = "%"
+        case power = "^"
+        case lessThan = "<"
+        case greaterThan = ">"
+        case lessEqual = "<="
+        case greaterEqual = ">="
+        case equal = "=="
+        case notEqual = "!="
+        case logicalAnd = "&&"
+        case logicalOr = "||"
+
+        /// Description of the operator behavior
+        public var description: String {
+            switch self {
+            case .add: return "Addition"
+            case .subtract: return "Subtraction"
+            case .multiply: return "Multiplication"
+            case .divide: return "Division"
+            case .modulo: return "Modulo (fmod semantics)"
+            case .power: return "Exponentiation (pow)"
+            case .lessThan: return "Less than (returns 1.0 or 0.0)"
+            case .greaterThan: return "Greater than (returns 1.0 or 0.0)"
+            case .lessEqual: return "Less than or equal (returns 1.0 or 0.0)"
+            case .greaterEqual: return "Greater than or equal (returns 1.0 or 0.0)"
+            case .equal: return "Equality (returns 1.0 or 0.0)"
+            case .notEqual: return "Inequality (returns 1.0 or 0.0)"
+            case .logicalAnd: return "Logical AND (non-zero is true, returns 1.0 or 0.0)"
+            case .logicalOr: return "Logical OR (non-zero is true, returns 1.0 or 0.0)"
+            }
+        }
+
+        /// Metal Shading Language implementation template
+        /// {L} = left operand, {R} = right operand
+        public var metalTemplate: String {
+            switch self {
+            case .add: return "({L} + {R})"
+            case .subtract: return "({L} - {R})"
+            case .multiply: return "({L} * {R})"
+            case .divide: return "({L} / {R})"
+            case .modulo: return "fmod({L}, {R})"
+            case .power: return "pow({L}, {R})"
+            case .lessThan: return "({L} < {R} ? 1.0 : 0.0)"
+            case .greaterThan: return "({L} > {R} ? 1.0 : 0.0)"
+            case .lessEqual: return "({L} <= {R} ? 1.0 : 0.0)"
+            case .greaterEqual: return "({L} >= {R} ? 1.0 : 0.0)"
+            case .equal: return "({L} == {R} ? 1.0 : 0.0)"
+            case .notEqual: return "({L} != {R} ? 1.0 : 0.0)"
+            case .logicalAnd: return "(({L} != 0.0 && {R} != 0.0) ? 1.0 : 0.0)"
+            case .logicalOr: return "(({L} != 0.0 || {R} != 0.0) ? 1.0 : 0.0)"
+            }
+        }
+    }
+
+    /// Unary operators with their WEFT semantics
+    public enum Unary: String, CaseIterable {
+        case negate = "-"
+        case logicalNot = "!"
+
+        /// Description of the operator behavior
+        public var description: String {
+            switch self {
+            case .negate: return "Arithmetic negation"
+            case .logicalNot: return "Logical NOT (returns 1.0 if operand is 0, else 0.0)"
+            }
+        }
+
+        /// Metal Shading Language implementation template
+        /// {X} = operand
+        public var metalTemplate: String {
+            switch self {
+            case .negate: return "(-{X})"
+            case .logicalNot: return "({X} == 0.0 ? 1.0 : 0.0)"
+            }
+        }
+    }
+}

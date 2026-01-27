@@ -75,16 +75,16 @@ public class TextureManager {
             do {
                 let texture = try loadTexture(path: path, relativeTo: sourceFileURL)
                 textures[index] = texture
-                print("TextureManager: Loaded texture \(index) from '\(path)'")
+                log.info("Loaded texture \(index) from '\(path)'", subsystem: LogSubsystem.texture)
             } catch let error as TextureError {
-                print("TextureManager: Failed to load texture \(index) from '\(path)': \(error)")
+                log.warning("Failed to load texture \(index) from '\(path)': \(error)", subsystem: LogSubsystem.texture)
                 loadErrors[index] = (path: path, error: error)
                 // Create a placeholder texture (1x1 magenta for debugging)
                 if let placeholder = createPlaceholderTexture() {
                     textures[index] = placeholder
                 }
             } catch {
-                print("TextureManager: Failed to load texture \(index) from '\(path)': \(error)")
+                log.warning("Failed to load texture \(index) from '\(path)': \(error)", subsystem: LogSubsystem.texture)
                 loadErrors[index] = (path: path, error: .loadFailed(error.localizedDescription))
                 if let placeholder = createPlaceholderTexture() {
                     textures[index] = placeholder
@@ -118,41 +118,14 @@ public class TextureManager {
         return texture
     }
 
-    /// Resolve a texture path to a URL
+    /// Resolve a texture path to a URL using shared path resolver
     private func resolveTexturePath(_ path: String, relativeTo sourceFileURL: URL?) throws -> URL {
-        // 1. Try as absolute path
-        if path.hasPrefix("/") || path.hasPrefix("~") {
-            let expandedPath = NSString(string: path).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
+        let resolver = ResourcePathResolver(sourceFileURL: sourceFileURL)
+        do {
+            return try resolver.resolve(path)
+        } catch {
+            throw TextureError.fileNotFound(path)
         }
-
-        // 2. Try relative to source file
-        if let sourceURL = sourceFileURL {
-            let sourceDir = sourceURL.deletingLastPathComponent()
-            let relativeURL = sourceDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: relativeURL.path) {
-                return relativeURL
-            }
-
-            // 3. Try in .weft-resources folder next to source file
-            let resourcesDir = sourceDir.appendingPathComponent(".weft-resources")
-            let resourceURL = resourcesDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: resourceURL.path) {
-                return resourceURL
-            }
-        }
-
-        // 4. Try relative to current working directory
-        let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(path)
-        if FileManager.default.fileExists(atPath: cwdURL.path) {
-            return cwdURL
-        }
-
-        throw TextureError.fileNotFound(path)
     }
 
     /// Load a texture from a URL

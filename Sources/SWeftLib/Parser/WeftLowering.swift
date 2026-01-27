@@ -51,47 +51,11 @@ public enum LoweringError: Error, LocalizedError {
     }
 }
 
-// MARK: - Built-in Functions
+// NOTE: Builtin definitions moved to BuiltinRegistry.swift
+// Uses: SCALAR_BUILTINS, RESOURCE_BUILTINS, ME_STRANDS from that module
 
-private let BUILTINS: Set<String> = [
-    "sin", "cos", "tan", "abs", "floor", "ceil", "sqrt", "pow",
-    "min", "max", "lerp", "clamp", "step", "smoothstep", "fract", "mod",
-    "osc", "cache", "key"
-]
-
-private struct ResourceBuiltin {
-    let width: Int
-    let minArgs: Int
-    let maxArgs: Int
-
-    init(width: Int, argCount: Int) {
-        self.width = width
-        self.minArgs = argCount
-        self.maxArgs = argCount
-    }
-
-    init(width: Int, minArgs: Int, maxArgs: Int) {
-        self.width = width
-        self.minArgs = minArgs
-        self.maxArgs = maxArgs
-    }
-}
-
-private let RESOURCE_BUILTINS: [String: ResourceBuiltin] = [
-    "texture": ResourceBuiltin(width: 3, argCount: 3),
-    "camera": ResourceBuiltin(width: 3, argCount: 2),
-    "microphone": ResourceBuiltin(width: 2, argCount: 1),
-    "mouse": ResourceBuiltin(width: 3, argCount: 0),  // Returns [x, y, down]
-    "load": ResourceBuiltin(width: 3, minArgs: 1, maxArgs: 3),  // load(path) or load(path, u, v)
-    "sample": ResourceBuiltin(width: 2, minArgs: 1, maxArgs: 2),  // sample(path) or sample(path, offset)
-    "text": ResourceBuiltin(width: 1, argCount: 3)  // text(content, x, y)
-]
-
-private let ME_STRANDS: [String: Int] = [
-    "x": 0, "y": 1, "u": 2, "v": 3, "w": 4, "h": 5,
-    "t": 6,
-    "i": 0, "rate": 7, "duration": 8, "sampleRate": 7
-]
+// Private alias for backward compatibility within this file
+private let BUILTINS = SCALAR_BUILTINS
 
 // MARK: - Lowering Context
 

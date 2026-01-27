@@ -1,4 +1,4 @@
-// Coordinator.swift - Orchestrate multi-backend execution
+// Coordinator.swift - Thin orchestrator for multi-backend execution
 
 import Foundation
 import Metal
@@ -6,131 +6,120 @@ import MetalKit
 
 // MARK: - Coordinator
 
-public class Coordinator: CameraCaptureDelegate {
-    // IR and analysis
+/// Orchestrates WEFT program execution across multiple backends.
+/// Delegates to specialized managers for input handling, compilation, and resources.
+public class Coordinator: CameraCaptureDelegate, InputManagerDelegate, CompilationManagerDelegate {
+    // MARK: - IR and Analysis
+
     public private(set) var program: IRProgram?
     public private(set) var dependencyGraph: DependencyGraph?
     public private(set) var annotatedProgram: IRAnnotatedProgram?
     public private(set) var swatchGraph: SwatchGraph?
 
-    // Documentation
+    // MARK: - Managers
+
+    /// Input provider management (camera, microphone, etc.)
+    public let inputManager = InputManager()
+
+    /// Compilation and backend management
+    public let compilationManager = CompilationManager()
+
+    /// Documentation manager
     public let docManager = SpindleDocManager.shared
 
-    // Backend registry
+    /// Backend registry
     public let registry: BackendRegistry
 
-    // Backend instances (lazily initialized)
-    public private(set) var metalBackend: MetalBackend?
-    public private(set) var audioBackend: AudioBackend?
+    // MARK: - Resource Managers (lazily initialized)
 
-    // Camera
-    public private(set) var cameraCapture: CameraCapture?
-    public private(set) var needsCamera = false
+    private var _textureManager: TextureManager?
+    private var _sampleManager: SampleManager?
+    private var _textManager: TextManager?
 
-    // Audio capture (microphone)
-    public private(set) var audioCapture: AudioCapture?
-    public private(set) var needsMicrophone = false
+    // MARK: - State
 
-    // Input providers registry
-    private var inputProviders: [String: any InputProvider] = [:]
-
-    // Compiled units
+    /// Compiled units by swatch ID
     private var compiledUnits: [UUID: CompiledUnit] = [:]
 
-    // Managers
-    public private(set) var bufferManager: BufferManager
-    public private(set) var cacheManager: CacheManager
-    public private(set) var textureManager: TextureManager?
-    public private(set) var sampleManager: SampleManager?
-    public private(set) var textManager: TextManager?
+    /// Source file URL for relative resource resolution
+    public var sourceFileURL: URL? {
+        didSet {
+            compilationManager.sourceFileURL = sourceFileURL
+        }
+    }
 
-    // Source file URL for relative resource resolution
-    public var sourceFileURL: URL?
-
-    // State
+    /// Current time
     public private(set) var time: Double = 0
+
+    /// Whether the coordinator is running
     public private(set) var isRunning = false
 
-    // Default output dimensions
-    private var outputWidth: Int = 512
-    private var outputHeight: Int = 512
+    // MARK: - Initialization
 
     public init(registry: BackendRegistry = .shared) {
         self.registry = registry
-        self.bufferManager = BufferManager()
-        self.cacheManager = CacheManager()
+        inputManager.delegate = self
+        compilationManager.delegate = self
     }
 
-    // MARK: - Input Provider Management
+    // MARK: - Public Accessors (Backward Compatibility)
 
-    /// Register an input provider
-    public func registerInputProvider(_ provider: any InputProvider) {
-        inputProviders[type(of: provider).builtinName] = provider
+    /// Metal backend instance
+    public var metalBackend: MetalBackend? {
+        compilationManager.metalBackend
     }
 
-    /// Get typed input provider by builtin name
-    public func inputProvider<T: InputProvider>(for builtinName: String) -> T? {
-        inputProviders[builtinName] as? T
+    /// Audio backend instance
+    public var audioBackend: AudioBackend? {
+        compilationManager.audioBackend
     }
 
-    /// Create and setup an input provider for the given builtin name
-    private func createProvider(for builtinName: String) -> (any InputProvider)? {
-        switch builtinName {
-        case "microphone":
-            let capture = AudioCapture()
-            try? capture.setup(device: metalBackend?.device)
-            return capture
-        case "camera":
-            guard let device = metalBackend?.device else { return nil }
-            let capture = CameraCapture(device: device)
-            capture.delegate = self
-            return capture
-        // Future: "midi", "osc", "gamepad", etc.
-        default:
-            return nil
-        }
+    /// Buffer manager
+    public var bufferManager: BufferManager {
+        compilationManager.bufferManager
     }
 
-    /// Collect providers needed by a backend based on external builtins used
-    private func collectProvidersForBackend(
-        backendId: String,
-        swatch: Swatch,
-        program: IRProgram
-    ) -> [String: any InputProvider] {
-        let externalBuiltins = BackendRegistry.shared.externalBuiltins(for: backendId)
-        var neededProviders: [String: any InputProvider] = [:]
-
-        for builtinName in externalBuiltins {
-            // Check if this swatch actually uses this builtin
-            let usesBuiltin = swatch.bundles.contains { bundleName in
-                guard let bundle = program.bundles[bundleName] else { return false }
-                return bundle.strands.contains { strand in
-                    strand.expr.usesBuiltin(builtinName)
-                }
-            }
-
-            guard usesBuiltin else { continue }
-
-            // Lazily create provider if needed
-            if inputProviders[builtinName] == nil {
-                if let provider = createProvider(for: builtinName) {
-                    inputProviders[builtinName] = provider
-                }
-            }
-
-            if let provider = inputProviders[builtinName] {
-                neededProviders[builtinName] = provider
-            }
-        }
-
-        return neededProviders
+    /// Cache manager
+    public var cacheManager: CacheManager {
+        compilationManager.cacheManager
     }
 
-    // MARK: - CameraCaptureDelegate
-
-    public func cameraCapture(_ capture: CameraCapture, didUpdateTexture texture: MTLTexture) {
-        metalBackend?.cameraTexture = texture
+    /// Texture manager (lazily initialized)
+    public var textureManager: TextureManager? {
+        _textureManager
     }
+
+    /// Sample manager (lazily initialized)
+    public var sampleManager: SampleManager? {
+        _sampleManager
+    }
+
+    /// Text manager (lazily initialized)
+    public var textManager: TextManager? {
+        _textManager
+    }
+
+    /// Camera capture instance
+    public var cameraCapture: CameraCapture? {
+        inputManager.cameraCapture
+    }
+
+    /// Audio capture instance
+    public var audioCapture: AudioCapture? {
+        inputManager.audioCapture
+    }
+
+    /// Whether camera is needed
+    public var needsCamera: Bool {
+        inputManager.needsCamera
+    }
+
+    /// Whether microphone is needed
+    public var needsMicrophone: Bool {
+        inputManager.needsMicrophone
+    }
+
+    // MARK: - Loading
 
     /// Load and compile an IR program
     public func load(program: IRProgram) throws {
@@ -143,9 +132,9 @@ public class Coordinator: CameraCaptureDelegate {
 
         // Run annotation pass (merges both visual and audio specs)
         let allCoordinateSpecs = MetalBackend.coordinateSpecs
-            .merging(AudioBackend.coordinateSpecs) { (visual, _) in visual }
+            .merging(AudioBackend.coordinateSpecs) { visual, _ in visual }
         let allPrimitiveSpecs = MetalBackend.primitiveSpecs
-            .merging(AudioBackend.primitiveSpecs) { (visual, _) in visual }
+            .merging(AudioBackend.primitiveSpecs) { visual, _ in visual }
 
         let annotationPass = AnnotationPass(
             program: program,
@@ -166,7 +155,6 @@ public class Coordinator: CameraCaptureDelegate {
         self.swatchGraph = swatches
 
         // Inline spindle calls with cache target substitution before cache analysis
-        // This transforms cache(localRef, ...) inside spindles to cache(targetBundle, ...)
         var mutableProgramForInlining = program
         IRTransformations.inlineSpindleCacheCalls(program: &mutableProgramForInlining)
         self.program = mutableProgramForInlining
@@ -180,22 +168,20 @@ public class Coordinator: CameraCaptureDelegate {
             self.program = mutableProgram
         }
 
-        // Print analysis
-        print("=== WEFT IR Loaded ===")
-        print("Bundles: \(program.bundles.keys.sorted().joined(separator: ", "))")
-        print("Swatches: \(swatches.swatches.count)")
+        // Log analysis
+        log.info("IR Loaded - Bundles: \(program.bundles.keys.sorted().joined(separator: ", "))", subsystem: LogSubsystem.coordinator)
+        log.info("Swatches: \(swatches.swatches.count)", subsystem: LogSubsystem.coordinator)
         for swatch in swatches.swatches {
-            print("  \(swatch)")
+            log.debug("  \(swatch)", subsystem: LogSubsystem.coordinator)
         }
 
-        // Compile swatches
+        // Compile
         try compile()
     }
 
     /// Load IR from JSON file
     public func load(url: URL) throws {
-        // Store the source file URL for relative resource resolution
-        self.sourceFileURL = url
+        sourceFileURL = url
         let parser = IRParser()
         let program = try parser.parse(url: url)
         try load(program: program)
@@ -208,214 +194,129 @@ public class Coordinator: CameraCaptureDelegate {
         try load(program: program)
     }
 
-    /// Compile all swatches
+    // MARK: - Compilation
+
     private func compile() throws {
         guard let program = program,
-              let swatches = swatchGraph?.swatches else { return }
+              let swatchGraph = swatchGraph else { return }
 
+        // Reset state
+        inputManager.resetHardwareNeeds()
         compiledUnits = [:]
-        needsCamera = false
-        needsMicrophone = false
 
-        for swatch in swatches {
-            if swatch.backend == MetalBackend.identifier {
-                // Initialize Metal backend if needed
-                if metalBackend == nil {
-                    metalBackend = try MetalBackend()
-                    bufferManager = BufferManager(metalDevice: metalBackend?.device)
+        // Compile all swatches
+        let result = try compilationManager.compile(program: program, swatchGraph: swatchGraph)
+        compiledUnits = result.units
 
-                    // Initialize texture manager
-                    if let device = metalBackend?.device {
-                        textureManager = TextureManager(device: device)
-                        textManager = TextManager(device: device)
-                    }
-                }
-
-                // Load textures from program resources if any
-                if !program.resources.isEmpty, let texMgr = textureManager {
-                    do {
-                        let loadedTextures = try texMgr.loadTextures(
-                            resources: program.resources,
-                            sourceFileURL: sourceFileURL
-                        )
-                        metalBackend?.loadedTextures = loadedTextures
-                        print("Coordinator: Loaded \(loadedTextures.count) textures")
-                    } catch {
-                        print("Coordinator: Warning - texture loading failed: \(error)")
-                    }
-                }
-
-                // Render text textures from textResources if any
-                if !program.textResources.isEmpty, let txtMgr = textManager {
-                    do {
-                        let renderedTexts = try txtMgr.renderTexts(program.textResources)
-                        metalBackend?.textTextures = renderedTexts
-                        print("Coordinator: Rendered \(renderedTexts.count) text textures")
-                    } catch {
-                        print("Coordinator: Warning - text rendering failed: \(error)")
-                    }
-                }
-
-                // Always (re)allocate cache buffers when we have cache descriptors
-                // This handles both initial load and recompiles with new cache nodes
-                if let device = metalBackend?.device, !cacheManager.getDescriptors().isEmpty {
-                    cacheManager.allocateBuffers(
-                        device: device,
-                        width: outputWidth,
-                        height: outputHeight
-                    )
-                }
-
-                // Collect and set input providers for this backend
-                let visualProviders = collectProvidersForBackend(
-                    backendId: MetalBackend.identifier,
-                    swatch: swatch,
-                    program: program
-                )
-                metalBackend!.setInputProviders(visualProviders)
-
-                // Pass cache descriptors to codegen via backend
-                let unit = try metalBackend!.compile(
-                    swatch: swatch,
-                    ir: program,
-                    cacheDescriptors: cacheManager.getDescriptors()
-                )
-                compiledUnits[swatch.id] = unit
-
-                // Check if this unit needs camera or microphone (from usedInputs)
-                if let metalUnit = unit as? MetalCompiledUnit {
-                    if metalUnit.usedInputs.contains("camera") {
-                        needsCamera = true
-                        // Store camera provider reference for backward compatibility
-                        if let camProvider = inputProviders["camera"] as? CameraCapture {
-                            cameraCapture = camProvider
-                        }
-                    }
-                    if metalUnit.usedInputs.contains("microphone") {
-                        needsMicrophone = true
-                        // Store audio provider reference for backward compatibility
-                        if let micProvider = inputProviders["microphone"] as? AudioCapture {
-                            audioCapture = micProvider
-                        }
-                    }
-                }
-
-            } else if swatch.backend == AudioBackend.identifier {
-                // Initialize Audio backend if needed
-                if audioBackend == nil {
-                    audioBackend = AudioBackend()
-
-                    // Initialize sample manager
-                    sampleManager = SampleManager()
-                }
-
-                // Collect and set input providers for this backend
-                let audioProviders = collectProvidersForBackend(
-                    backendId: AudioBackend.identifier,
-                    swatch: swatch,
-                    program: program
-                )
-                audioBackend!.setInputProviders(audioProviders)
-
-                // Track if microphone is needed
-                if audioProviders["microphone"] != nil {
-                    needsMicrophone = true
-                    // Store audio provider reference for backward compatibility
-                    if let micProvider = inputProviders["microphone"] as? AudioCapture {
-                        audioCapture = micProvider
-                    }
-                }
-
-                // Load audio samples from program resources if any
-                if !program.resources.isEmpty, let smpMgr = sampleManager {
-                    do {
-                        let loadedSamples = try smpMgr.loadSamples(
-                            resources: program.resources,
-                            sourceFileURL: sourceFileURL
-                        )
-                        audioBackend?.loadedSamples = loadedSamples
-                        if !loadedSamples.isEmpty {
-                            print("Coordinator: Loaded \(loadedSamples.count) audio samples")
-                        }
-                    } catch {
-                        print("Coordinator: Warning - sample loading failed: \(error)")
-                    }
-                }
-
-                // Pass cache manager to audio backend for shared buffer access
-                let unit = try audioBackend!.compile(
-                    swatch: swatch,
-                    ir: program,
-                    cacheManager: cacheManager
-                )
-                compiledUnits[swatch.id] = unit
-            }
-            // Unknown backend - skip (pure swatches or future backends)
-        }
-
-        // Start camera if needed
-        if needsCamera {
+        // Start hardware capture as needed
+        if result.needsCamera {
             try startCamera()
         } else {
             stopCamera()
         }
 
-        // Start microphone if needed
-        if needsMicrophone {
+        if result.needsMicrophone {
             try startMicrophone()
         } else {
             stopMicrophone()
         }
     }
 
+    // MARK: - Hardware Control
+
     /// Start camera capture
     public func startCamera() throws {
-        guard let device = metalBackend?.device else {
-            print("Coordinator: Cannot start camera - no Metal device")
-            return
-        }
-
-        if cameraCapture == nil {
-            cameraCapture = CameraCapture(device: device)
-            cameraCapture?.delegate = self
-        }
-
-        try cameraCapture?.start()
-        print("Coordinator: Camera started")
+        try inputManager.startCameraIfNeeded()
+        cameraCapture?.delegate = self
     }
 
     /// Stop camera capture
     public func stopCamera() {
-        cameraCapture?.stop()
+        inputManager.stopCamera()
     }
 
     /// Start microphone capture
     public func startMicrophone() throws {
-        guard let device = metalBackend?.device else {
-            print("Coordinator: Cannot start microphone - no Metal device")
-            return
-        }
-
-        if audioCapture == nil {
-            audioCapture = AudioCapture()
-            try audioCapture?.setup(device: device)
-        }
-
-        try audioCapture?.startCapture()
-        print("Coordinator: Microphone started")
+        try inputManager.startMicrophoneIfNeeded()
     }
 
     /// Stop microphone capture
     public func stopMicrophone() {
-        audioCapture?.stopCapture()
+        inputManager.stopMicrophone()
     }
 
     /// Update audio buffer texture (call each frame)
     public func updateAudioTexture() {
-        guard needsMicrophone, let audioCapture = audioCapture else { return }
-        audioCapture.updateTexture()
-        metalBackend?.audioBufferTexture = audioCapture.getTexture()
+        inputManager.updateAudioTextureIfNeeded()
     }
+
+    // MARK: - CameraCaptureDelegate
+
+    public func cameraCapture(_ capture: CameraCapture, didUpdateTexture texture: MTLTexture) {
+        metalBackend?.cameraTexture = texture
+    }
+
+    // MARK: - InputManagerDelegate
+
+    public func inputManagerNeedsMetalDevice(_ manager: InputManager) -> MTLDevice? {
+        compilationManager.getMetalDevice()
+    }
+
+    public func inputManager(_ manager: InputManager, didUpdateCameraTexture texture: MTLTexture) {
+        metalBackend?.cameraTexture = texture
+    }
+
+    public func inputManager(_ manager: InputManager, didUpdateAudioTexture texture: MTLTexture) {
+        metalBackend?.audioBufferTexture = texture
+    }
+
+    // MARK: - CompilationManagerDelegate
+
+    public func compilationManagerNeedsMetalDevice(_ manager: CompilationManager) -> MTLDevice? {
+        manager.metalBackend?.device
+    }
+
+    public func compilationManager(
+        _ manager: CompilationManager,
+        needsTextureManagerWithDevice device: MTLDevice
+    ) -> TextureManager {
+        if _textureManager == nil {
+            _textureManager = TextureManager(device: device)
+        }
+        return _textureManager!
+    }
+
+    public func compilationManager(
+        _ manager: CompilationManager,
+        needsTextManagerWithDevice device: MTLDevice
+    ) -> TextManager {
+        if _textManager == nil {
+            _textManager = TextManager(device: device)
+        }
+        return _textManager!
+    }
+
+    public func compilationManagerNeedsSampleManager(_ manager: CompilationManager) -> SampleManager {
+        if _sampleManager == nil {
+            _sampleManager = SampleManager()
+        }
+        return _sampleManager!
+    }
+
+    public func compilationManager(
+        _ manager: CompilationManager,
+        needsProvidersForBackend backendId: String,
+        swatch: Swatch,
+        program: IRProgram
+    ) -> [String: any InputProvider] {
+        inputManager.collectProvidersForBackend(
+            backendId: backendId,
+            swatch: swatch,
+            program: program
+        )
+    }
+
+    // MARK: - Execution
 
     /// Execute one frame
     public func executeFrame(time: Double) {
@@ -426,7 +327,6 @@ public class Coordinator: CameraCaptureDelegate {
         for swatch in swatches {
             guard let unit = compiledUnits[swatch.id] else { continue }
 
-            // Get input/output buffers
             let inputs = bufferManager.getBuffers(names: swatch.inputBuffers)
             let outputs = bufferManager.getBuffers(names: swatch.outputBuffers)
 
@@ -445,16 +345,13 @@ public class Coordinator: CameraCaptureDelegate {
         // Update audio texture each frame
         updateAudioTexture()
 
-        // Resize cache buffers if needed (drawable size might differ from default)
-        let newWidth = drawable.texture.width
-        let newHeight = drawable.texture.height
-        if newWidth != outputWidth || newHeight != outputHeight {
-            outputWidth = newWidth
-            outputHeight = newHeight
-            cacheManager.resizeBuffers(width: newWidth, height: newHeight)
-        }
+        // Update dimensions
+        compilationManager.setOutputDimensions(
+            width: drawable.texture.width,
+            height: drawable.texture.height
+        )
 
-        // Find visual sink swatch
+        // Find visual sink swatch and render
         for swatch in swatches where swatch.backend == MetalBackend.identifier && swatch.isSink {
             if let unit = compiledUnits[swatch.id] {
                 metalBackend?.render(unit: unit, to: drawable, time: time, cacheManager: cacheManager)
@@ -465,14 +362,15 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Get the Metal backend for MTKView integration
     public func getMetalBackend() -> MetalBackend? {
-        return metalBackend
+        metalBackend
     }
+
+    // MARK: - Audio Playback
 
     /// Start audio playback
     public func startAudio() throws {
         guard let swatches = swatchGraph?.swatches else { return }
 
-        // Find audio sink swatch
         for swatch in swatches where swatch.backend == AudioBackend.identifier && swatch.isSink {
             if let unit = compiledUnits[swatch.id] {
                 try audioBackend?.start(unit: unit, time: time)
@@ -486,6 +384,8 @@ public class Coordinator: CameraCaptureDelegate {
         audioBackend?.stop()
     }
 
+    // MARK: - Lifecycle
+
     /// Start the coordinator (visual + audio)
     public func start() throws {
         isRunning = true
@@ -496,18 +396,14 @@ public class Coordinator: CameraCaptureDelegate {
     public func stop() {
         isRunning = false
         stopAudio()
-        stopCamera()
-        stopMicrophone()
+        inputManager.stopAll()
     }
 
     // MARK: - Dev Mode Accessors
 
     /// Get compiled shader source for a swatch (for dev mode)
     public func getCompiledShaderSource(for swatchId: UUID) -> String? {
-        guard let unit = compiledUnits[swatchId] as? MetalCompiledUnit else {
-            return nil
-        }
-        return unit.shaderSource
+        (compiledUnits[swatchId] as? MetalCompiledUnit)?.shaderSource
     }
 
     /// Get all compiled shader sources (for dev mode)
@@ -523,32 +419,30 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Get cache descriptors (for dev mode)
     public func getCacheDescriptors() -> [CacheNodeDescriptor]? {
-        return cacheManager.getDescriptors()
+        cacheManager.getDescriptors()
     }
 
     /// Get compiled units info (for dev mode)
     public func getCompiledUnitsInfo() -> [(swatchId: UUID, backend: String, usedInputs: Set<String>)] {
-        var info: [(UUID, String, Set<String>)] = []
-        for (id, unit) in compiledUnits {
+        compiledUnits.map { id, unit in
             if let metalUnit = unit as? MetalCompiledUnit {
-                info.append((id, MetalBackend.identifier, metalUnit.usedInputs))
+                return (id, MetalBackend.identifier, metalUnit.usedInputs)
             } else {
-                info.append((id, AudioBackend.identifier, []))
+                return (id, AudioBackend.identifier, [])
             }
         }
-        return info
     }
 
     // MARK: - Resource Loading Status
 
     /// Get any texture loading errors
     public func getTextureLoadErrors() -> [Int: (path: String, error: TextureError)]? {
-        return textureManager?.loadErrors
+        textureManager?.loadErrors
     }
 
     /// Get any sample loading errors
     public func getSampleLoadErrors() -> [Int: (path: String, error: SampleError)]? {
-        return sampleManager?.loadErrors
+        sampleManager?.loadErrors
     }
 
     /// Get a formatted string describing all resource loading errors
@@ -574,6 +468,18 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Get documentation for a spindle or builtin by name
     public func documentation(for name: String) -> SpindleDoc? {
-        return docManager.documentation(for: name)
+        docManager.documentation(for: name)
+    }
+
+    // MARK: - Input Provider Registration (Backward Compatibility)
+
+    /// Register an input provider
+    public func registerInputProvider(_ provider: any InputProvider) {
+        inputManager.register(provider)
+    }
+
+    /// Get typed input provider by builtin name
+    public func inputProvider<T: InputProvider>(for builtinName: String) -> T? {
+        inputManager.provider(for: builtinName)
     }
 }
