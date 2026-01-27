@@ -967,93 +967,26 @@ struct CodeEditor: NSViewRepresentable {
 class FocusableTextView: NSTextView {
     override var acceptsFirstResponder: Bool { true }
 
-    // Hover documentation state
-    private var trackingArea: NSTrackingArea?
-    private var hoverTimer: Timer?
+    // Documentation popover state
     private var docPopover: NSPopover?
-    private var lastHoveredWord: String?
-    private var lastMouseLocation: NSPoint?
-
-    private static let hoverDelay: TimeInterval = 0.5  // 500ms
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        // Set up tracking area when view is added to window
-        if window != nil {
-            updateTrackingAreas()
-        }
-    }
 
     override func becomeFirstResponder() -> Bool {
         super.becomeFirstResponder()
     }
 
     override func mouseDown(with event: NSEvent) {
+        // Check for Option+Click to show documentation
+        if event.modifierFlags.contains(.option) {
+            let point = convert(event.locationInWindow, from: nil)
+            if let word = wordAtPoint(point), !word.isEmpty {
+                showDocumentationPopover(for: word, at: point)
+                return  // Don't pass to super - we handled it
+            }
+        }
+
         super.mouseDown(with: event)
         window?.makeFirstResponder(self)
         dismissPopover()
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-
-        // Remove old tracking area
-        if let existing = trackingArea {
-            removeTrackingArea(existing)
-        }
-
-        // Add new tracking area covering the entire view
-        trackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        if let area = trackingArea {
-            addTrackingArea(area)
-        }
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-
-        let point = convert(event.locationInWindow, from: nil)
-        lastMouseLocation = point
-
-        // Cancel any pending hover timer
-        hoverTimer?.invalidate()
-        hoverTimer = nil
-
-        // Get the word at this position
-        guard let word = wordAtPoint(point), !word.isEmpty else {
-            dismissPopover()
-            lastHoveredWord = nil
-            return
-        }
-
-
-        // If hovering over a different word, dismiss current popover and start new timer
-        if word != lastHoveredWord {
-            dismissPopover()
-            lastHoveredWord = word
-
-            // Start timer to show popover on main thread
-            let wordToShow = word
-            hoverTimer = Timer.scheduledTimer(withTimeInterval: Self.hoverDelay, repeats: false) { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.showDocumentationPopover(for: wordToShow)
-                }
-            }
-            // Ensure timer fires even when mouse tracking
-            RunLoop.main.add(hoverTimer!, forMode: .common)
-        }
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        super.mouseExited(with: event)
-        hoverTimer?.invalidate()
-        dismissPopover()
-        lastHoveredWord = nil
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -1062,8 +995,11 @@ class FocusableTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Escape dismisses popover
+        if event.keyCode == 53 {  // Escape key
+            dismissPopover()
+        }
         super.keyDown(with: event)
-        dismissPopover()
     }
 
     // MARK: - Word Detection
@@ -1100,13 +1036,10 @@ class FocusableTextView: NSTextView {
 
     // MARK: - Popover Management
 
-    // TODO: Hover documentation popover not working - NSTrackingArea mouseMoved events
-    // not firing in NSViewRepresentable-wrapped NSTextView. Needs investigation.
-    // The infrastructure is in place (DocParser, SpindleDocManager, BuiltinDocs).
-    // See to-do/hover-documentation.md for details.
-    private func showDocumentationPopover(for word: String) {
+    /// Shows documentation popover for a spindle/builtin at the given click position.
+    /// Trigger: Option+Click on a word in the editor.
+    private func showDocumentationPopover(for word: String, at point: NSPoint) {
         guard let doc = SpindleDocManager.shared.documentation(for: word) else { return }
-        guard let point = lastMouseLocation else { return }
 
         // Create popover content
         let contentView = DocumentationPopoverView(doc: doc)
@@ -1124,7 +1057,7 @@ class FocusableTextView: NSTextView {
         popover.behavior = .transient
         popover.animates = true
 
-        // Calculate rect at cursor position
+        // Calculate rect at click position
         let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
 
         popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
