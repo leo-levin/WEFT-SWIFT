@@ -1353,7 +1353,7 @@ private struct StrandInfoPopoverView: View {
             }
         }
         .padding(10)
-        .frame(maxWidth: 320)
+        .frame(maxWidth: 600)
     }
 
     /// For named strands show "name = ", for numeric strands (tags) show nothing.
