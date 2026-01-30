@@ -108,6 +108,9 @@ public indirect enum Expr: Equatable {
 
     // Range expression: start..end (used in patterns)
     case rangeExpr(RangeExpr)
+
+    // Tag expression: $name(expr) - desugared before lowering
+    case tagExpr(TagExpr)
 }
 
 // MARK: - Strand Access
@@ -233,6 +236,17 @@ public struct RemapArg: Equatable {
     }
 }
 
+// MARK: - Tag Expression
+
+public struct TagExpr: Equatable {
+    public let name: String   // includes $ prefix, e.g. "$speed"
+    public let expr: Expr
+    public init(name: String, expr: Expr) {
+        self.name = name
+        self.expr = expr
+    }
+}
+
 // MARK: - Chain Expression
 
 public struct ChainExpr: Equatable {
@@ -309,6 +323,8 @@ extension Expr: CustomStringConvertible {
             let start = range.start.map { String($0) } ?? ""
             let end = range.end.map { String($0) } ?? ""
             return "\(start)..\(end)"
+        case .tagExpr(let tag):
+            return "\(tag.name)(\(tag.expr))"
         }
     }
 }

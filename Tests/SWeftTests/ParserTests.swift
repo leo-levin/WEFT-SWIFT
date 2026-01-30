@@ -717,4 +717,205 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(img.strands[1].name, "1")
         XCTAssertEqual(img.strands[2].name, "2")
     }
+
+    // MARK: - Tag Expression Tests
+
+    func testTokenizeDollarIdentifier() throws {
+        let source = "$speed"
+        let tokenizer = WeftTokenizer(source: source)
+        let tokens = try tokenizer.tokenize()
+
+        XCTAssertEqual(tokens.count, 2)  // $speed + eof
+        XCTAssertEqual(tokens[0].token, .identifier("$speed"))
+        XCTAssertEqual(tokens[0].text, "$speed")
+    }
+
+    func testTokenizeDollarIdentifierInContext() throws {
+        let source = "foo * $speed + bar"
+        let tokenizer = WeftTokenizer(source: source)
+        let tokens = try tokenizer.tokenize()
+
+        // foo, *, $speed, +, bar, eof
+        XCTAssertEqual(tokens.count, 6)
+        XCTAssertEqual(tokens[0].token, .identifier("foo"))
+        XCTAssertEqual(tokens[1].token, .star)
+        XCTAssertEqual(tokens[2].token, .identifier("$speed"))
+        XCTAssertEqual(tokens[3].token, .plus)
+        XCTAssertEqual(tokens[4].token, .identifier("bar"))
+    }
+
+    func testParseTagDefinition() throws {
+        let source = "bar[x] = $speed(12)"
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .bundleDecl(let decl) = program.statements[0] else {
+            XCTFail("Expected bundle declaration")
+            return
+        }
+
+        guard case .tagExpr(let tag) = decl.expr else {
+            XCTFail("Expected tag expression, got \(decl.expr)")
+            return
+        }
+
+        XCTAssertEqual(tag.name, "$speed")
+        guard case .number(12) = tag.expr else {
+            XCTFail("Expected number 12 inside tag")
+            return
+        }
+    }
+
+    func testParseBareTagReference() throws {
+        let source = "bar[x] = $speed"
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .bundleDecl(let decl) = program.statements[0] else {
+            XCTFail("Expected bundle declaration")
+            return
+        }
+
+        guard case .identifier(let name) = decl.expr else {
+            XCTFail("Expected identifier, got \(decl.expr)")
+            return
+        }
+
+        XCTAssertEqual(name, "$speed")
+    }
+
+    func testParseTagInRemap() throws {
+        let source = "a.v = b.v($speed ~ 20)"
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .bundleDecl(let decl) = program.statements[0] else {
+            XCTFail("Expected bundle declaration")
+            return
+        }
+
+        guard case .remapExpr(let remap) = decl.expr else {
+            XCTFail("Expected remap expression, got \(decl.expr)")
+            return
+        }
+
+        XCTAssertEqual(remap.remappings.count, 1)
+        // $speed shorthand should desugar to $speed.0
+        XCTAssertEqual(remap.remappings[0].domain.bundle, .named("$speed"))
+        XCTAssertEqual(remap.remappings[0].domain.accessor, .index(0))
+    }
+
+    func testDesugarTagExpressions() throws {
+        let source = """
+        a.v = 1.0
+        bar[x] = a.v * $speed(12) + $speed
+        """
+        let parser = try WeftParser(source: source)
+        let ast = try parser.parse()
+
+        let desugar = WeftDesugar()
+        let desugared = desugar.desugar(ast)
+
+        // Should have 3 statements: synthetic $speed bundle + 2 originals
+        XCTAssertEqual(desugared.statements.count, 3)
+
+        // First statement should be synthetic $speed[0] = 12
+        guard case .bundleDecl(let syntheticDecl) = desugared.statements[0] else {
+            XCTFail("Expected synthetic bundle declaration")
+            return
+        }
+        XCTAssertEqual(syntheticDecl.name, "$speed")
+        XCTAssertEqual(syntheticDecl.outputs, [.index(0)])
+        guard case .number(12) = syntheticDecl.expr else {
+            XCTFail("Expected number 12 in synthetic bundle")
+            return
+        }
+
+        // Third statement (bar) should have tag references rewritten to strand access
+        guard case .bundleDecl(let barDecl) = desugared.statements[2] else {
+            XCTFail("Expected bar bundle declaration")
+            return
+        }
+        XCTAssertEqual(barDecl.name, "bar")
+
+        // The expression should be a.v * $speed.0 + $speed.0
+        // (binaryOp: add of (binaryOp: mul of a.v, $speed.0) and $speed.0)
+        guard case .binaryOp(let addOp) = barDecl.expr else {
+            XCTFail("Expected binary op at top level, got \(barDecl.expr)")
+            return
+        }
+        XCTAssertEqual(addOp.op, .add)
+
+        // Right side should be $speed.0
+        guard case .strandAccess(let rightAccess) = addOp.right else {
+            XCTFail("Expected strand access for bare $speed, got \(addOp.right)")
+            return
+        }
+        XCTAssertEqual(rightAccess.bundle, .named("$speed"))
+        XCTAssertEqual(rightAccess.accessor, .index(0))
+    }
+
+    func testEndToEndTagCompilation() throws {
+        let source = """
+        a.v = 1.0
+        bar[x] = a.v * $speed(12) + $speed
+        display[r,g,b] = [bar.x, bar.x, bar.x]
+        """
+        let parser = try WeftParser(source: source)
+        let ast = try parser.parse()
+
+        let desugar = WeftDesugar()
+        let desugared = desugar.desugar(ast)
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(desugared)
+
+        // Should have bundles: $speed, a, bar, display
+        XCTAssertNotNil(ir.bundles["$speed"])
+        XCTAssertNotNil(ir.bundles["a"])
+        XCTAssertNotNil(ir.bundles["bar"])
+        XCTAssertNotNil(ir.bundles["display"])
+
+        // $speed should have 1 strand with value 12
+        let speed = ir.bundles["$speed"]!
+        XCTAssertEqual(speed.strands.count, 1)
+        if case .num(12) = speed.strands[0].expr {
+            // OK
+        } else {
+            XCTFail("Expected num(12) for $speed strand, got \(speed.strands[0].expr)")
+        }
+
+        // bar should reference $speed
+        let bar = ir.bundles["bar"]!
+        XCTAssertEqual(bar.strands.count, 1)
+    }
+
+    func testEndToEndTagViaCompiler() throws {
+        let compiler = WeftCompiler()
+        let source = """
+        bar[x] = sin(me.x * $freq(5.0)) * $amp(0.5)
+        display[r,g,b] = [bar.x, bar.x, bar.x]
+        """
+        let ir = try compiler.compile(source)
+
+        // Should have $amp, $freq, bar, display bundles
+        XCTAssertNotNil(ir.bundles["$amp"])
+        XCTAssertNotNil(ir.bundles["$freq"])
+        XCTAssertNotNil(ir.bundles["bar"])
+        XCTAssertNotNil(ir.bundles["display"])
+
+        // $freq should have value 5.0
+        let freq = ir.bundles["$freq"]!
+        XCTAssertEqual(freq.strands.count, 1)
+        if case .num(5.0) = freq.strands[0].expr {} else {
+            XCTFail("Expected num(5.0) for $freq")
+        }
+
+        // $amp should have value 0.5
+        let amp = ir.bundles["$amp"]!
+        XCTAssertEqual(amp.strands.count, 1)
+        if case .num(0.5) = amp.strands[0].expr {} else {
+            XCTFail("Expected num(0.5) for $amp")
+        }
+    }
 }

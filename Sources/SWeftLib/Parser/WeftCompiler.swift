@@ -91,9 +91,13 @@ public class WeftCompiler {
             let parser = WeftParser(tokens: tokens)
             let ast = try parser.parse()
 
+            // Desugar tag expressions into synthetic bundles
+            let desugar = WeftDesugar()
+            let desugaredAST = desugar.desugar(ast)
+
             // Lower to IR
             let lowering = WeftLowering()
-            return try lowering.lower(ast)
+            return try lowering.lower(desugaredAST)
 
         } catch let error as PreprocessorError {
             throw WeftCompileError.preprocessorFailed(error)

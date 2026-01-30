@@ -255,7 +255,7 @@ public class WeftTokenizer {
         }
 
         // Identifier or keyword
-        if char.isLetter || char == "_" {
+        if char.isLetter || char == "_" || char == "$" {
             return scanIdentifier(startLocation: startLocation)
         }
 
@@ -442,10 +442,19 @@ public class WeftTokenizer {
 
     private func scanIdentifier(startLocation: SourceLocation) -> LocatedToken {
         var text = ""
+        var isFirst = true
 
-        while let char = currentChar, char.isLetter || char.isNumber || char == "_" {
+        while let char = currentChar {
+            if isFirst && char == "$" {
+                text.append(char)
+                advance()
+                isFirst = false
+                continue
+            }
+            guard char.isLetter || char.isNumber || char == "_" else { break }
             text.append(char)
             advance()
+            isFirst = false
         }
 
         // Check if it's a keyword
