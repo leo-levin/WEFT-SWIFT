@@ -555,17 +555,26 @@ extension NSColor {
         self.init(red: r, green: g, blue: b, alpha: 1.0)
     }
 
-    // WEFT syntax colors based on VS Code Dark Modern
-    static let weftKeyword = NSColor(hex: "#c586c0")       // purple
-    static let weftString = NSColor(hex: "#ce9178")        // orange
-    static let weftNumber = NSColor(hex: "#d4d4d4")        // light gray (subtle)
-    static let weftComment = NSColor(hex: "#6a9955")       // green
-    static let weftIdentifier = NSColor(hex: "#dcdcaa")    // yellow/gold
-    static let weftBundle = NSColor(hex: "#569cd6")        // blue
-    static let weftStrand = NSColor(hex: "#9cdcfe")        // lighter blue
-    static let weftChain = NSColor(hex: "#4ec9b0")         // teal
-    static let weftOperator = NSColor(hex: "#d4d4d4")      // light gray
-    static let weftTagSigil = NSColor(hex: "#baba73")     // muted yellow-green
+    /// Creates an adaptive color that resolves dynamically based on system appearance.
+    static func adaptive(light: String, dark: String) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor(hex: dark)
+                : NSColor(hex: light)
+        }
+    }
+
+    // WEFT syntax colors (dark theme - editor forces dark appearance)
+    static let weftKeyword    = NSColor(hex: "#c586c0")
+    static let weftString     = NSColor(hex: "#ce9178")
+    static let weftNumber     = NSColor(hex: "#d4d4d4")
+    static let weftComment    = NSColor(hex: "#6a9955")
+    static let weftIdentifier = NSColor(hex: "#dcdcaa")
+    static let weftBundle     = NSColor(hex: "#569cd6")
+    static let weftStrand     = NSColor(hex: "#9cdcfe")
+    static let weftChain      = NSColor(hex: "#4ec9b0")
+    static let weftOperator   = NSColor(hex: "#d4d4d4")
+    static let weftTagSigil   = NSColor(hex: "#baba73")
 }
 
 // MARK: - Syntax Highlighter

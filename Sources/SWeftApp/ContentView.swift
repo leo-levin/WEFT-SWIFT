@@ -792,6 +792,9 @@ struct CodeEditor: NSViewRepresentable {
         textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
 
+        // Force dark appearance so syntax colors always render on dark background
+        scrollView.appearance = NSAppearance(named: .darkAqua)
+
         return scrollView
     }
 
@@ -1008,6 +1011,7 @@ class FocusableTextView: NSTextView {
         popover.contentViewController?.view = hostingView
         popover.behavior = .transient
         popover.animates = true
+        popover.appearance = NSAppearance(named: .darkAqua)
 
         // Calculate rect at click position
         let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
@@ -1056,6 +1060,7 @@ class FocusableTextView: NSTextView {
         popover.contentViewController?.view = hostingView
         popover.behavior = .transient
         popover.animates = true
+        popover.appearance = NSAppearance(named: .darkAqua)
 
         let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
         popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)

@@ -516,41 +516,50 @@ struct SyntaxHighlightedCode: View {
         return result
     }
 
+    // Metal syntax colors - adaptive for light/dark mode
+    private static let metalKeyword   = NSColor.adaptive(light: "#af00db", dark: "#c485c4")
+    private static let metalType      = NSColor.adaptive(light: "#0000ff", dark: "#579cd6")
+    private static let metalBuiltin   = NSColor.adaptive(light: "#267f99", dark: "#4fc9b0")
+    private static let metalNumber    = NSColor.adaptive(light: "#098658", dark: "#b5d6a8")
+    private static let metalComment   = NSColor.adaptive(light: "#008000", dark: "#6b9954")
+    private static let metalString    = NSColor.adaptive(light: "#a31515", dark: "#cf917a")
+    private static let metalAttribute = NSColor.adaptive(light: "#795e26", dark: "#dbdbab")
+
     private func highlightMetalSyntax(_ attributed: inout AttributedString) {
         let sourceString = source
 
         // Keywords (purple/magenta)
         let keywords = ["kernel", "void", "return", "if", "else", "for", "while", "struct", "constant", "device", "texture2d", "sampler", "float", "float2", "float3", "float4", "int", "int2", "uint", "uint2", "half", "half3", "half4", "bool", "using", "namespace", "metal", "access", "read", "write", "sample", "thread_position_in_grid"]
         for keyword in keywords {
-            highlightPattern("\\b\(keyword)\\b", in: &attributed, source: sourceString, color: NSColor(red: 0.77, green: 0.52, blue: 0.77, alpha: 1.0)) // purple
+            highlightPattern("\\b\(keyword)\\b", in: &attributed, source: sourceString, color: Self.metalKeyword)
         }
 
         // Types (blue)
         let types = ["Uniforms", "MTLTexture", "MTLBuffer"]
         for type in types {
-            highlightPattern("\\b\(type)\\b", in: &attributed, source: sourceString, color: NSColor(red: 0.34, green: 0.61, blue: 0.84, alpha: 1.0)) // blue
+            highlightPattern("\\b\(type)\\b", in: &attributed, source: sourceString, color: Self.metalType)
         }
 
         // Built-in functions (cyan/teal)
         let builtins = ["sin", "cos", "tan", "abs", "floor", "ceil", "sqrt", "pow", "min", "max", "clamp", "mix", "step", "smoothstep", "fract", "fmod", "normalize", "length", "dot", "cross", "saturate"]
         for builtin in builtins {
-            highlightPattern("\\b\(builtin)\\b(?=\\s*\\()", in: &attributed, source: sourceString, color: NSColor(red: 0.31, green: 0.79, blue: 0.69, alpha: 1.0)) // teal
+            highlightPattern("\\b\(builtin)\\b(?=\\s*\\()", in: &attributed, source: sourceString, color: Self.metalBuiltin)
         }
 
         // Numbers (light green)
-        highlightPattern("\\b\\d+\\.?\\d*f?\\b", in: &attributed, source: sourceString, color: NSColor(red: 0.71, green: 0.84, blue: 0.66, alpha: 1.0))
+        highlightPattern("\\b\\d+\\.?\\d*f?\\b", in: &attributed, source: sourceString, color: Self.metalNumber)
 
         // Comments (green)
-        highlightPattern("//.*$", in: &attributed, source: sourceString, color: NSColor(red: 0.42, green: 0.60, blue: 0.33, alpha: 1.0), options: [.anchorsMatchLines])
+        highlightPattern("//.*$", in: &attributed, source: sourceString, color: Self.metalComment, options: [.anchorsMatchLines])
 
-        // Strings (orange) - unlikely in Metal but just in case
-        highlightPattern("\"[^\"]*\"", in: &attributed, source: sourceString, color: NSColor(red: 0.81, green: 0.57, blue: 0.48, alpha: 1.0))
+        // Strings (orange)
+        highlightPattern("\"[^\"]*\"", in: &attributed, source: sourceString, color: Self.metalString)
 
         // Preprocessor directives (magenta)
-        highlightPattern("^\\s*#\\w+", in: &attributed, source: sourceString, color: NSColor(red: 0.77, green: 0.52, blue: 0.77, alpha: 1.0), options: [.anchorsMatchLines])
+        highlightPattern("^\\s*#\\w+", in: &attributed, source: sourceString, color: Self.metalKeyword, options: [.anchorsMatchLines])
 
         // Attributes like [[texture(0)]] (yellow)
-        highlightPattern("\\[\\[[^\\]]+\\]\\]", in: &attributed, source: sourceString, color: NSColor(red: 0.86, green: 0.86, blue: 0.67, alpha: 1.0))
+        highlightPattern("\\[\\[[^\\]]+\\]\\]", in: &attributed, source: sourceString, color: Self.metalAttribute)
     }
 
     private func highlightPattern(_ pattern: String, in attributed: inout AttributedString, source: String, color: NSColor, options: NSRegularExpression.Options = []) {
