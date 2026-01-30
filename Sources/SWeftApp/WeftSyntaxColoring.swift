@@ -38,6 +38,8 @@ enum TokenType {
     case comma             // ,
     case equals            // =
 
+    case tagSigil          // $ prefix on tag names
+
     case whitespace
     case newline
     case unknown
@@ -145,6 +147,12 @@ class WeftTokenizer {
         }
 
         // Identifier or keyword
+        // Tag sigil: $ emitted as its own bundle-colored token
+        if char == "$" {
+            advance()
+            return makeToken(type: .tagSigil, text: "$", startOffset: startOffset)
+        }
+
         if char.isLetter || char == "_" {
             return scanIdentifierOrKeyword(startOffset: startOffset)
         }
@@ -357,7 +365,30 @@ class WeftTokenProcessor {
         // First pass: handle strands and accessors
         let firstPass = processStrandsAndAccessors(tokens)
         // Second pass: handle range numbers
-        return processRangeNumbers(firstPass)
+        let secondPass = processRangeNumbers(firstPass)
+        // Third pass: recolor tag names after $
+        return processTagNames(secondPass)
+    }
+
+    private func processTagNames(_ tokens: [Token]) -> [Token] {
+        var result: [Token] = []
+        var afterDollar = false
+
+        for token in tokens {
+            if token.type == .tagSigil {
+                afterDollar = true
+                result.append(token)
+            } else if afterDollar && (token.type == .identifier || token.type == .bundleName) {
+                // Name after $ gets regular identifier color (yellow)
+                result.append(Token(type: .identifier, text: token.text, range: token.range))
+                afterDollar = false
+            } else {
+                afterDollar = false
+                result.append(token)
+            }
+        }
+
+        return result
     }
 
     private func processRangeNumbers(_ tokens: [Token]) -> [Token] {
@@ -534,6 +565,7 @@ extension NSColor {
     static let weftStrand = NSColor(hex: "#9cdcfe")        // lighter blue
     static let weftChain = NSColor(hex: "#4ec9b0")         // teal
     static let weftOperator = NSColor(hex: "#d4d4d4")      // light gray
+    static let weftTagSigil = NSColor(hex: "#baba73")     // muted yellow-green
 }
 
 // MARK: - Syntax Highlighter
@@ -599,10 +631,14 @@ class WeftSyntaxHighlighter {
             return .weftComment
         case .chain, .range:
             return .weftChain
+        case .tagSigil:
+            return .weftTagSigil
         case .arithmeticOp, .comparisonOp, .logicalOp, .paren, .comma, .equals:
             return .weftOperator
-        case .whitespace, .newline, .unknown:
+        case .whitespace, .newline:
             return nil
+        case .unknown:
+            return .weftOperator
         }
     }
 }
