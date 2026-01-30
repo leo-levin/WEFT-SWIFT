@@ -172,7 +172,7 @@ struct ContentView: View {
 
     private var editorSection: some View {
         VStack(spacing: 0) {
-            CodeEditor(text: $viewModel.sourceCode)
+            CodeEditor(text: $viewModel.sourceCode, irProgram: viewModel.coordinator.program)
                 .id(viewModel.editorID)
                 .onChange(of: viewModel.sourceCode) { _, _ in
                     viewModel.hasError = false
@@ -744,6 +744,7 @@ class WeftViewModel: ObservableObject {
 
 struct CodeEditor: NSViewRepresentable {
     @Binding var text: String
+    var irProgram: IRProgram?
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = FocusableTextView()
@@ -768,6 +769,7 @@ struct CodeEditor: NSViewRepresentable {
 
         textView.delegate = context.coordinator
         textView.string = text
+        textView.irProgram = irProgram
 
         // Apply initial syntax highlighting
         DispatchQueue.main.async {
@@ -794,7 +796,8 @@ struct CodeEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = nsView.documentView as? NSTextView else { return }
+        guard let textView = nsView.documentView as? FocusableTextView else { return }
+        textView.irProgram = irProgram
         if textView.string != text && !context.coordinator.isEditing {
             let selectedRanges = textView.selectedRanges
             textView.string = text
@@ -846,6 +849,9 @@ struct CodeEditor: NSViewRepresentable {
 class FocusableTextView: NSTextView {
     override var acceptsFirstResponder: Bool { true }
 
+    // IR data for strand info popovers
+    var irProgram: IRProgram?
+
     // Documentation popover state
     private var docPopover: NSPopover?
 
@@ -854,12 +860,21 @@ class FocusableTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Check for Option+Click to show documentation
+        // Check for Option+Click to show documentation or strand info
         if event.modifierFlags.contains(.option) {
             let point = convert(event.locationInWindow, from: nil)
-            if let word = wordAtPoint(point), !word.isEmpty {
+
+            // Try spindle/builtin documentation first
+            if let word = wordAtPoint(point), !word.isEmpty,
+               SpindleDocManager.shared.documentation(for: word) != nil {
                 showDocumentationPopover(for: word, at: point)
-                return  // Don't pass to super - we handled it
+                return
+            }
+
+            // Try strand info from compiled IR
+            if let context = bundleContextAtPoint(point),
+               showStrandInfoPopover(for: context, at: point) {
+                return
             }
         }
 
@@ -913,6 +928,64 @@ class FocusableTextView: NSTextView {
         return nsString.substring(with: wordRange)
     }
 
+    /// Detect a bundle[.strand] token at the given point, including $-prefixed names.
+    /// Scans for tokens containing alphanumerics, underscores, `$`, and `.` separators.
+    private func bundleContextAtPoint(_ point: NSPoint) -> (bundle: String, strand: String?)? {
+        guard let layoutManager = layoutManager,
+              let textContainer = textContainer else { return nil }
+
+        let textContainerOffset = textContainerOrigin
+        let locationInTextContainer = NSPoint(
+            x: point.x - textContainerOffset.x,
+            y: point.y - textContainerOffset.y
+        )
+
+        var fraction: CGFloat = 0
+        let charIndex = layoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: &fraction
+        )
+
+        guard charIndex < string.count else { return nil }
+        let nsString = string as NSString
+        let tokenChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_$."))
+
+        let char = nsString.character(at: charIndex)
+        guard let scalar = Unicode.Scalar(char), tokenChars.contains(scalar) else { return nil }
+
+        // Scan backward to find token start
+        var start = charIndex
+        while start > 0 {
+            let prevChar = nsString.character(at: start - 1)
+            guard let prevScalar = Unicode.Scalar(prevChar), tokenChars.contains(prevScalar) else { break }
+            start -= 1
+        }
+
+        // Scan forward to find token end
+        var end = charIndex
+        while end < nsString.length - 1 {
+            let nextChar = nsString.character(at: end + 1)
+            guard let nextScalar = Unicode.Scalar(nextChar), tokenChars.contains(nextScalar) else { break }
+            end += 1
+        }
+
+        let token = nsString.substring(with: NSRange(location: start, length: end - start + 1))
+        guard !token.isEmpty else { return nil }
+
+        // Split on first dot to get bundle[.strand]
+        let parts = token.split(separator: ".", maxSplits: 1).map(String.init)
+        guard let bundle = parts.first, !bundle.isEmpty else { return nil }
+
+        // Filter out number literals (e.g., 0.5, 42)
+        if !bundle.hasPrefix("$") && bundle.allSatisfy({ $0.isNumber }) {
+            return nil
+        }
+
+        let strand: String? = parts.count > 1 ? parts[1] : nil
+        return (bundle: bundle, strand: strand)
+    }
+
     // MARK: - Popover Management
 
     /// Shows documentation popover for a spindle/builtin at the given click position.
@@ -941,6 +1014,65 @@ class FocusableTextView: NSTextView {
 
         popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
         docPopover = popover
+    }
+
+    /// Shows strand dependency/remappability popover for a bundle from the compiled IR.
+    /// Trigger: Option+Click on a bundle name when no spindle doc matches.
+    @discardableResult
+    private func showStrandInfoPopover(for context: (bundle: String, strand: String?), at point: NSPoint) -> Bool {
+        guard context.bundle != "me",
+              let program = irProgram,
+              let bundle = program.bundles[context.bundle] else { return false }
+
+        // Collect free variables from all strand expressions
+        var allFreeVars = Set<String>()
+        for strand in bundle.strands {
+            allFreeVars.formUnion(strand.expr.freeVars())
+        }
+
+        // Partition into dependencies and remappable coordinates
+        var dependencies = [String]()
+        var remappable = Set<String>()
+
+        for v in allFreeVars {
+            if v.hasPrefix("me.") {
+                remappable.insert(v)
+            } else if v.hasPrefix("$") {
+                dependencies.append(v)
+                // Tag name (without strand index) is also remappable
+                if let tagName = v.split(separator: ".").first {
+                    remappable.insert(String(tagName))
+                }
+            } else {
+                dependencies.append(v)
+            }
+        }
+
+        let info = StrandInfo(
+            bundleName: context.bundle,
+            strandNames: bundle.strands.map { $0.name },
+            dependencies: dependencies.sorted(),
+            remappable: remappable.sorted()
+        )
+
+        // Create popover
+        let contentView = StrandInfoPopoverView(info: info)
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = NSRect(origin: .zero, size: fittingSize)
+
+        let popover = NSPopover()
+        popover.contentViewController = NSViewController()
+        popover.contentViewController?.view = hostingView
+        popover.behavior = .transient
+        popover.animates = true
+
+        let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
+        popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
+        docPopover = popover
+
+        return true
     }
 
     private func dismissPopover() {
@@ -1044,6 +1176,67 @@ struct DocumentationPopoverView: View {
                     .padding(4)
                     .background(Color.black.opacity(0.1))
                     .cornerRadius(4)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: 320)
+    }
+}
+
+// MARK: - Strand Info
+
+private struct StrandInfo {
+    let bundleName: String
+    let strandNames: [String]
+    let dependencies: [String]
+    let remappable: [String]
+
+    var headerText: String {
+        if strandNames.count == 1 {
+            return "\(bundleName).\(strandNames[0])"
+        }
+        return "\(bundleName)[\(strandNames.joined(separator: ", "))]"
+    }
+}
+
+// MARK: - Strand Info Popover View
+
+private struct StrandInfoPopoverView: View {
+    let info: StrandInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Remappable coordinates/tags
+            if !info.remappable.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Remappable")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(info.remappable.joined(separator: ", "))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.cyan)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            // Dependencies
+            if !info.dependencies.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Depends on")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(info.dependencies.joined(separator: ", "))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            // Empty state
+            if info.dependencies.isEmpty && info.remappable.isEmpty {
+                Text("Constant expression")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
             }
         }
         .padding(10)
