@@ -1024,35 +1024,24 @@ class FocusableTextView: NSTextView {
               let program = irProgram,
               let bundle = program.bundles[context.bundle] else { return false }
 
-        // Collect free variables from all strand expressions
-        var allFreeVars = Set<String>()
-        for strand in bundle.strands {
-            allFreeVars.formUnion(strand.expr.freeVars())
-        }
-
-        // Partition into dependencies and remappable coordinates
-        var dependencies = [String]()
+        // Collect remappable coordinates from free variables
         var remappable = Set<String>()
-
-        for v in allFreeVars {
-            if v.hasPrefix("me.") {
-                remappable.insert(v)
-            } else if v.hasPrefix("$") {
-                dependencies.append(v)
-                // Tag name (without strand index) is also remappable
-                if let tagName = v.split(separator: ".").first {
-                    remappable.insert(String(tagName))
+        for strand in bundle.strands {
+            for v in strand.expr.freeVars() {
+                if v.hasPrefix("me.") {
+                    remappable.insert(v)
+                } else if v.hasPrefix("$") {
+                    if let tagName = v.split(separator: ".").first {
+                        remappable.insert(String(tagName))
+                    }
                 }
-            } else {
-                dependencies.append(v)
             }
         }
 
         let info = StrandInfo(
-            bundleName: context.bundle,
-            strandNames: bundle.strands.map { $0.name },
-            dependencies: dependencies.sorted(),
-            remappable: remappable.sorted()
+            bundle: bundle,
+            remappable: remappable.sorted(),
+            program: program
         )
 
         // Create popover
@@ -1186,17 +1175,149 @@ struct DocumentationPopoverView: View {
 // MARK: - Strand Info
 
 private struct StrandInfo {
-    let bundleName: String
-    let strandNames: [String]
-    let dependencies: [String]
+    let bundle: IRBundle
     let remappable: [String]
+    let program: IRProgram?
+}
 
-    var headerText: String {
-        if strandNames.count == 1 {
-            return "\(bundleName).\(strandNames[0])"
+// MARK: - Expression Colors (matching WeftSyntaxColoring)
+
+private enum ExprColors {
+    static let bundle   = Color(red: 0x56/255.0, green: 0x9c/255.0, blue: 0xd6/255.0) // #569cd6
+    static let strand   = Color(red: 0x9c/255.0, green: 0xdc/255.0, blue: 0xfe/255.0) // #9cdcfe
+    static let ident    = Color(red: 0xdc/255.0, green: 0xdc/255.0, blue: 0xaa/255.0) // #dcdcaa
+    static let number   = Color(red: 0xb5/255.0, green: 0xce/255.0, blue: 0xa8/255.0) // #b5cea8
+    static let op       = Color(red: 0xd4/255.0, green: 0xd4/255.0, blue: 0xd4/255.0) // #d4d4d4
+    static let sigil    = Color(red: 0xba/255.0, green: 0xba/255.0, blue: 0x73/255.0) // #baba73
+    static let chain    = Color(red: 0x4e/255.0, green: 0xc9/255.0, blue: 0xb0/255.0) // #4ec9b0
+    static let keyword  = Color(red: 0xc5/255.0, green: 0x86/255.0, blue: 0xc0/255.0) // #c586c0
+}
+
+// MARK: - Expression Rendering
+
+/// Renders IRExpr as syntax-colored SwiftUI Text, resolving numeric strand indices to names.
+private struct ExprRenderer {
+    let program: IRProgram?
+
+    private static let opPrec: [String: Int] = [
+        "||": 1, "&&": 2,
+        "==": 3, "!=": 3, "<": 3, ">": 3, "<=": 3, ">=": 3,
+        "+": 4, "-": 4,
+        "*": 5, "/": 5, "%": 5,
+        "^": 6
+    ]
+
+    func render(_ expr: IRExpr, parentPrec: Int = 0, rightOfParent: Bool = false) -> Text {
+        switch expr {
+        case .num(let v):
+            return Text(Self.formatNumber(v))
+                .foregroundColor(ExprColors.number)
+
+        case .param(let name):
+            return Text(name)
+                .foregroundColor(ExprColors.ident)
+
+        case .index(let bundle, let indexExpr):
+            let bundleText: Text
+            if bundle.hasPrefix("$") {
+                bundleText = Text("$").foregroundColor(ExprColors.sigil)
+                    + Text(String(bundle.dropFirst())).foregroundColor(ExprColors.ident)
+            } else {
+                bundleText = Text(bundle).foregroundColor(ExprColors.bundle)
+            }
+            if case .param(let field) = indexExpr {
+                return bundleText
+                    + Text(".").foregroundColor(ExprColors.op)
+                    + Text(field).foregroundColor(ExprColors.strand)
+            } else if case .num(let idx) = indexExpr {
+                // Resolve numeric index to strand name when possible
+                let label: String
+                if let irBundle = program?.bundles[bundle],
+                   Int(idx) < irBundle.strands.count {
+                    label = irBundle.strands[Int(idx)].name
+                } else {
+                    label = String(Int(idx))
+                }
+                return bundleText
+                    + Text(".").foregroundColor(ExprColors.op)
+                    + Text(label).foregroundColor(ExprColors.strand)
+            }
+            return bundleText
+                + Text(".(").foregroundColor(ExprColors.op)
+                + render(indexExpr)
+                + Text(")").foregroundColor(ExprColors.op)
+
+        case .binaryOp(let op, let left, let right):
+            let myPrec = Self.opPrec[op] ?? 4
+            let needsParens = rightOfParent ? myPrec <= parentPrec : myPrec < parentPrec
+            let inner = render(left, parentPrec: myPrec, rightOfParent: false)
+                + Text(" \(op) ").foregroundColor(ExprColors.op)
+                + render(right, parentPrec: myPrec, rightOfParent: true)
+            if needsParens {
+                return Text("(").foregroundColor(ExprColors.op) + inner + Text(")").foregroundColor(ExprColors.op)
+            }
+            return inner
+
+        case .unaryOp(let op, let operand):
+            return Text(op).foregroundColor(ExprColors.op)
+                + render(operand, parentPrec: 7)
+
+        case .builtin(let name, let args):
+            return renderArgList(Text(name).foregroundColor(ExprColors.ident), args)
+
+        case .call(let spindle, let args):
+            return renderArgList(Text(spindle).foregroundColor(ExprColors.ident), args)
+
+        case .extract(let call, let index):
+            return render(call)
+                + Text(".\(index)").foregroundColor(ExprColors.strand)
+
+        case .remap(let base, let substitutions):
+            var inner = render(base) + Text("[").foregroundColor(ExprColors.chain)
+            for (i, (key, value)) in substitutions.sorted(by: { $0.key < $1.key }).enumerated() {
+                if i > 0 { inner = inner + Text(", ").foregroundColor(ExprColors.op) }
+                inner = inner + Text(key).foregroundColor(ExprColors.strand)
+                    + Text(" ~ ").foregroundColor(ExprColors.chain)
+                    + render(value)
+            }
+            return inner + Text("]").foregroundColor(ExprColors.chain)
+
+        case .cacheRead(let cacheId, let tapIndex):
+            return Text("cache").foregroundColor(ExprColors.ident)
+                + Text("[\(cacheId), \(tapIndex)]").foregroundColor(ExprColors.op)
         }
-        return "\(bundleName)[\(strandNames.joined(separator: ", "))]"
     }
+
+    private func renderArgList(_ nameText: Text, _ args: [IRExpr]) -> Text {
+        var result = nameText + Text("(").foregroundColor(ExprColors.op)
+        for (i, arg) in args.enumerated() {
+            if i > 0 { result = result + Text(", ").foregroundColor(ExprColors.op) }
+            result = result + render(arg)
+        }
+        return result + Text(")").foregroundColor(ExprColors.op)
+    }
+
+    static func formatNumber(_ v: Double) -> String {
+        if v == Double(Int(v)) && abs(v) < 1e15 {
+            return String(Int(v))
+        }
+        return String(v)
+    }
+}
+
+/// Render a remappable reference (e.g., "me.x", "$freq") with syntax colors.
+private func coloredRef(_ ref: String) -> Text {
+    if ref.hasPrefix("me.") {
+        let field = String(ref.dropFirst(3))
+        return Text("me").foregroundColor(ExprColors.bundle)
+            + Text(".").foregroundColor(ExprColors.op)
+            + Text(field).foregroundColor(ExprColors.strand)
+    } else if ref.hasPrefix("$") {
+        let name = String(ref.dropFirst())
+        return Text("$").foregroundColor(ExprColors.sigil)
+            + Text(name).foregroundColor(ExprColors.ident)
+    }
+    return Text(ref).foregroundColor(ExprColors.ident)
 }
 
 // MARK: - Strand Info Popover View
@@ -1204,43 +1325,51 @@ private struct StrandInfo {
 private struct StrandInfoPopoverView: View {
     let info: StrandInfo
 
+    private var renderer: ExprRenderer {
+        ExprRenderer(program: info.program)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            // Strand expressions
+            ForEach(Array(info.bundle.strands.enumerated()), id: \.offset) { _, strand in
+                let isNumericName = strand.name.allSatisfy { $0.isNumber }
+                (strandPrefix(strand.name, numeric: isNumericName)
+                    + renderer.render(strand.expr))
+                    .font(.system(size: 11, design: .monospaced))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             // Remappable coordinates/tags
             if !info.remappable.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
+                Divider()
+                HStack(spacing: 4) {
                     Text("Remappable")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
-                    Text(info.remappable.joined(separator: ", "))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.cyan)
-                        .fixedSize(horizontal: false, vertical: true)
+                    remappableList
+                        .font(.system(size: 10, design: .monospaced))
                 }
-            }
-
-            // Dependencies
-            if !info.dependencies.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Depends on")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary)
-                    Text(info.dependencies.joined(separator: ", "))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            // Empty state
-            if info.dependencies.isEmpty && info.remappable.isEmpty {
-                Text("Constant expression")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
             }
         }
         .padding(10)
         .frame(maxWidth: 320)
+    }
+
+    /// For named strands show "name = ", for numeric strands (tags) show nothing.
+    private func strandPrefix(_ name: String, numeric: Bool) -> Text {
+        if numeric { return Text("") }
+        return Text(name).foregroundColor(ExprColors.strand)
+            + Text(" = ").foregroundColor(ExprColors.op)
+    }
+
+    private var remappableList: Text {
+        var result = Text("")
+        for (i, ref) in info.remappable.enumerated() {
+            if i > 0 { result = result + Text("  ").foregroundColor(ExprColors.op) }
+            result = result + coloredRef(ref)
+        }
+        return result
     }
 }
 
