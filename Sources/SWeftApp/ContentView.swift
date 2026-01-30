@@ -172,7 +172,7 @@ struct ContentView: View {
 
     private var editorSection: some View {
         VStack(spacing: 0) {
-            CodeEditor(text: $viewModel.sourceCode)
+            CodeEditor(text: $viewModel.sourceCode, irProgram: viewModel.coordinator.program)
                 .id(viewModel.editorID)
                 .onChange(of: viewModel.sourceCode) { _, _ in
                     viewModel.hasError = false
@@ -744,6 +744,7 @@ class WeftViewModel: ObservableObject {
 
 struct CodeEditor: NSViewRepresentable {
     @Binding var text: String
+    var irProgram: IRProgram?
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = FocusableTextView()
@@ -768,6 +769,7 @@ struct CodeEditor: NSViewRepresentable {
 
         textView.delegate = context.coordinator
         textView.string = text
+        textView.irProgram = irProgram
 
         // Apply initial syntax highlighting
         DispatchQueue.main.async {
@@ -794,7 +796,8 @@ struct CodeEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = nsView.documentView as? NSTextView else { return }
+        guard let textView = nsView.documentView as? FocusableTextView else { return }
+        textView.irProgram = irProgram
         if textView.string != text && !context.coordinator.isEditing {
             let selectedRanges = textView.selectedRanges
             textView.string = text
@@ -846,6 +849,9 @@ struct CodeEditor: NSViewRepresentable {
 class FocusableTextView: NSTextView {
     override var acceptsFirstResponder: Bool { true }
 
+    // IR data for strand info popovers
+    var irProgram: IRProgram?
+
     // Documentation popover state
     private var docPopover: NSPopover?
 
@@ -854,12 +860,21 @@ class FocusableTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Check for Option+Click to show documentation
+        // Check for Option+Click to show documentation or strand info
         if event.modifierFlags.contains(.option) {
             let point = convert(event.locationInWindow, from: nil)
-            if let word = wordAtPoint(point), !word.isEmpty {
+
+            // Try spindle/builtin documentation first
+            if let word = wordAtPoint(point), !word.isEmpty,
+               SpindleDocManager.shared.documentation(for: word) != nil {
                 showDocumentationPopover(for: word, at: point)
-                return  // Don't pass to super - we handled it
+                return
+            }
+
+            // Try strand info from compiled IR
+            if let context = bundleContextAtPoint(point),
+               showStrandInfoPopover(for: context, at: point) {
+                return
             }
         }
 
@@ -913,6 +928,64 @@ class FocusableTextView: NSTextView {
         return nsString.substring(with: wordRange)
     }
 
+    /// Detect a bundle[.strand] token at the given point, including $-prefixed names.
+    /// Scans for tokens containing alphanumerics, underscores, `$`, and `.` separators.
+    private func bundleContextAtPoint(_ point: NSPoint) -> (bundle: String, strand: String?)? {
+        guard let layoutManager = layoutManager,
+              let textContainer = textContainer else { return nil }
+
+        let textContainerOffset = textContainerOrigin
+        let locationInTextContainer = NSPoint(
+            x: point.x - textContainerOffset.x,
+            y: point.y - textContainerOffset.y
+        )
+
+        var fraction: CGFloat = 0
+        let charIndex = layoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: &fraction
+        )
+
+        guard charIndex < string.count else { return nil }
+        let nsString = string as NSString
+        let tokenChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_$."))
+
+        let char = nsString.character(at: charIndex)
+        guard let scalar = Unicode.Scalar(char), tokenChars.contains(scalar) else { return nil }
+
+        // Scan backward to find token start
+        var start = charIndex
+        while start > 0 {
+            let prevChar = nsString.character(at: start - 1)
+            guard let prevScalar = Unicode.Scalar(prevChar), tokenChars.contains(prevScalar) else { break }
+            start -= 1
+        }
+
+        // Scan forward to find token end
+        var end = charIndex
+        while end < nsString.length - 1 {
+            let nextChar = nsString.character(at: end + 1)
+            guard let nextScalar = Unicode.Scalar(nextChar), tokenChars.contains(nextScalar) else { break }
+            end += 1
+        }
+
+        let token = nsString.substring(with: NSRange(location: start, length: end - start + 1))
+        guard !token.isEmpty else { return nil }
+
+        // Split on first dot to get bundle[.strand]
+        let parts = token.split(separator: ".", maxSplits: 1).map(String.init)
+        guard let bundle = parts.first, !bundle.isEmpty else { return nil }
+
+        // Filter out number literals (e.g., 0.5, 42)
+        if !bundle.hasPrefix("$") && bundle.allSatisfy({ $0.isNumber }) {
+            return nil
+        }
+
+        let strand: String? = parts.count > 1 ? parts[1] : nil
+        return (bundle: bundle, strand: strand)
+    }
+
     // MARK: - Popover Management
 
     /// Shows documentation popover for a spindle/builtin at the given click position.
@@ -941,6 +1014,54 @@ class FocusableTextView: NSTextView {
 
         popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
         docPopover = popover
+    }
+
+    /// Shows strand dependency/remappability popover for a bundle from the compiled IR.
+    /// Trigger: Option+Click on a bundle name when no spindle doc matches.
+    @discardableResult
+    private func showStrandInfoPopover(for context: (bundle: String, strand: String?), at point: NSPoint) -> Bool {
+        guard context.bundle != "me",
+              let program = irProgram,
+              let bundle = program.bundles[context.bundle] else { return false }
+
+        // Collect remappable coordinates from free variables
+        var remappable = Set<String>()
+        for strand in bundle.strands {
+            for v in strand.expr.freeVars() {
+                if v.hasPrefix("me.") {
+                    remappable.insert(v)
+                } else if v.hasPrefix("$") {
+                    if let tagName = v.split(separator: ".").first {
+                        remappable.insert(String(tagName))
+                    }
+                }
+            }
+        }
+
+        let info = StrandInfo(
+            bundle: bundle,
+            remappable: remappable.sorted(),
+            program: program
+        )
+
+        // Create popover
+        let contentView = StrandInfoPopoverView(info: info)
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = NSRect(origin: .zero, size: fittingSize)
+
+        let popover = NSPopover()
+        popover.contentViewController = NSViewController()
+        popover.contentViewController?.view = hostingView
+        popover.behavior = .transient
+        popover.animates = true
+
+        let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
+        popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
+        docPopover = popover
+
+        return true
     }
 
     private func dismissPopover() {
@@ -1048,6 +1169,207 @@ struct DocumentationPopoverView: View {
         }
         .padding(10)
         .frame(maxWidth: 320)
+    }
+}
+
+// MARK: - Strand Info
+
+private struct StrandInfo {
+    let bundle: IRBundle
+    let remappable: [String]
+    let program: IRProgram?
+}
+
+// MARK: - Expression Colors (matching WeftSyntaxColoring)
+
+private enum ExprColors {
+    static let bundle   = Color(red: 0x56/255.0, green: 0x9c/255.0, blue: 0xd6/255.0) // #569cd6
+    static let strand   = Color(red: 0x9c/255.0, green: 0xdc/255.0, blue: 0xfe/255.0) // #9cdcfe
+    static let ident    = Color(red: 0xdc/255.0, green: 0xdc/255.0, blue: 0xaa/255.0) // #dcdcaa
+    static let number   = Color(red: 0xb5/255.0, green: 0xce/255.0, blue: 0xa8/255.0) // #b5cea8
+    static let op       = Color(red: 0xd4/255.0, green: 0xd4/255.0, blue: 0xd4/255.0) // #d4d4d4
+    static let sigil    = Color(red: 0xba/255.0, green: 0xba/255.0, blue: 0x73/255.0) // #baba73
+    static let chain    = Color(red: 0x4e/255.0, green: 0xc9/255.0, blue: 0xb0/255.0) // #4ec9b0
+    static let keyword  = Color(red: 0xc5/255.0, green: 0x86/255.0, blue: 0xc0/255.0) // #c586c0
+}
+
+// MARK: - Expression Rendering
+
+/// Renders IRExpr as syntax-colored SwiftUI Text, resolving numeric strand indices to names.
+private struct ExprRenderer {
+    let program: IRProgram?
+
+    private static let opPrec: [String: Int] = [
+        "||": 1, "&&": 2,
+        "==": 3, "!=": 3, "<": 3, ">": 3, "<=": 3, ">=": 3,
+        "+": 4, "-": 4,
+        "*": 5, "/": 5, "%": 5,
+        "^": 6
+    ]
+
+    func render(_ expr: IRExpr, parentPrec: Int = 0, rightOfParent: Bool = false) -> Text {
+        switch expr {
+        case .num(let v):
+            return Text(Self.formatNumber(v))
+                .foregroundColor(ExprColors.number)
+
+        case .param(let name):
+            return Text(name)
+                .foregroundColor(ExprColors.ident)
+
+        case .index(let bundle, let indexExpr):
+            let bundleText: Text
+            if bundle.hasPrefix("$") {
+                bundleText = Text("$").foregroundColor(ExprColors.sigil)
+                    + Text(String(bundle.dropFirst())).foregroundColor(ExprColors.ident)
+            } else {
+                bundleText = Text(bundle).foregroundColor(ExprColors.bundle)
+            }
+            if case .param(let field) = indexExpr {
+                return bundleText
+                    + Text(".").foregroundColor(ExprColors.op)
+                    + Text(field).foregroundColor(ExprColors.strand)
+            } else if case .num(let idx) = indexExpr {
+                // Resolve numeric index to strand name when possible
+                let label: String
+                if let irBundle = program?.bundles[bundle],
+                   Int(idx) < irBundle.strands.count {
+                    label = irBundle.strands[Int(idx)].name
+                } else {
+                    label = String(Int(idx))
+                }
+                return bundleText
+                    + Text(".").foregroundColor(ExprColors.op)
+                    + Text(label).foregroundColor(ExprColors.strand)
+            }
+            return bundleText
+                + Text(".(").foregroundColor(ExprColors.op)
+                + render(indexExpr)
+                + Text(")").foregroundColor(ExprColors.op)
+
+        case .binaryOp(let op, let left, let right):
+            let myPrec = Self.opPrec[op] ?? 4
+            let needsParens = rightOfParent ? myPrec <= parentPrec : myPrec < parentPrec
+            let inner = render(left, parentPrec: myPrec, rightOfParent: false)
+                + Text(" \(op) ").foregroundColor(ExprColors.op)
+                + render(right, parentPrec: myPrec, rightOfParent: true)
+            if needsParens {
+                return Text("(").foregroundColor(ExprColors.op) + inner + Text(")").foregroundColor(ExprColors.op)
+            }
+            return inner
+
+        case .unaryOp(let op, let operand):
+            return Text(op).foregroundColor(ExprColors.op)
+                + render(operand, parentPrec: 7)
+
+        case .builtin(let name, let args):
+            return renderArgList(Text(name).foregroundColor(ExprColors.ident), args)
+
+        case .call(let spindle, let args):
+            return renderArgList(Text(spindle).foregroundColor(ExprColors.ident), args)
+
+        case .extract(let call, let index):
+            return render(call)
+                + Text(".\(index)").foregroundColor(ExprColors.strand)
+
+        case .remap(let base, let substitutions):
+            var inner = render(base) + Text("[").foregroundColor(ExprColors.chain)
+            for (i, (key, value)) in substitutions.sorted(by: { $0.key < $1.key }).enumerated() {
+                if i > 0 { inner = inner + Text(", ").foregroundColor(ExprColors.op) }
+                inner = inner + Text(key).foregroundColor(ExprColors.strand)
+                    + Text(" ~ ").foregroundColor(ExprColors.chain)
+                    + render(value)
+            }
+            return inner + Text("]").foregroundColor(ExprColors.chain)
+
+        case .cacheRead(let cacheId, let tapIndex):
+            return Text("cache").foregroundColor(ExprColors.ident)
+                + Text("[\(cacheId), \(tapIndex)]").foregroundColor(ExprColors.op)
+        }
+    }
+
+    private func renderArgList(_ nameText: Text, _ args: [IRExpr]) -> Text {
+        var result = nameText + Text("(").foregroundColor(ExprColors.op)
+        for (i, arg) in args.enumerated() {
+            if i > 0 { result = result + Text(", ").foregroundColor(ExprColors.op) }
+            result = result + render(arg)
+        }
+        return result + Text(")").foregroundColor(ExprColors.op)
+    }
+
+    static func formatNumber(_ v: Double) -> String {
+        if v == Double(Int(v)) && abs(v) < 1e15 {
+            return String(Int(v))
+        }
+        return String(v)
+    }
+}
+
+/// Render a remappable reference (e.g., "me.x", "$freq") with syntax colors.
+private func coloredRef(_ ref: String) -> Text {
+    if ref.hasPrefix("me.") {
+        let field = String(ref.dropFirst(3))
+        return Text("me").foregroundColor(ExprColors.bundle)
+            + Text(".").foregroundColor(ExprColors.op)
+            + Text(field).foregroundColor(ExprColors.strand)
+    } else if ref.hasPrefix("$") {
+        let name = String(ref.dropFirst())
+        return Text("$").foregroundColor(ExprColors.sigil)
+            + Text(name).foregroundColor(ExprColors.ident)
+    }
+    return Text(ref).foregroundColor(ExprColors.ident)
+}
+
+// MARK: - Strand Info Popover View
+
+private struct StrandInfoPopoverView: View {
+    let info: StrandInfo
+
+    private var renderer: ExprRenderer {
+        ExprRenderer(program: info.program)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Strand expressions
+            ForEach(Array(info.bundle.strands.enumerated()), id: \.offset) { _, strand in
+                let isNumericName = strand.name.allSatisfy { $0.isNumber }
+                (strandPrefix(strand.name, numeric: isNumericName)
+                    + renderer.render(strand.expr))
+                    .font(.system(size: 11, design: .monospaced))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Remappable coordinates/tags
+            if !info.remappable.isEmpty {
+                Divider()
+                HStack(spacing: 4) {
+                    Text("Remappable")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    remappableList
+                        .font(.system(size: 10, design: .monospaced))
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: 600)
+    }
+
+    /// For named strands show "name = ", for numeric strands (tags) show nothing.
+    private func strandPrefix(_ name: String, numeric: Bool) -> Text {
+        if numeric { return Text("") }
+        return Text(name).foregroundColor(ExprColors.strand)
+            + Text(" = ").foregroundColor(ExprColors.op)
+    }
+
+    private var remappableList: Text {
+        var result = Text("")
+        for (i, ref) in info.remappable.enumerated() {
+            if i > 0 { result = result + Text("  ").foregroundColor(ExprColors.op) }
+            result = result + coloredRef(ref)
+        }
+        return result
     }
 }
 

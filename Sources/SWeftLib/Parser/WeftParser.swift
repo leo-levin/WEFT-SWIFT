@@ -544,9 +544,20 @@ public class WeftParser {
             }
         }
 
-        // Identifier (possibly spindle call or strand access)
+        // Identifier (possibly tag, spindle call, or strand access)
         if case .identifier(let name) = peek().token {
             advance()
+
+            if name.hasPrefix("$") {
+                // Tag definition: $name(expr)
+                if match(.leftParen) {
+                    let innerExpr = try parseExpr()
+                    try consume(.rightParen, ")")
+                    return .tagExpr(TagExpr(name: name, expr: innerExpr))
+                }
+                // Tag reference: bare $name
+                return .identifier(name)
+            }
 
             // Spindle call: name(args)
             if match(.leftParen) {
@@ -613,6 +624,11 @@ public class WeftParser {
         let nameToken = try consume(.identifier(""), "bundle name")
         guard case .identifier(let bundleName) = nameToken.token else {
             throw ParseError.invalidSyntax("Expected bundle name", loc)
+        }
+
+        // $name shorthand in remap: $speed ~ 20 means $speed.0 ~ 20
+        if bundleName.hasPrefix("$") && check(.tilde) {
+            return StrandAccess(bundle: .named(bundleName), accessor: .index(0))
         }
 
         try consume(.dot, ".")

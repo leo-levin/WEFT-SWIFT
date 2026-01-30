@@ -442,6 +442,9 @@ public class WeftLowering {
 
         case .rangeExpr:
             throw LoweringError.rangeOutsidePattern
+
+        case .tagExpr:
+            throw LoweringError.invalidExpression("Tag expressions must be desugared before lowering")
         }
     }
 
@@ -924,6 +927,9 @@ public class WeftLowering {
         case .callExtract:
             return 1
 
+        case .tagExpr(let tag):
+            return try inferWidth(tag.expr)
+
         default:
             return 1
         }
@@ -1039,6 +1045,9 @@ public class WeftLowering {
                 visit(chain.base, inExprAccessor: false, bundleName: nil)
                 // Don't descend into pattern blocks - they have their own context
 
+            case .tagExpr(let tag):
+                visit(tag.expr, inExprAccessor: false, bundleName: nil)
+
             default:
                 break
             }
@@ -1140,6 +1149,9 @@ public class WeftLowering {
             case .chainExpr(let chain):
                 let newBase = substitute(chain.base, bundleContext: nil)
                 return .chainExpr(ChainExpr(base: newBase, patterns: chain.patterns))
+
+            case .tagExpr(let tag):
+                return .tagExpr(TagExpr(name: tag.name, expr: substitute(tag.expr, bundleContext: nil)))
 
             default:
                 return node
