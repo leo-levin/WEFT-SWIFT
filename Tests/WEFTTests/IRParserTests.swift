@@ -1,7 +1,7 @@
 // IRParserTests.swift - Tests for IR parsing
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 final class IRParserTests: XCTestCase {
 

@@ -1,7 +1,7 @@
 // BackendParityTests.swift - Verify feature parity between Metal and Audio backends
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 /// Tests to verify that Metal and Audio backends produce equivalent results
 /// for domain-agnostic operations.

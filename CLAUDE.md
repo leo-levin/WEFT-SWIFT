@@ -3,11 +3,12 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Personality
+
 You are an expert who double checks things, you are skeptical and you do research. I am not always right. Neither are you, but we both strive for accuracy.
 
 ## Project Overview
 
-SWeft is a Swift-based compiler and runtime for WEFT, a domain-agnostic creative coding language for visual graphics and audio synthesis. It bridges a JavaScript parser/compiler frontend with a native Swift backend using Metal for GPU graphics and CoreAudio for audio synthesis.
+WEFT is a Swift-based compiler and runtime for WEFT, a domain-agnostic creative coding language for visual graphics and audio synthesis. It bridges a JavaScript parser/compiler frontend with a native Swift backend using Metal for GPU graphics and CoreAudio for audio synthesis.
 
 - Platform: macOS 14+ (Sonoma)
 - Language: Swift 5.9+
@@ -25,7 +26,7 @@ swift run                      # Run the app
 ./build-app.sh                 # Build macOS app bundle (WEFT.app)
 
 # Run a single test
-swift test --filter SWeftTests.IntegrationTests/testMetalCodeGeneration
+swift test --filter WEFTTests.IntegrationTests/testMetalCodeGeneration
 ```
 
 ## Architecture
@@ -56,20 +57,21 @@ Visual Output & Audio Playback
 
 ### Core Modules
 
-| Directory | Purpose |
-|-----------|---------|
-| `Sources/SWeftLib/IR/` | Codable IR structures, JSON parsing |
-| `Sources/SWeftLib/Analysis/` | Dependency graph, ownership (visual/audio), purity analysis |
-| `Sources/SWeftLib/Partition/` | Groups bundles into same-backend Swatches |
-| `Sources/SWeftLib/Backends/MetalBackend/` | IR → Metal Shading Language, GPU execution |
-| `Sources/SWeftLib/Backends/AudioBackend/` | IR → Swift closures, CoreAudio playback |
-| `Sources/SWeftLib/Runtime/` | Coordinator, buffer management, camera/mic capture |
-| `Sources/SWeftLib/JSCompiler/` | JavaScriptCore bridge to JS parser |
-| `Sources/SWeftApp/` | SwiftUI application, MetalKit view |
+| Directory                                | Purpose                                                     |
+| ---------------------------------------- | ----------------------------------------------------------- |
+| `Sources/WEFTLib/IR/`                    | Codable IR structures, JSON parsing                         |
+| `Sources/WEFTLib/Analysis/`              | Dependency graph, ownership (visual/audio), purity analysis |
+| `Sources/WEFTLib/Partition/`             | Groups bundles into same-backend Swatches                   |
+| `Sources/WEFTLib/Backends/MetalBackend/` | IR → Metal Shading Language, GPU execution                  |
+| `Sources/WEFTLib/Backends/AudioBackend/` | IR → Swift closures, CoreAudio playback                     |
+| `Sources/WEFTLib/Runtime/`               | Coordinator, buffer management, camera/mic capture          |
+| `Sources/WEFTLib/JSCompiler/`            | JavaScriptCore bridge to JS parser                          |
+| `Sources/WEFTApp/`                       | SwiftUI application, MetalKit view                          |
 
 ### Backend Protocol
 
 Backends implement a minimal protocol (~300 lines each):
+
 - `identifier`: "visual" or "audio"
 - `ownedBuiltins`: e.g., ["camera", "load"] for visual
 - `coordinateFields`: e.g., ["x", "y", "t"] for visual, ["i", "t", "sampleRate"] for audio
@@ -83,7 +85,7 @@ Backends implement a minimal protocol (~300 lines each):
 
 ## Key Design Patterns
 
-1. **Signal-Driven Cache**: Cache ticks when signal *changes*, not on level—enables feedback effects without loops
+1. **Signal-Driven Cache**: Cache ticks when signal _changes_, not on level—enables feedback effects without loops
 
 2. **Partitioning**: Same-backend subgraphs compiled together; pure nodes duplicated per backend as needed
 
@@ -93,7 +95,8 @@ Backends implement a minimal protocol (~300 lines each):
 
 ## Testing
 
-Test programs in `Sources/SWeftApp/Resources/`:
+Test programs in `Sources/WEFTApp/Resources/`:
+
 - `gradient.json`: Visual-only (animated RGB)
 - `sine.json`: Audio-only (440Hz tone)
 - `crossdomain.json`: Audio-reactive visual
@@ -101,6 +104,7 @@ Test programs in `Sources/SWeftApp/Resources/`:
 ## Adding New Functionality
 
 ### New Builtin Function
+
 1. Add to `BUILTINS` set in `weft-compiler.js` (~line 1054)
 2. Add Metal implementation in `MetalCodeGen.swift` (in `generateBuiltin` method)
 3. Add Swift implementation in `AudioCodeGen.swift` (in `generateBuiltin` method)
@@ -111,6 +115,7 @@ Current builtins: `sin`, `cos`, `tan`, `abs`, `floor`, `ceil`, `sqrt`, `pow`, `m
 Resource builtins (multi-strand output): `texture`, `camera`, `microphone`
 
 ### New Backend
+
 1. Implement `Backend` protocol in new directory under `Backends/`
 2. Register in `Coordinator.swift`
 3. Add ownership classification in `OwnershipAnalysis.swift`

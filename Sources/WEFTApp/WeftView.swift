@@ -2,7 +2,7 @@
 
 import SwiftUI
 import MetalKit
-import SWeftLib
+import WEFTLib
 import AppKit
 
 // MARK: - Render Stats

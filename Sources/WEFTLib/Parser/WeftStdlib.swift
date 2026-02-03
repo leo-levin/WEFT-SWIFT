@@ -22,7 +22,7 @@ public enum WeftStdlib {
     /// Find stdlib URL - checks multiple locations for .app bundle compatibility
     static func findStdlibURL() -> URL? {
         // Try the resource bundle inside .app (for distributed app)
-        if let resourceBundle = Bundle.main.url(forResource: "SWeft_SWeftLib", withExtension: "bundle"),
+        if let resourceBundle = Bundle.main.url(forResource: "WEFT_WEFTLib", withExtension: "bundle"),
            let bundle = Bundle(url: resourceBundle),
            let url = bundle.url(forResource: "stdlib", withExtension: nil) {
             return url

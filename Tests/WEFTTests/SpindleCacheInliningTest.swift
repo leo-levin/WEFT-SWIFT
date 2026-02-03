@@ -1,7 +1,7 @@
 // SpindleCacheInliningTest.swift - Test cache target substitution inside spindles
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 final class SpindleCacheInliningTest: XCTestCase {
 

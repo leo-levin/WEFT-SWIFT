@@ -1,7 +1,7 @@
 // DevModeView.swift - Developer mode panel with IR, shader, and analysis views
 
 import SwiftUI
-import SWeftLib
+import WEFTLib
 
 // MARK: - Dev Mode View
 

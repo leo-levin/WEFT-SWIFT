@@ -3,7 +3,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import SWeftLib
+import WEFTLib
 
 struct ContentView: View {
     @StateObject private var viewModel = WeftViewModel()

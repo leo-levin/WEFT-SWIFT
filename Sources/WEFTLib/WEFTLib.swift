@@ -1,4 +1,4 @@
-// SWeftLib.swift - Public API exports
+// WEFTLib.swift - Public API exports
 
 // Re-export all public types
 

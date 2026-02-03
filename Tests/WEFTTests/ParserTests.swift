@@ -1,7 +1,7 @@
 // ParserTests.swift - Tests for the Swift WEFT parser
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 final class ParserTests: XCTestCase {
 

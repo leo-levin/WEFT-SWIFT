@@ -1,7 +1,7 @@
 // FullPipelineTests.swift - Verify end-to-end functionality
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 import Metal
 
 final class FullPipelineTests: XCTestCase {

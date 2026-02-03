@@ -1,7 +1,7 @@
 // PreprocessorTests.swift - Tests for the WEFT preprocessor #include functionality
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 final class PreprocessorTests: XCTestCase {
 

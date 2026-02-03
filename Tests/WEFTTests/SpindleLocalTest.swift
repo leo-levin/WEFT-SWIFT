@@ -1,7 +1,7 @@
 // SpindleLocalTest.swift - Test spindle local variable resolution
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 final class SpindleLocalTest: XCTestCase {
 

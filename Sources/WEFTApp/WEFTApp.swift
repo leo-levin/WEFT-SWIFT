@@ -1,12 +1,12 @@
-// SWeftApp.swift - SWeft Application Entry Point
+// WEFTApp.swift - WEFT Application Entry Point
 
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import SWeftLib
+import WEFTLib
 
 @main
-struct SWeftApp: App {
+struct WEFTApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
@@ -64,7 +64,7 @@ struct FileCommands: Commands {
     }
 
     private func revealStdlibInFinder() {
-        // Use the stdlib URL exposed by SWeftLib
+        // Use the stdlib URL exposed by WEFTLib
         if let stdlibURL = WeftStdlib.directoryURL {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: stdlibURL.path)
         } else {

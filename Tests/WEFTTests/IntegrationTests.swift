@@ -1,7 +1,7 @@
 // IntegrationTests.swift - End-to-end integration tests
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 final class IntegrationTests: XCTestCase {
 

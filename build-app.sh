@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build SWeft as a macOS .app bundle
+# Build WEFT as a macOS .app bundle
 
 set -e
 
-APP_NAME="SWeft"
+APP_NAME="WEFT"
 BUILD_DIR=".build/release"
 APP_BUNDLE="WEFT.app"
 ICON_SVG="weft.icon/Assets/Image.svg"
@@ -21,8 +21,8 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 
 # Copy bundle resources (JS files)
-if [ -d "$BUILD_DIR/SWeft_SWeftLib.bundle" ]; then
-    cp -r "$BUILD_DIR/SWeft_SWeftLib.bundle" "$APP_BUNDLE/Contents/Resources/"
+if [ -d "$BUILD_DIR/WEFT_WEFTLib.bundle" ]; then
+    cp -r "$BUILD_DIR/WEFT_WEFTLib.bundle" "$APP_BUNDLE/Contents/Resources/"
 fi
 
 # Create icon from PNG if it exists
@@ -59,7 +59,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>SWeft</string>
+    <string>WEFT</string>
     <key>CFBundleIdentifier</key>
     <string>com.weft.weft</string>
     <key>CFBundleName</key>
@@ -77,9 +77,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSCameraUsageDescription</key>
-    <string>SWeft uses the camera for real-time visual effects.</string>
+    <string>WEFT uses the camera for real-time visual effects.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>SWeft uses the microphone for audio input.</string>
+    <string>WEFT uses the microphone for audio input.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>CFBundleDocumentTypes</key>

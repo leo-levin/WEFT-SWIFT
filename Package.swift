@@ -2,35 +2,35 @@
 import PackageDescription
 
 let package = Package(
-    name: "SWeft",
+    name: "WEFT",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "SWeft", targets: ["SWeftApp"]),
-        .library(name: "SWeftLib", targets: ["SWeftLib"])
+        .executable(name: "WEFT", targets: ["WEFTApp"]),
+        .library(name: "WEFTLib", targets: ["WEFTLib"])
     ],
     targets: [
         .target(
-            name: "SWeftLib",
+            name: "WEFTLib",
             dependencies: [],
-            path: "Sources/SWeftLib",
+            path: "Sources/WEFTLib",
             resources: [
                 .copy("stdlib")
             ]
         ),
         .executableTarget(
-            name: "SWeftApp",
-            dependencies: ["SWeftLib"],
-            path: "Sources/SWeftApp",
+            name: "WEFTApp",
+            dependencies: ["WEFTLib"],
+            path: "Sources/WEFTApp",
             resources: [
                 .copy("Resources")
             ]
         ),
         .testTarget(
-            name: "SWeftTests",
-            dependencies: ["SWeftLib"],
-            path: "Tests/SWeftTests"
+            name: "WEFTTests",
+            dependencies: ["WEFTLib"],
+            path: "Tests/WEFTTests"
         )
     ]
 )

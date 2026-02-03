@@ -1,7 +1,7 @@
 // AnnotationTests.swift - Tests for domain/access annotation system
 
 import XCTest
-@testable import SWeftLib
+@testable import WEFTLib
 
 final class AnnotationTests: XCTestCase {
 

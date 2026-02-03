@@ -1,4 +1,4 @@
-// Theme.swift - Design system for SWeftApp
+// Theme.swift - Design system for WEFTApp
 
 import SwiftUI
 import AppKit

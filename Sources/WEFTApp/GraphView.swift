@@ -1,7 +1,7 @@
 // GraphView.swift - Dependency graph visualization
 
 import SwiftUI
-import SWeftLib
+import WEFTLib
 
 // MARK: - Graph Data Model
 
