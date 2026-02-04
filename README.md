@@ -2,6 +2,6 @@
 
 WEFT is a domain-agnostic multimedia programming language.
 
-See [weft.notion.site](https://weft.notion.site) for docs.
+See [weft.media](https://weft.media) for docs and more.
 
 Built using Claude Code (Opus 4.5).
