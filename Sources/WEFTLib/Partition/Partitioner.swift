@@ -134,11 +134,9 @@ public class Partitioner {
 
                 // Check dependencies for cross-domain
                 for strand in bundle.strands {
-                    let refs = collectBundleReferences(expr: strand.expr)
+                    let refs = strand.expr.collectBundleReferences(excludeMe: true)
 
                     for ref in refs {
-                        if ref == "me" { continue }
-
                         // Check if referenced bundle is in a different swatch
                         if let refSwatchId = swatchGraph.bundleToSwatch[ref],
                            refSwatchId != swatch.id {
@@ -166,48 +164,4 @@ public class Partitioner {
         }
     }
 
-    /// Collect bundle references from expression
-    private func collectBundleReferences(expr: IRExpr) -> Set<String> {
-        switch expr {
-        case .num, .param:
-            return []
-
-        case .index(let bundle, let indexExpr):
-            var refs = collectBundleReferences(expr: indexExpr)
-            refs.insert(bundle)
-            return refs
-
-        case .binaryOp(_, let left, let right):
-            return collectBundleReferences(expr: left)
-                .union(collectBundleReferences(expr: right))
-
-        case .unaryOp(_, let operand):
-            return collectBundleReferences(expr: operand)
-
-        case .call(_, let args):
-            return args.reduce(into: Set<String>()) {
-                $0.formUnion(collectBundleReferences(expr: $1))
-            }
-
-        case .builtin(_, let args):
-            return args.reduce(into: Set<String>()) {
-                $0.formUnion(collectBundleReferences(expr: $1))
-            }
-
-        case .extract(let call, _):
-            return collectBundleReferences(expr: call)
-
-        case .cacheRead:
-            // cacheRead doesn't reference bundles directly
-            return []
-
-        case .remap(let base, let substitutions):
-            var refs = collectBundleReferences(expr: base)
-            for (_, subExpr) in substitutions {
-                refs.formUnion(collectBundleReferences(expr: subExpr))
-            }
-            return refs
-
-        }
-    }
 }

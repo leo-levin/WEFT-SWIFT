@@ -347,53 +347,87 @@ extension IRExpr {
 
     /// Check if expression uses a specific builtin
     public func usesBuiltin(_ name: String) -> Bool {
-        switch self {
-        case .num, .param, .cacheRead:
-            return false
-        case .index(_, let indexExpr):
-            return indexExpr.usesBuiltin(name)
-        case .binaryOp(_, let left, let right):
-            return left.usesBuiltin(name) || right.usesBuiltin(name)
-        case .unaryOp(_, let operand):
-            return operand.usesBuiltin(name)
-        case .call(_, let args):
-            return args.contains { $0.usesBuiltin(name) }
-        case .builtin(let builtinName, let args):
-            return builtinName == name || args.contains { $0.usesBuiltin(name) }
-        case .extract(let call, _):
-            return call.usesBuiltin(name)
-        case .remap(let base, let substitutions):
-            return base.usesBuiltin(name) || substitutions.values.contains { $0.usesBuiltin(name) }
-        }
+        if case .builtin(let n, _) = self, n == name { return true }
+        var found = false
+        forEachChild { if $0.usesBuiltin(name) { found = true } }
+        return found
     }
 
     /// Get all builtins used in this expression
     public func allBuiltins() -> Set<String> {
+        var result = Set<String>()
+        func visit(_ e: IRExpr) {
+            if case .builtin(let name, _) = e { result.insert(name) }
+            e.forEachChild(visit)
+        }
+        visit(self)
+        return result
+    }
+}
+
+// MARK: - Tree Traversal
+
+extension IRExpr {
+    /// Apply a transform to all direct children, preserving node structure.
+    public func mapChildren(_ transform: (IRExpr) throws -> IRExpr) rethrows -> IRExpr {
         switch self {
         case .num, .param, .cacheRead:
-            return []
-        case .index(_, let indexExpr):
-            return indexExpr.allBuiltins()
-        case .binaryOp(_, let left, let right):
-            return left.allBuiltins().union(right.allBuiltins())
-        case .unaryOp(_, let operand):
-            return operand.allBuiltins()
-        case .call(_, let args):
-            return args.reduce(into: Set<String>()) { $0.formUnion($1.allBuiltins()) }
+            return self
+        case .index(let bundle, let indexExpr):
+            return .index(bundle: bundle, indexExpr: try transform(indexExpr))
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(op: op, left: try transform(left), right: try transform(right))
+        case .unaryOp(let op, let operand):
+            return .unaryOp(op: op, operand: try transform(operand))
+        case .call(let spindle, let args):
+            return .call(spindle: spindle, args: try args.map(transform))
         case .builtin(let name, let args):
-            var builtins = Set([name])
-            for arg in args {
-                builtins.formUnion(arg.allBuiltins())
+            return .builtin(name: name, args: try args.map(transform))
+        case .extract(let call, let index):
+            return .extract(call: try transform(call), index: index)
+        case .remap(let base, let subs):
+            var newSubs: [String: IRExpr] = [:]
+            for (key, value) in subs {
+                newSubs[key] = try transform(value)
             }
-            return builtins
+            return .remap(base: try transform(base), substitutions: newSubs)
+        }
+    }
+
+    /// Collect all bundle names referenced via `.index` in this expression tree.
+    public func collectBundleReferences(excludeMe: Bool = false) -> Set<String> {
+        var result = Set<String>()
+        func visit(_ e: IRExpr) {
+            if case .index(let bundle, _) = e {
+                if !(excludeMe && bundle == "me") { result.insert(bundle) }
+            }
+            e.forEachChild(visit)
+        }
+        visit(self)
+        return result
+    }
+
+    /// Visit all direct children.
+    public func forEachChild(_ visitor: (IRExpr) -> Void) {
+        switch self {
+        case .num, .param, .cacheRead:
+            break
+        case .index(_, let indexExpr):
+            visitor(indexExpr)
+        case .binaryOp(_, let left, let right):
+            visitor(left)
+            visitor(right)
+        case .unaryOp(_, let operand):
+            visitor(operand)
+        case .call(_, let args):
+            args.forEach(visitor)
+        case .builtin(_, let args):
+            args.forEach(visitor)
         case .extract(let call, _):
-            return call.allBuiltins()
-        case .remap(let base, let substitutions):
-            var builtins = base.allBuiltins()
-            for (_, expr) in substitutions {
-                builtins.formUnion(expr.allBuiltins())
-            }
-            return builtins
+            visitor(call)
+        case .remap(let base, let subs):
+            visitor(base)
+            subs.values.forEach(visitor)
         }
     }
 }

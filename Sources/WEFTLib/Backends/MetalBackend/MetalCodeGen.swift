@@ -44,49 +44,11 @@ public class MetalCodeGen {
 
     /// Recursively collect texture resource IDs from an expression
     private func collectTextureIds(from expr: IRExpr, into textureIds: inout Set<Int>) {
-        switch expr {
-        case .builtin(let name, let args) where name == "texture":
-            // texture(resourceId, u, v, channel) - extract resourceId
-            if args.count >= 1, case .num(let id) = args[0] {
-                textureIds.insert(Int(id))
-            }
-            // Also check args for nested texture calls
-            for arg in args {
-                collectTextureIds(from: arg, into: &textureIds)
-            }
-
-        case .builtin(_, let args):
-            for arg in args {
-                collectTextureIds(from: arg, into: &textureIds)
-            }
-
-        case .binaryOp(_, let left, let right):
-            collectTextureIds(from: left, into: &textureIds)
-            collectTextureIds(from: right, into: &textureIds)
-
-        case .unaryOp(_, let operand):
-            collectTextureIds(from: operand, into: &textureIds)
-
-        case .call(_, let args):
-            for arg in args {
-                collectTextureIds(from: arg, into: &textureIds)
-            }
-
-        case .extract(let call, _):
-            collectTextureIds(from: call, into: &textureIds)
-
-        case .remap(let base, let substitutions):
-            collectTextureIds(from: base, into: &textureIds)
-            for (_, sub) in substitutions {
-                collectTextureIds(from: sub, into: &textureIds)
-            }
-
-        case .index(_, let indexExpr):
-            collectTextureIds(from: indexExpr, into: &textureIds)
-
-        case .num, .param, .cacheRead:
-            break
+        if case .builtin(let name, let args) = expr, name == "texture",
+           args.count >= 1, case .num(let id) = args[0] {
+            textureIds.insert(Int(id))
         }
+        expr.forEachChild { collectTextureIds(from: $0, into: &textureIds) }
     }
 
     /// Get set of text resource IDs used in this swatch
@@ -106,49 +68,11 @@ public class MetalCodeGen {
 
     /// Recursively collect text resource IDs from an expression
     private func collectTextIds(from expr: IRExpr, into textIds: inout Set<Int>) {
-        switch expr {
-        case .builtin(let name, let args) where name == "text":
-            // text(resourceId, x, y) - extract resourceId
-            if args.count >= 1, case .num(let id) = args[0] {
-                textIds.insert(Int(id))
-            }
-            // Also check args for nested calls
-            for arg in args {
-                collectTextIds(from: arg, into: &textIds)
-            }
-
-        case .builtin(_, let args):
-            for arg in args {
-                collectTextIds(from: arg, into: &textIds)
-            }
-
-        case .binaryOp(_, let left, let right):
-            collectTextIds(from: left, into: &textIds)
-            collectTextIds(from: right, into: &textIds)
-
-        case .unaryOp(_, let operand):
-            collectTextIds(from: operand, into: &textIds)
-
-        case .call(_, let args):
-            for arg in args {
-                collectTextIds(from: arg, into: &textIds)
-            }
-
-        case .extract(let call, _):
-            collectTextIds(from: call, into: &textIds)
-
-        case .remap(let base, let substitutions):
-            collectTextIds(from: base, into: &textIds)
-            for (_, sub) in substitutions {
-                collectTextIds(from: sub, into: &textIds)
-            }
-
-        case .index(_, let indexExpr):
-            collectTextIds(from: indexExpr, into: &textIds)
-
-        case .num, .param, .cacheRead:
-            break
+        if case .builtin(let name, let args) = expr, name == "text",
+           args.count >= 1, case .num(let id) = args[0] {
+            textIds.insert(Int(id))
         }
+        expr.forEachChild { collectTextIds(from: $0, into: &textIds) }
     }
 
     /// Generate complete Metal shader source
@@ -197,36 +121,19 @@ public class MetalCodeGen {
         var visitedBundles = Set<String>()
 
         func collectBuiltins(from expr: IRExpr) {
-            switch expr {
-            case .num, .param, .cacheRead:
-                break
-            case .index(let bundle, let indexExpr):
-                collectBuiltins(from: indexExpr)
-                // Follow bundle reference if not already visited
-                if bundle != "me" && !visitedBundles.contains(bundle) {
-                    visitedBundles.insert(bundle)
-                    if let targetBundle = program.bundles[bundle] {
-                        for strand in targetBundle.strands {
-                            collectBuiltins(from: strand.expr)
-                        }
+            if case .builtin(let name, _) = expr {
+                usedBuiltins.insert(name)
+            }
+            if case .index(let bundle, _) = expr,
+               bundle != "me", !visitedBundles.contains(bundle) {
+                visitedBundles.insert(bundle)
+                if let targetBundle = program.bundles[bundle] {
+                    for strand in targetBundle.strands {
+                        collectBuiltins(from: strand.expr)
                     }
                 }
-            case .binaryOp(_, let left, let right):
-                collectBuiltins(from: left)
-                collectBuiltins(from: right)
-            case .unaryOp(_, let operand):
-                collectBuiltins(from: operand)
-            case .call(_, let args):
-                for arg in args { collectBuiltins(from: arg) }
-            case .builtin(let name, let args):
-                usedBuiltins.insert(name)
-                for arg in args { collectBuiltins(from: arg) }
-            case .extract(let call, _):
-                collectBuiltins(from: call)
-            case .remap(let base, let substitutions):
-                collectBuiltins(from: base)
-                for (_, subExpr) in substitutions { collectBuiltins(from: subExpr) }
             }
+            expr.forEachChild { collectBuiltins(from: $0) }
         }
 
         for bundleName in swatch.bundles {
