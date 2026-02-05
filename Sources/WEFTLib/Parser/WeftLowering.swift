@@ -674,17 +674,7 @@ public class WeftLowering {
     }
 
     private func lowerRemapExpr(_ remap: RemapExpr, subs: [IRExpr]?) throws -> IRExpr {
-        let irBase: IRExpr
-
-        if remap.base.bundle == nil {
-            // Bare strand access in remap context
-            guard let subs = subs else {
-                throw LoweringError.bareStrandOutsidePattern
-            }
-            irBase = try lowerBareStrandAccess(remap.base.accessor, subs: subs)
-        } else {
-            irBase = try lowerStrandAccess(remap.base, subs: subs)
-        }
+        let irBase = try lowerExpr(remap.base, subs: subs)
 
         var subMap: [String: IRExpr] = [:]
 
@@ -692,18 +682,19 @@ public class WeftLowering {
             let domainIR = try lowerStrandAccess(r.domain, subs: subs)
 
             // Extract the key from the domain
-            guard case .index(let bundle, let indexExpr) = domainIR,
-                  case .num(let idx) = indexExpr else {
+            let key: String
+            if case .index(let bundle, let indexExpr) = domainIR {
+                if case .num(let idx) = indexExpr {
+                    key = "\(bundle).\(Int(idx))"
+                } else if case .param(let field) = indexExpr {
+                    key = "\(bundle).\(field)"
+                } else {
+                    throw LoweringError.invalidRemapArg
+                }
+            } else {
                 throw LoweringError.invalidRemapArg
             }
-
-            let key = "\(bundle).\(Int(idx))"
             subMap[key] = try lowerExpr(r.expr, subs: subs)
-        }
-
-        if remap.base.bundle == nil {
-            // For bare strand access, apply substitution directly
-            return substituteInExpr(irBase, substitutions: subMap)
         }
 
         return .remap(base: irBase, substitutions: subMap)
@@ -930,6 +921,9 @@ public class WeftLowering {
         case .tagExpr(let tag):
             return try inferWidth(tag.expr)
 
+        case .remapExpr(let remap):
+            return try inferWidth(remap.base)
+
         default:
             return 1
         }
@@ -1032,6 +1026,7 @@ public class WeftLowering {
                 visit(extract.call, inExprAccessor: false, bundleName: nil)
 
             case .remapExpr(let remap):
+                visit(remap.base, inExprAccessor: false, bundleName: nil)
                 for r in remap.remappings {
                     visit(r.expr, inExprAccessor: false, bundleName: nil)
                 }
@@ -1137,10 +1132,11 @@ public class WeftLowering {
                 return .callExtract(CallExtract(call: newCall, index: extract.index))
 
             case .remapExpr(let remap):
+                let newBase = substitute(remap.base, bundleContext: nil)
                 let newRemappings = remap.remappings.map { r in
                     RemapArg(domain: r.domain, expr: substitute(r.expr, bundleContext: nil))
                 }
-                return .remapExpr(RemapExpr(base: remap.base, remappings: newRemappings))
+                return .remapExpr(RemapExpr(base: newBase, remappings: newRemappings))
 
             case .bundleLit(let elements):
                 let newElements = elements.map { substitute($0, bundleContext: nil) }
@@ -1188,7 +1184,7 @@ public class WeftLowering {
             visiting.insert(i)
 
             for strand in declarations[i].strands {
-                for ref in strand.expr.freeVars() {
+                for ref in strand.expr.currentTickFreeVars() {
                     if ref.contains(".") {
                         if let dep = strandToDecl[ref], dep != i {
                             try visit(dep)

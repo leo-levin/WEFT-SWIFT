@@ -88,6 +88,7 @@ public class WeftDesugar {
             collectTagsFromExpr(extract.call, into: &tagDefs)
 
         case .remapExpr(let remap):
+            collectTagsFromExpr(remap.base, into: &tagDefs)
             for r in remap.remappings {
                 collectTagsFromExpr(r.expr, into: &tagDefs)
             }
@@ -187,7 +188,7 @@ public class WeftDesugar {
 
         case .remapExpr(let remap):
             return .remapExpr(RemapExpr(
-                base: remap.base,
+                base: rewriteExpr(remap.base, tags: tags),
                 remappings: remap.remappings.map { r in
                     RemapArg(domain: r.domain, expr: rewriteExpr(r.expr, tags: tags))
                 }

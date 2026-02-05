@@ -956,6 +956,318 @@ public enum IRTransformations {
         }
     }
 
+    // MARK: - Temporal Remap to Cache Conversion
+
+    /// Convert temporal remaps to cache builtins where the base expression is stateful.
+    /// Two-phase approach:
+    /// - Phase 1: Convert non-self-ref stateful temporal remaps to cache in-place
+    /// - Phase 2: If self-ref temporal remaps remain, unwrap them and wrap the entire strand in cache
+    /// Pure temporal remaps are left as coordinate substitution.
+    public static func convertTemporalRemapsToCache(
+        program: inout IRProgram,
+        statefulBuiltins: Set<String>
+    ) {
+        for (bundleName, bundle) in program.bundles {
+            var modifiedStrands: [IRStrand] = []
+
+            for strand in bundle.strands {
+                let strandKey = "\(bundleName).\(strand.index)"
+                let strandNameKey = "\(bundleName).\(strand.name)"
+                let keys = [strandKey, strandNameKey, bundleName]
+
+                // Phase 1: Convert non-self-ref stateful temporal remaps
+                let phase1 = convertNonSelfRefTemporalRemaps(
+                    in: strand.expr, strandKeys: keys, statefulBuiltins: statefulBuiltins, program: program
+                )
+
+                // Phase 2: Handle self-ref temporal remaps by wrapping entire strand
+                let finalExpr: IRExpr
+                if let info = findFirstSelfRefTemporalRemap(in: phase1, strandKeys: keys) {
+                    let unwrapped = unwrapSelfRefTemporalRemaps(in: phase1, strandKeys: keys)
+                    finalExpr = .builtin(name: "cache", args: [
+                        unwrapped,
+                        .num(Double(info.offset + 1)),
+                        .num(Double(info.offset)),
+                        info.signal
+                    ])
+                } else {
+                    finalExpr = phase1
+                }
+
+                modifiedStrands.append(IRStrand(
+                    name: strand.name, index: strand.index, expr: finalExpr
+                ))
+            }
+
+            program.bundles[bundleName] = IRBundle(name: bundleName, strands: modifiedStrands)
+        }
+    }
+
+    /// Resolve the builtins used by a remap base expression, following bundle indirection.
+    /// For `.index(bundle, _)` where bundle is a user-defined bundle, looks up the strand's
+    /// expression in the program to find the actual builtins (e.g., camera, microphone).
+    private static func resolveBaseBuiltins(
+        _ expr: IRExpr,
+        program: IRProgram
+    ) -> Set<String> {
+        switch expr {
+        case .index(let bundle, let indexExpr) where bundle != "me":
+            if let targetBundle = program.bundles[bundle] {
+                if case .num(let idx) = indexExpr {
+                    let strandIdx = Int(idx)
+                    if strandIdx < targetBundle.strands.count {
+                        return targetBundle.strands[strandIdx].expr.allBuiltins()
+                    }
+                } else if case .param(let field) = indexExpr {
+                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
+                        return strand.expr.allBuiltins()
+                    }
+                }
+            }
+            return expr.allBuiltins()
+        default:
+            return expr.allBuiltins()
+        }
+    }
+
+    /// Phase 1: Convert non-self-ref stateful temporal remaps to cache in-place.
+    /// Self-ref temporal remaps are left as remap nodes for Phase 2.
+    private static func convertNonSelfRefTemporalRemaps(
+        in expr: IRExpr,
+        strandKeys: [String],
+        statefulBuiltins: Set<String>,
+        program: IRProgram
+    ) -> IRExpr {
+        switch expr {
+        case .num, .param, .cacheRead:
+            return expr
+
+        case .index(let bundle, let indexExpr):
+            return .index(
+                bundle: bundle,
+                indexExpr: convertNonSelfRefTemporalRemaps(in: indexExpr, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program)
+            )
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: convertNonSelfRefTemporalRemaps(in: left, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program),
+                right: convertNonSelfRefTemporalRemaps(in: right, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: convertNonSelfRefTemporalRemaps(in: operand, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program)
+            )
+
+        case .builtin(let name, let args):
+            return .builtin(
+                name: name,
+                args: args.map { convertNonSelfRefTemporalRemaps(in: $0, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program) }
+            )
+
+        case .call(let spindle, let args):
+            return .call(
+                spindle: spindle,
+                args: args.map { convertNonSelfRefTemporalRemaps(in: $0, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program) }
+            )
+
+        case .extract(let call, let index):
+            return .extract(
+                call: convertNonSelfRefTemporalRemaps(in: call, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program),
+                index: index
+            )
+
+        case .remap(let base, let substitutions):
+            // Check if this is a temporal remap (has "me.t" key)
+            guard let temporalExpr = substitutions["me.t"] else {
+                // Non-temporal remap: recurse into children
+                let newBase = convertNonSelfRefTemporalRemaps(in: base, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program)
+                var newSubs: [String: IRExpr] = [:]
+                for (key, value) in substitutions {
+                    newSubs[key] = convertNonSelfRefTemporalRemaps(in: value, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program)
+                }
+                return .remap(base: newBase, substitutions: newSubs)
+            }
+
+            // Temporal remap -- check statefulness and self-reference
+            // Use resolveBaseBuiltins to follow bundle indirection (e.g. cam.r -> camera())
+            let baseBuiltins = resolveBaseBuiltins(base, program: program)
+            let isStateful = !baseBuiltins.isDisjoint(with: statefulBuiltins)
+            let baseVars = base.freeVars()
+            let isSelfRef = strandKeys.contains(where: { baseVars.contains($0) })
+
+            if isStateful && !isSelfRef {
+                // Non-self-ref stateful: convert to cache in-place
+                let offset = extractTemporalOffset(temporalExpr)
+                let signal = IRExpr.index(bundle: "me", indexExpr: .param("t"))
+                return .builtin(name: "cache", args: [
+                    base,
+                    .num(Double(offset + 1)),
+                    .num(Double(offset)),
+                    signal
+                ])
+            }
+
+            // Self-ref or pure: leave as remap, but recurse into children
+            let newBase = convertNonSelfRefTemporalRemaps(in: base, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program)
+            var newSubs: [String: IRExpr] = [:]
+            for (key, value) in substitutions {
+                newSubs[key] = convertNonSelfRefTemporalRemaps(in: value, strandKeys: strandKeys, statefulBuiltins: statefulBuiltins, program: program)
+            }
+            return .remap(base: newBase, substitutions: newSubs)
+        }
+    }
+
+    /// Phase 2 helper: Find the first self-referencing temporal remap in an expression.
+    /// Returns the temporal offset and signal expression, or nil if none found.
+    private static func findFirstSelfRefTemporalRemap(
+        in expr: IRExpr,
+        strandKeys: [String]
+    ) -> (offset: Int, signal: IRExpr)? {
+        switch expr {
+        case .num, .param, .cacheRead:
+            return nil
+
+        case .index(_, let indexExpr):
+            return findFirstSelfRefTemporalRemap(in: indexExpr, strandKeys: strandKeys)
+
+        case .binaryOp(_, let left, let right):
+            return findFirstSelfRefTemporalRemap(in: left, strandKeys: strandKeys)
+                ?? findFirstSelfRefTemporalRemap(in: right, strandKeys: strandKeys)
+
+        case .unaryOp(_, let operand):
+            return findFirstSelfRefTemporalRemap(in: operand, strandKeys: strandKeys)
+
+        case .builtin(_, let args):
+            for arg in args {
+                if let result = findFirstSelfRefTemporalRemap(in: arg, strandKeys: strandKeys) {
+                    return result
+                }
+            }
+            return nil
+
+        case .call(_, let args):
+            for arg in args {
+                if let result = findFirstSelfRefTemporalRemap(in: arg, strandKeys: strandKeys) {
+                    return result
+                }
+            }
+            return nil
+
+        case .extract(let call, _):
+            return findFirstSelfRefTemporalRemap(in: call, strandKeys: strandKeys)
+
+        case .remap(let base, let substitutions):
+            if let temporalExpr = substitutions["me.t"] {
+                let baseVars = base.freeVars()
+                let isSelfRef = strandKeys.contains(where: { baseVars.contains($0) })
+                if isSelfRef {
+                    let offset = extractTemporalOffset(temporalExpr)
+                    let signal = IRExpr.index(bundle: "me", indexExpr: .param("t"))
+                    return (offset: offset, signal: signal)
+                }
+            }
+            // Recurse
+            if let result = findFirstSelfRefTemporalRemap(in: base, strandKeys: strandKeys) {
+                return result
+            }
+            for (_, value) in substitutions {
+                if let result = findFirstSelfRefTemporalRemap(in: value, strandKeys: strandKeys) {
+                    return result
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Phase 2 helper: Replace self-ref temporal remap nodes with just their base expression.
+    /// This "unwraps" the remap so the full strand expression can be wrapped in cache.
+    private static func unwrapSelfRefTemporalRemaps(
+        in expr: IRExpr,
+        strandKeys: [String]
+    ) -> IRExpr {
+        switch expr {
+        case .num, .param, .cacheRead:
+            return expr
+
+        case .index(let bundle, let indexExpr):
+            return .index(
+                bundle: bundle,
+                indexExpr: unwrapSelfRefTemporalRemaps(in: indexExpr, strandKeys: strandKeys)
+            )
+
+        case .binaryOp(let op, let left, let right):
+            return .binaryOp(
+                op: op,
+                left: unwrapSelfRefTemporalRemaps(in: left, strandKeys: strandKeys),
+                right: unwrapSelfRefTemporalRemaps(in: right, strandKeys: strandKeys)
+            )
+
+        case .unaryOp(let op, let operand):
+            return .unaryOp(
+                op: op,
+                operand: unwrapSelfRefTemporalRemaps(in: operand, strandKeys: strandKeys)
+            )
+
+        case .builtin(let name, let args):
+            return .builtin(
+                name: name,
+                args: args.map { unwrapSelfRefTemporalRemaps(in: $0, strandKeys: strandKeys) }
+            )
+
+        case .call(let spindle, let args):
+            return .call(
+                spindle: spindle,
+                args: args.map { unwrapSelfRefTemporalRemaps(in: $0, strandKeys: strandKeys) }
+            )
+
+        case .extract(let call, let index):
+            return .extract(
+                call: unwrapSelfRefTemporalRemaps(in: call, strandKeys: strandKeys),
+                index: index
+            )
+
+        case .remap(let base, let substitutions):
+            // Check if this is a self-ref temporal remap
+            if substitutions.keys.contains("me.t") {
+                let baseVars = base.freeVars()
+                let isSelfRef = strandKeys.contains(where: { baseVars.contains($0) })
+                if isSelfRef {
+                    // Unwrap: return just the base (with recursive unwrapping)
+                    return unwrapSelfRefTemporalRemaps(in: base, strandKeys: strandKeys)
+                }
+            }
+            // Not a self-ref temporal remap: recurse normally
+            let newBase = unwrapSelfRefTemporalRemaps(in: base, strandKeys: strandKeys)
+            var newSubs: [String: IRExpr] = [:]
+            for (key, value) in substitutions {
+                newSubs[key] = unwrapSelfRefTemporalRemaps(in: value, strandKeys: strandKeys)
+            }
+            return .remap(base: newBase, substitutions: newSubs)
+        }
+    }
+
+    /// Extract the integer offset N from a temporal substitution expression.
+    /// Expects patterns like `me.t - N` -> returns N, or `me.t + N` -> returns -N.
+    /// Falls back to 1 for unrecognized patterns.
+    private static func extractTemporalOffset(_ expr: IRExpr) -> Int {
+        // Pattern: (me.t - N) where N is a positive literal
+        if case .binaryOp(let op, _, let right) = expr {
+            if op == "-", case .num(let n) = right {
+                let intN = Int(n)
+                if intN > 0 { return intN }
+            }
+            if op == "+", case .num(let n) = right {
+                let intN = Int(n)
+                if intN < 0 { return -intN }
+            }
+        }
+        // Fallback: assume offset 1
+        return 1
+    }
+
     /// Transform program by inlining all spindle calls with proper cache target substitution
     public static func inlineSpindleCacheCalls(program: inout IRProgram) {
         for (bundleName, bundle) in program.bundles {

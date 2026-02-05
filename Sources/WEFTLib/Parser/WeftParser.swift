@@ -357,7 +357,7 @@ public class WeftParser {
                 advance()
                 // Check for remap: ident.strand(args)
                 if check(.leftParen) && isRemapArgs() {
-                    let access = StrandAccess(bundle: exprToBundle(expr), accessor: .name(name))
+                    let access = Expr.strandAccess(StrandAccess(bundle: exprToBundle(expr), accessor: .name(name)))
                     expr = try parseRemapExpr(base: access)
                 } else {
                     expr = .strandAccess(StrandAccess(bundle: exprToBundle(expr), accessor: .name(name)))
@@ -382,6 +382,11 @@ public class WeftParser {
             } else {
                 throw ParseError.invalidSyntax("Expected strand accessor after .", dotLoc)
             }
+        }
+
+        // Check for remap postfix on arbitrary expression: expr(domain ~ remapExpr, ...)
+        if check(.leftParen) && isRemapArgs() {
+            expr = try parseRemapExpr(base: expr)
         }
 
         return expr
@@ -575,7 +580,7 @@ public class WeftParser {
         throw ParseError.unexpectedToken(expected: "expression", found: peek().token, location: loc)
     }
 
-    private func parseRemapExpr(base: StrandAccess) throws -> Expr {
+    private func parseRemapExpr(base: Expr) throws -> Expr {
         // We already have the base, now parse (RemapArgList)
         try consume(.leftParen, "(")
         let args = try parseRemapArgList()

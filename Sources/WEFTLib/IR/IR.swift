@@ -292,6 +292,59 @@ extension IRExpr {
         }
     }
 
+    /// Get free variables for current-tick dependency analysis.
+    /// Same as freeVars() except: for .remap nodes where substitution keys include "me.t",
+    /// exclude the base expression's free vars (they're previous-tick dependencies).
+    public func currentTickFreeVars() -> Set<String> {
+        switch self {
+        case .num:
+            return []
+        case .param:
+            return []
+        case .index(let bundle, let indexExpr):
+            var vars = indexExpr.currentTickFreeVars()
+            if case .num(let idx) = indexExpr {
+                vars.insert("\(bundle).\(Int(idx))")
+            } else if case .param(let field) = indexExpr {
+                vars.insert("\(bundle).\(field)")
+            } else {
+                vars.insert(bundle)
+            }
+            return vars
+        case .binaryOp(_, let left, let right):
+            return left.currentTickFreeVars().union(right.currentTickFreeVars())
+        case .unaryOp(_, let operand):
+            return operand.currentTickFreeVars()
+        case .call(_, let args):
+            return args.reduce(into: Set<String>()) { $0.formUnion($1.currentTickFreeVars()) }
+        case .builtin(_, let args):
+            return args.reduce(into: Set<String>()) { $0.formUnion($1.currentTickFreeVars()) }
+        case .extract(let call, _):
+            return call.currentTickFreeVars()
+        case .remap(let base, let substitutions):
+            let isTemporalRemap = substitutions.keys.contains("me.t")
+            if isTemporalRemap {
+                // For temporal remaps, base refs are previous-tick -- only include substitution expr vars
+                var vars = Set<String>()
+                for (_, expr) in substitutions {
+                    vars.formUnion(expr.currentTickFreeVars())
+                }
+                return vars
+            }
+            // Non-temporal remap: same as freeVars()
+            var vars = base.currentTickFreeVars()
+            for (key, _) in substitutions {
+                vars.remove(key)
+            }
+            for (_, expr) in substitutions {
+                vars.formUnion(expr.currentTickFreeVars())
+            }
+            return vars
+        case .cacheRead:
+            return []
+        }
+    }
+
     /// Check if expression uses a specific builtin
     public func usesBuiltin(_ name: String) -> Bool {
         switch self {
