@@ -219,6 +219,35 @@ public class TextureManager {
     public func clearCache() {
         cache.removeAll()
         textures.removeAll()
+        cpuTextureData.removeAll()
+    }
+
+    // MARK: - CPU Pixel Sampling
+
+    /// Cached CPU-side copies of texture pixel data (RGBA 8-bit)
+    private var cpuTextureData: [Int: (data: [UInt8], width: Int, height: Int)] = [:]
+
+    /// Sample a pixel from a loaded texture at normalized (u, v) coordinates.
+    /// Reads texture data to CPU on first call, caches for subsequent calls.
+    public func samplePixel(resourceId: Int, u: Double, v: Double, channel: Int) -> Double {
+        // Lazily read texture to CPU
+        if cpuTextureData[resourceId] == nil {
+            guard let texture = textures[resourceId] else { return 0.0 }
+            let w = texture.width
+            let h = texture.height
+            var data = [UInt8](repeating: 0, count: w * h * 4)
+            texture.getBytes(&data, bytesPerRow: w * 4,
+                             from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+            cpuTextureData[resourceId] = (data, w, h)
+        }
+
+        guard let tex = cpuTextureData[resourceId] else { return 0.0 }
+        let px = Int(max(0, min(Double(tex.width - 1), u * Double(tex.width - 1))))
+        let py = Int(max(0, min(Double(tex.height - 1), v * Double(tex.height - 1))))
+        let offset = (py * tex.width + px) * 4
+
+        guard offset + 3 < tex.data.count, channel >= 0, channel < 4 else { return 0.0 }
+        return Double(tex.data[offset + channel]) / 255.0
     }
 }
 

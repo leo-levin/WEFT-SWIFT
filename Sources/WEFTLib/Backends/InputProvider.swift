@@ -48,4 +48,17 @@ public protocol AudioInputProvider: InputProvider {
 public protocol VisualInputProvider: InputProvider {
     /// The current texture from this provider
     var texture: MTLTexture? { get }
+
+    /// Sample a pixel value at normalized (u, v) coordinates for a specific channel.
+    /// - Parameters:
+    ///   - u: Horizontal coordinate (0.0 = left, 1.0 = right)
+    ///   - v: Vertical coordinate (0.0 = top, 1.0 = bottom)
+    ///   - channel: Color channel (0=R, 1=G, 2=B, 3=A)
+    /// - Returns: Normalized pixel value [0, 1]
+    func samplePixel(u: Double, v: Double, channel: Int) -> Double
+}
+
+extension VisualInputProvider {
+    /// Default: returns 0 (override in concrete types)
+    public func samplePixel(u: Double, v: Double, channel: Int) -> Double { 0.0 }
 }

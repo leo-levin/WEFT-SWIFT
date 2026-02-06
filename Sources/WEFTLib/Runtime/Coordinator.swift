@@ -570,6 +570,33 @@ public class Coordinator: CameraCaptureDelegate {
         return errors.isEmpty ? nil : errors.joined(separator: "\n")
     }
 
+    // MARK: - Loom Resource Sampling
+
+    /// Build a resource sampler closure for IRInterpreter (Loom visualization).
+    /// Samples real pixel values from camera and loaded textures.
+    public func buildResourceSampler() -> ResourceSampler {
+        let camera: CameraCapture? = inputProvider(for: "camera")
+        let texMgr = textureManager
+
+        return { (builtinName: String, argValues: [Double]) -> Double? in
+            switch builtinName {
+            case "camera":
+                guard let cam = camera, argValues.count >= 3 else { return nil }
+                return cam.samplePixel(u: argValues[0], v: argValues[1], channel: Int(argValues[2]))
+
+            case "texture":
+                guard let mgr = texMgr, argValues.count >= 4 else { return nil }
+                let resourceId = Int(argValues[0])
+                return mgr.samplePixel(resourceId: resourceId,
+                                        u: argValues[1], v: argValues[2],
+                                        channel: Int(argValues[3]))
+
+            default:
+                return nil
+            }
+        }
+    }
+
     // MARK: - Documentation
 
     /// Get documentation for a spindle or builtin by name

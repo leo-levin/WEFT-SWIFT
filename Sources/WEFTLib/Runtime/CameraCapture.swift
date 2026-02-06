@@ -27,6 +27,11 @@ public class CameraCapture: NSObject, VisualInputProvider {
     private(set) public var isRunning = false
     private(set) public var latestTexture: MTLTexture?
 
+    /// Retained pixel data for CPU-side sampling (BGRA, 8-bit per channel)
+    private var pixelData: [UInt8] = []
+    private var pixelWidth: Int = 0
+    private var pixelHeight: Int = 0
+
     /// VisualInputProvider conformance - alias for latestTexture
     public var texture: MTLTexture? { latestTexture }
 
@@ -172,10 +177,56 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         latestTexture = texture
 
+        // Retain CPU-side pixel data for Loom sampling
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        if let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) {
+            let totalBytes = height * bytesPerRow
+            let newData = [UInt8](UnsafeBufferPointer(
+                start: baseAddress.assumingMemoryBound(to: UInt8.self),
+                count: totalBytes
+            ))
+            self.pixelData = newData
+            self.pixelWidth = width
+            self.pixelHeight = height
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.cameraCapture(self, didUpdateTexture: texture)
         }
+    }
+}
+
+// MARK: - CPU Pixel Sampling
+
+extension CameraCapture {
+    /// Sample a pixel from the latest camera frame at normalized (u, v) coordinates.
+    /// Format is BGRA, so we remap channel indices: 0=R→[2], 1=G→[1], 2=B→[0], 3=A→[3]
+    public func samplePixel(u: Double, v: Double, channel: Int) -> Double {
+        guard !pixelData.isEmpty, pixelWidth > 0, pixelHeight > 0 else { return 0.0 }
+
+        let px = Int(max(0, min(Double(pixelWidth - 1), u * Double(pixelWidth - 1))))
+        let py = Int(max(0, min(Double(pixelHeight - 1), v * Double(pixelHeight - 1))))
+        let bytesPerRow = pixelData.count / pixelHeight
+        let offset = py * bytesPerRow + px * 4
+
+        guard offset + 3 < pixelData.count else { return 0.0 }
+
+        // BGRA layout → remap channel
+        let bgraIndex: Int
+        switch channel {
+        case 0: bgraIndex = 2  // R
+        case 1: bgraIndex = 1  // G
+        case 2: bgraIndex = 0  // B
+        case 3: bgraIndex = 3  // A
+        default: return 0.0
+        }
+
+        return Double(pixelData[offset + bgraIndex]) / 255.0
     }
 }
 
