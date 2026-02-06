@@ -65,6 +65,18 @@ struct LoomControls: View {
             SubtleDivider(.vertical)
                 .frame(height: 14)
 
+            // Zoom
+            HStack(spacing: Spacing.xs) {
+                Text("Zoom")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                Slider(value: $state.camera.scale, in: 0.3...1.5)
+                    .frame(width: 50)
+            }
+
+            SubtleDivider(.vertical)
+                .frame(height: 14)
+
             // Spread
             HStack(spacing: Spacing.xs) {
                 Text("Spread")

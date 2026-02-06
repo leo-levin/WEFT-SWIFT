@@ -163,16 +163,15 @@ public class ChainTracer {
                 strandExprs: [( strands[0].name, strands[0].expr)]
             )]
         } else if strands.count >= 3 {
-            // 3+ strands: show as plane using first two strands only
-            return [LoomLayerSpec(
-                bundleName: bundle.name,
-                type: .plane(
-                    xStrand: "\(bundle.name).\(strands[0].name)",
-                    yStrand: "\(bundle.name).\(strands[1].name)"
-                ),
-                label: "\(bundle.name).\(strands[0].name), \(bundle.name).\(strands[1].name)",
-                strandExprs: [(strands[0].name, strands[0].expr), (strands[1].name, strands[1].expr)]
-            )]
+            // 3+ strands: individual axes grouped side-by-side at same depth
+            return strands.map { strand in
+                LoomLayerSpec(
+                    bundleName: bundle.name,
+                    type: .axis(strand: "\(bundle.name).\(strand.name)"),
+                    label: "\(bundle.name).\(strand.name)",
+                    strandExprs: [(strand.name, strand.expr)]
+                )
+            }
         }
         return []
     }
