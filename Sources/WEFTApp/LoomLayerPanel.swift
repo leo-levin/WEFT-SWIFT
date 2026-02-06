@@ -12,7 +12,7 @@ struct LoomLayerPanel: View {
             // Header
             HStack {
                 Text("Layers")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 addLayerMenu
@@ -25,7 +25,7 @@ struct LoomLayerPanel: View {
 
             // Layer list
             ScrollView {
-                VStack(spacing: 1) {
+                VStack(spacing: 2) {
                     ForEach(Array(state.layers.enumerated()), id: \.element.id) { index, layer in
                         layerRow(layer: layer, index: index)
                     }
@@ -39,26 +39,26 @@ struct LoomLayerPanel: View {
     // MARK: - Layer Row
 
     private func layerRow(layer: LoomLayer, index: Int) -> some View {
-        HStack(spacing: Spacing.xs) {
+        HStack(spacing: Spacing.sm) {
             // Color indicator
             Circle()
                 .fill(layer.color)
-                .frame(width: 6, height: 6)
+                .frame(width: 8, height: 8)
 
             // Type icon
             Image(systemName: layerTypeIcon(layer.type))
-                .font(.system(size: 8))
+                .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
-                .frame(width: 12)
+                .frame(width: 14)
 
             // Label
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(layer.bundleName)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(layerTypeLabel(layer.type))
-                    .font(.system(size: 8))
+                Text(layerSubtitle(layer))
+                    .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
@@ -71,14 +71,14 @@ struct LoomLayerPanel: View {
                     state.layers.removeAll { $0.id == layer.id }
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 7, weight: .bold))
+                        .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.quaternary)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, Spacing.sm)
-        .padding(.vertical, Spacing.xxs)
+        .padding(.vertical, Spacing.xxs + 2)
     }
 
     // MARK: - Add Layer Menu
@@ -91,19 +91,32 @@ struct LoomLayerPanel: View {
                     Text("No additional bundles")
                 } else {
                     ForEach(available, id: \.self) { name in
-                        Button(name) {
-                            addLayer(bundleName: name, program: program)
+                        let bundle = program.bundles[name]!
+                        let strandCount = bundle.strands.count
+                        if strandCount >= 2 {
+                            Menu(name) {
+                                Button("As Plane") {
+                                    addLayerAsPlane(bundleName: name, program: program)
+                                }
+                                Button("As Axes (Group)") {
+                                    addLayerAsAxisGroup(bundleName: name, program: program)
+                                }
+                            }
+                        } else {
+                            Button(name) {
+                                addLayerAsAxis(bundleName: name, strandName: bundle.strands[0].name, expr: bundle.strands[0].expr)
+                            }
                         }
                     }
                 }
             }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.tertiary)
         }
         .menuStyle(.borderlessButton)
-        .frame(width: 16)
+        .frame(width: 18)
     }
 
     // MARK: - Helpers
@@ -115,30 +128,44 @@ struct LoomLayerPanel: View {
             .sorted()
     }
 
-    private func addLayer(bundleName: String, program: IRProgram) {
+    private func addLayerAsPlane(bundleName: String, program: IRProgram) {
+        guard let bundle = program.bundles[bundleName] else { return }
+        let strands = bundle.strands.sorted(by: { $0.index < $1.index })
+        guard strands.count >= 2 else { return }
+
+        let spec = LoomLayerSpec(
+            bundleName: bundleName,
+            type: .plane(xStrand: "\(bundleName).\(strands[0].name)",
+                         yStrand: "\(bundleName).\(strands[1].name)"),
+            label: "\(bundleName).\(strands[0].name), \(bundleName).\(strands[1].name)",
+            strandExprs: [(strands[0].name, strands[0].expr), (strands[1].name, strands[1].expr)]
+        )
+        state.layers.append(LoomLayer(from: spec, color: .purple.opacity(0.8)))
+    }
+
+    private func addLayerAsAxisGroup(bundleName: String, program: IRProgram) {
         guard let bundle = program.bundles[bundleName] else { return }
         let strands = bundle.strands.sorted(by: { $0.index < $1.index })
 
-        let type: LoomLayerSpec.LayerType
-        let label: String
-        let strandExprs: [(String, IRExpr)]
-
-        if strands.count >= 2 {
-            type = .plane(xStrand: "\(bundleName).\(strands[0].name)",
-                          yStrand: "\(bundleName).\(strands[1].name)")
-            label = "\(bundleName).\(strands[0].name), \(bundleName).\(strands[1].name)"
-            strandExprs = [(strands[0].name, strands[0].expr), (strands[1].name, strands[1].expr)]
-        } else if strands.count == 1 {
-            type = .axis(strand: "\(bundleName).\(strands[0].name)")
-            label = "\(bundleName).\(strands[0].name)"
-            strandExprs = [(strands[0].name, strands[0].expr)]
-        } else {
-            return
+        for strand in strands {
+            let spec = LoomLayerSpec(
+                bundleName: bundleName,
+                type: .axis(strand: "\(bundleName).\(strand.name)"),
+                label: "\(bundleName).\(strand.name)",
+                strandExprs: [(strand.name, strand.expr)]
+            )
+            state.layers.append(LoomLayer(from: spec, color: .purple.opacity(0.8)))
         }
+    }
 
-        let spec = LoomLayerSpec(bundleName: bundleName, type: type, label: label, strandExprs: strandExprs)
-        let color = Color.purple.opacity(0.8)
-        state.layers.append(LoomLayer(from: spec, color: color))
+    private func addLayerAsAxis(bundleName: String, strandName: String, expr: IRExpr) {
+        let spec = LoomLayerSpec(
+            bundleName: bundleName,
+            type: .axis(strand: "\(bundleName).\(strandName)"),
+            label: "\(bundleName).\(strandName)",
+            strandExprs: [(strandName, expr)]
+        )
+        state.layers.append(LoomLayer(from: spec, color: .purple.opacity(0.8)))
     }
 
     private func layerTypeIcon(_ type: LoomLayerSpec.LayerType) -> String {
@@ -148,10 +175,15 @@ struct LoomLayerPanel: View {
         }
     }
 
-    private func layerTypeLabel(_ type: LoomLayerSpec.LayerType) -> String {
-        switch type {
-        case .plane: return "plane"
-        case .axis: return "axis"
+    private func layerSubtitle(_ layer: LoomLayer) -> String {
+        switch layer.type {
+        case .plane(let x, let y):
+            let xShort = x.components(separatedBy: ".").last ?? x
+            let yShort = y.components(separatedBy: ".").last ?? y
+            return "plane (\(xShort), \(yShort))"
+        case .axis(let s):
+            let sShort = s.components(separatedBy: ".").last ?? s
+            return "axis (\(sShort))"
         }
     }
 }

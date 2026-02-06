@@ -52,6 +52,14 @@ struct LoomLayer: Identifiable {
     }
 }
 
+// MARK: - Slot Layout (groups share a z-slot)
+
+struct SlotLayout {
+    let zSlots: [Int]
+    let totalSlots: Int
+    let xOffsets: [Double]
+}
+
 // MARK: - Loom View
 
 struct LoomView: View {
@@ -74,7 +82,7 @@ struct LoomView: View {
                     loomCanvas
                         .frame(minWidth: 200)
                     LoomLayerPanel(state: state, coordinator: coordinator)
-                        .frame(minWidth: 120, idealWidth: 150, maxWidth: 200)
+                        .frame(minWidth: 140, idealWidth: 170, maxWidth: 220)
                 }
 
                 SubtleDivider(.horizontal)
@@ -195,6 +203,44 @@ struct LoomView: View {
         }
     }
 
+    // MARK: - Slot Computation (groups share z-depth)
+
+    /// Layers from the same bundle are grouped at the same z-slot, spread horizontally.
+    private func computeSlots() -> SlotLayout {
+        let count = state.layers.count
+        guard count > 0 else { return SlotLayout(zSlots: [], totalSlots: 0, xOffsets: []) }
+
+        var zSlots = [Int](repeating: 0, count: count)
+        var xOffsets = [Double](repeating: 0, count: count)
+        var slot = 0
+        var i = 0
+
+        while i < count {
+            let name = state.layers[i].bundleName
+            let groupStart = i
+            zSlots[i] = slot
+            i += 1
+            while i < count && state.layers[i].bundleName == name {
+                zSlots[i] = slot
+                i += 1
+            }
+            let groupSize = i - groupStart
+            if groupSize > 1 {
+                for j in groupStart..<i {
+                    let t = Double(j - groupStart) / Double(groupSize - 1) - 0.5
+                    xOffsets[j] = t * 0.5
+                }
+            }
+            slot += 1
+        }
+        return SlotLayout(zSlots: zSlots, totalSlots: slot, xOffsets: xOffsets)
+    }
+
+    private func slotZ(_ slot: Int, _ totalSlots: Int, _ spread: Double) -> Double {
+        guard totalSlots > 1 else { return 0 }
+        return -spread / 2 + spread * Double(slot) / Double(totalSlots - 1)
+    }
+
     // MARK: - Evaluation
 
     private func evaluateSamples(time: Double) {
@@ -247,7 +293,8 @@ struct LoomView: View {
         guard !state.layers.isEmpty else { return }
 
         let layerCount = state.layers.count
-        let totalSpread = state.spread * Double(layerCount - 1) * 1.5
+        let layout = computeSlots()
+        let totalSpread = state.spread * Double(layout.totalSlots - 1) * 1.5
         let samples = state.samples
 
         // Auto-range per layer
@@ -273,50 +320,73 @@ struct LoomView: View {
         var drawables: [Drawable] = []
 
         for li in 0..<layerCount {
-            let z = layerZ(li, layerCount, totalSpread)
+            let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
             drawables.append(Drawable(kind: state.layers[li].type.isPlane ? .planeOutline(li) : .axisLine(li),
-                                      depth: state.camera.depth(SIMD3(0, 0, z))))
+                                      depth: state.camera.depth(SIMD3(layout.xOffsets[li], 0, z))))
         }
 
         for si in 0..<samples.count {
             for li in 0..<Swift.min(samples[si].count, layerCount) {
-                let z = layerZ(li, layerCount, totalSpread)
+                let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
                 let val = samples[si][li]
-                let nx = norm(val.x, ranges[li].min.x, ranges[li].max.x) - 0.5
-                let ny = norm(val.y, ranges[li].min.y, ranges[li].max.y) - 0.5
+                let xo = layout.xOffsets[li]
+                let nx: Double
+                let ny: Double
+                switch state.layers[li].type {
+                case .plane:
+                    nx = norm(val.x, ranges[li].min.x, ranges[li].max.x) - 0.5
+                    ny = norm(val.y, ranges[li].min.y, ranges[li].max.y) - 0.5
+                case .axis:
+                    nx = xo
+                    ny = norm(val.x, ranges[li].min.x, ranges[li].max.x) - 0.5
+                }
                 drawables.append(Drawable(kind: .point(si, li), depth: state.camera.depth(SIMD3(nx, ny, z))))
             }
         }
 
         for si in state.selectedSampleIndices where si < samples.count {
-            drawables.append(Drawable(kind: .connector(si), depth: state.camera.depth(SIMD3(0, 0, layerZ(0, layerCount, totalSpread))) - 0.01))
+            let z = slotZ(layout.zSlots[0], layout.totalSlots, totalSpread)
+            drawables.append(Drawable(kind: .connector(si), depth: state.camera.depth(SIMD3(0, 0, z)) - 0.01))
         }
 
         drawables.sort { $0.depth > $1.depth }
 
         for d in drawables {
             switch d.kind {
-            case .planeOutline(let li): drawPlane(context, size, li, layerCount, totalSpread)
-            case .axisLine(let li): drawAxis(context, size, li, layerCount, totalSpread)
-            case .point(let si, let li): drawPt(context, size, si, li, layerCount, totalSpread, ranges, samples)
-            case .connector(let si): drawLine(context, size, si, layerCount, totalSpread, ranges, samples)
+            case .planeOutline(let li): drawPlane(context, size, li, layout, totalSpread)
+            case .axisLine(let li): drawAxis(context, size, li, layout, totalSpread)
+            case .point(let si, let li): drawPt(context, size, si, li, layout, totalSpread, ranges, samples)
+            case .connector(let si): drawLine(context, size, si, layerCount, layout, totalSpread, ranges, samples)
             }
         }
 
-        // Labels
+        // Labels with shadow for readability
         for li in 0..<layerCount {
-            let z = layerZ(li, layerCount, totalSpread)
-            let p = state.camera.project(SIMD3(-0.55, 0.58, z), viewSize: size)
-            context.draw(
-                Text(state.layers[li].label).font(.system(size: 11, weight: .medium)).foregroundColor(state.layers[li].color),
-                at: p, anchor: .leading
-            )
-        }
-    }
+            let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
+            let xo = layout.xOffsets[li]
+            let labelPos: SIMD3<Double>
+            let anchor: UnitPoint
+            if xo != 0 {
+                // Grouped axis: label above its position
+                labelPos = SIMD3(xo, 0.58, z)
+                anchor = .bottom
+            } else if state.layers[li].type.isPlane {
+                labelPos = SIMD3(-0.55, 0.58, z)
+                anchor = .leading
+            } else {
+                labelPos = SIMD3(0.05, 0.58, z)
+                anchor = .bottomLeading
+            }
+            let p = state.camera.project(labelPos, viewSize: size)
+            let label = Text(state.layers[li].label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(state.layers[li].color)
 
-    private func layerZ(_ i: Int, _ count: Int, _ spread: Double) -> Double {
-        guard count > 1 else { return 0 }
-        return -spread / 2 + spread * Double(i) / Double(count - 1)
+            // Shadow for readability
+            var shadowCtx = context
+            shadowCtx.addFilter(.shadow(color: .black.opacity(0.9), radius: 3))
+            shadowCtx.draw(label, at: p, anchor: anchor)
+        }
     }
 
     private func norm(_ v: Double, _ lo: Double, _ hi: Double) -> Double {
@@ -324,8 +394,8 @@ struct LoomView: View {
         return (v - lo) / (hi - lo)
     }
 
-    private func drawPlane(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ cnt: Int, _ sp: Double) {
-        let z = layerZ(li, cnt, sp)
+    private func drawPlane(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ layout: SlotLayout, _ sp: Double) {
+        let z = slotZ(layout.zSlots[li], layout.totalSlots, sp)
         let c = [SIMD3(-0.5, -0.5, z), SIMD3(0.5, -0.5, z), SIMD3(0.5, 0.5, z), SIMD3(-0.5, 0.5, z)]
         let p = c.map { state.camera.project($0, viewSize: sz) }
         var path = Path()
@@ -336,38 +406,39 @@ struct LoomView: View {
         ctx.stroke(path, with: .color(col.opacity(0.6)), lineWidth: 1.5)
     }
 
-    private func drawAxis(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ cnt: Int, _ sp: Double) {
-        let z = layerZ(li, cnt, sp)
+    private func drawAxis(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ layout: SlotLayout, _ sp: Double) {
+        let z = slotZ(layout.zSlots[li], layout.totalSlots, sp)
+        let xo = layout.xOffsets[li]
         var path = Path()
-        path.move(to: state.camera.project(SIMD3(0, 0.5, z), viewSize: sz))
-        path.addLine(to: state.camera.project(SIMD3(0, -0.5, z), viewSize: sz))
+        path.move(to: state.camera.project(SIMD3(xo, 0.5, z), viewSize: sz))
+        path.addLine(to: state.camera.project(SIMD3(xo, -0.5, z), viewSize: sz))
         ctx.stroke(path, with: .color(state.layers[li].color.opacity(0.8)), lineWidth: 3)
     }
 
     private func drawPt(_ ctx: GraphicsContext, _ sz: CGSize, _ si: Int, _ li: Int,
-                         _ cnt: Int, _ sp: Double,
+                         _ layout: SlotLayout, _ sp: Double,
                          _ ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)],
                          _ samples: [[SIMD2<Double>]]) {
         guard si < samples.count, li < samples[si].count else { return }
         let val = samples[si][li]
-        let z = layerZ(li, cnt, sp)
+        let z = slotZ(layout.zSlots[li], layout.totalSlots, sp)
         let r = ranges[li]
         let pt: SIMD3<Double>
         switch state.layers[li].type {
         case .plane:
             pt = SIMD3(norm(val.x, r.min.x, r.max.x) - 0.5, norm(val.y, r.min.y, r.max.y) - 0.5, z)
         case .axis:
-            pt = SIMD3(0, norm(val.x, r.min.x, r.max.x) - 0.5, z)
+            pt = SIMD3(layout.xOffsets[li], norm(val.x, r.min.x, r.max.x) - 0.5, z)
         }
         let sp2 = state.camera.project(pt, viewSize: sz)
         let sel = state.selectedSampleIndices.contains(si)
-        let rad: CGFloat = sel ? 6 : 4
+        let rad: CGFloat = sel ? 3.5 : 2
         ctx.fill(Path(ellipseIn: CGRect(x: sp2.x - rad, y: sp2.y - rad, width: rad * 2, height: rad * 2)),
                  with: .color(state.layers[li].color.opacity(sel ? 1.0 : 0.7)))
     }
 
     private func drawLine(_ ctx: GraphicsContext, _ sz: CGSize, _ si: Int,
-                           _ cnt: Int, _ sp: Double,
+                           _ cnt: Int, _ layout: SlotLayout, _ sp: Double,
                            _ ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)],
                            _ samples: [[SIMD2<Double>]]) {
         guard si < samples.count, samples[si].count >= cnt else { return }
@@ -375,14 +446,14 @@ struct LoomView: View {
         var pts: [CGPoint] = []
         for li in 0..<cnt {
             let val = sample[li]
-            let z = layerZ(li, cnt, sp)
+            let z = slotZ(layout.zSlots[li], layout.totalSlots, sp)
             let r = ranges[li]
             let pt: SIMD3<Double>
             switch state.layers[li].type {
             case .plane:
                 pt = SIMD3(norm(val.x, r.min.x, r.max.x) - 0.5, norm(val.y, r.min.y, r.max.y) - 0.5, z)
             case .axis:
-                pt = SIMD3(0, norm(val.x, r.min.x, r.max.x) - 0.5, z)
+                pt = SIMD3(layout.xOffsets[li], norm(val.x, r.min.x, r.max.x) - 0.5, z)
             }
             pts.append(state.camera.project(pt, viewSize: sz))
         }
@@ -393,7 +464,7 @@ struct LoomView: View {
         ctx.stroke(path, with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
     }
 
-    // MARK: - Tap Handling
+    // MARK: - Tap Handling (multi-select)
 
     private func handleTap(at location: CGPoint) {
         guard !state.samples.isEmpty, !state.layers.isEmpty else {
@@ -402,7 +473,8 @@ struct LoomView: View {
         }
 
         let layerCount = state.layers.count
-        let totalSpread = state.spread * Double(layerCount - 1) * 1.5
+        let layout = computeSlots()
+        let totalSpread = state.spread * Double(layout.totalSlots - 1) * 1.5
         let samples = state.samples
 
         var ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)] = Array(
@@ -423,14 +495,14 @@ struct LoomView: View {
         for si in 0..<samples.count {
             for li in 0..<Swift.min(samples[si].count, layerCount) {
                 let val = samples[si][li]
-                let z = layerZ(li, layerCount, totalSpread)
+                let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
                 let r = ranges[li]
                 let pt: SIMD3<Double>
                 switch state.layers[li].type {
                 case .plane:
                     pt = SIMD3(norm(val.x, r.min.x, r.max.x) - 0.5, norm(val.y, r.min.y, r.max.y) - 0.5, z)
                 case .axis:
-                    pt = SIMD3(0, norm(val.x, r.min.x, r.max.x) - 0.5, z)
+                    pt = SIMD3(layout.xOffsets[li], norm(val.x, r.min.x, r.max.x) - 0.5, z)
                 }
                 let sp = state.camera.project(pt, viewSize: size)
                 let dx = sp.x - location.x
@@ -441,12 +513,14 @@ struct LoomView: View {
         }
 
         if bestDist < 20 && bestSample >= 0 {
+            // Multi-select: toggle individual points
             if state.selectedSampleIndices.contains(bestSample) {
                 state.selectedSampleIndices.remove(bestSample)
             } else {
-                state.selectedSampleIndices = [bestSample]
+                state.selectedSampleIndices.insert(bestSample)
             }
         } else {
+            // Tapped empty space: clear all
             state.selectedSampleIndices = []
         }
     }
