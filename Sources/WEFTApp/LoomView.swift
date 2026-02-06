@@ -68,6 +68,8 @@ struct LoomView: View {
     @StateObject private var state = LoomState()
     @State private var dragStart: CGPoint? = nil
     @State private var canvasSize: CGSize = .zero
+    @State private var playStartWallTime: Double = 0
+    @State private var playStartScrubTime: Double = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -108,7 +110,11 @@ struct LoomView: View {
         .onChange(of: state.layers.count) { _, _ in refreshSamples() }
         .task(id: state.isPlaying) {
             guard state.isPlaying else { return }
+            playStartWallTime = Date().timeIntervalSinceReferenceDate
+            playStartScrubTime = state.scrubTime
             while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSinceReferenceDate - playStartWallTime
+                state.scrubTime = playStartScrubTime + elapsed
                 refreshSamples()
                 try? await Task.sleep(for: .milliseconds(100))
             }
@@ -123,8 +129,7 @@ struct LoomView: View {
     // MARK: - Refresh
 
     private func refreshSamples() {
-        let time = state.isPlaying ? coordinator.time : state.scrubTime
-        evaluateSamples(time: time)
+        evaluateSamples(time: state.scrubTime)
     }
 
     // MARK: - 3D Canvas
