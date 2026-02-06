@@ -252,7 +252,8 @@ struct LoomView: View {
             return
         }
 
-        let interpreter = IRInterpreter(program: program)
+        let interpreter = IRInterpreter(program: program,
+                                         resourceSampler: coordinator.buildResourceSampler())
         let res = state.resolution
         var newSamples: [[SIMD2<Double>]] = []
         newSamples.reserveCapacity(res * res)

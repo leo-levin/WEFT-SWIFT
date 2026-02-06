@@ -2,16 +2,25 @@
 
 import Foundation
 
+/// Closure that samples a resource pixel: (builtinName, argValues) -> value
+/// For "camera": args = [u, v, channel]
+/// For "texture": args = [resourceId, u, v, channel]
+public typealias ResourceSampler = (String, [Double]) -> Double?
+
 /// Evaluates IRExpr trees at arbitrary coordinate values on the CPU.
 /// Used by Loom to sample strand values at a grid of input coordinates.
 public class IRInterpreter {
     public let program: IRProgram
 
+    /// Optional resource sampler for real camera/texture pixel values
+    public var resourceSampler: ResourceSampler?
+
     /// Track bundles currently being evaluated to detect cycles
     private var evaluating: Set<String> = []
 
-    public init(program: IRProgram) {
+    public init(program: IRProgram, resourceSampler: ResourceSampler? = nil) {
         self.program = program
+        self.resourceSampler = resourceSampler
     }
 
     /// Evaluate an expression at given coordinate values.
@@ -229,26 +238,33 @@ public class IRInterpreter {
             let scaled = sinVal * 43758.5453
             return scaled - floor(scaled)
 
-        // Resource builtins - synthetic procedural image for Loom
-        case "camera", "texture", "load":
-            if argValues.count >= 3 {
-                let u = argValues[0]
-                let v = argValues[1]
-                let channel = Int(argValues[2])
-                // Hash-noise for texture variation
-                let dot = u * 12.9898 + v * 78.233
-                let n = sin(dot) * 43758.5453
-                let noise = n - floor(n)
-                switch channel {
-                case 0: return Swift.max(0, Swift.min(1, u * 0.7 + noise * 0.3))
-                case 1: return Swift.max(0, Swift.min(1, (u + v) * 0.35 + noise * 0.2))
-                case 2: return Swift.max(0, Swift.min(1, v * 0.7 + noise * 0.3))
-                default: return 0
-                }
-            } else if argValues.count >= 2 {
-                return argValues[0]
+        // Resource builtins - real pixel sampling (or synthetic fallback)
+        case "camera", "texture":
+            // Try real pixel sampling first
+            if let sampler = resourceSampler,
+               let value = sampler(name, argValues) {
+                return value
             }
-            return 0.5
+            // Fallback: synthetic procedural values
+            let u: Double, v: Double, channel: Int
+            if name == "texture" && argValues.count >= 4 {
+                // texture(resourceId, u, v, channel)
+                u = argValues[1]; v = argValues[2]; channel = Int(argValues[3])
+            } else if argValues.count >= 3 {
+                // camera(u, v, channel)
+                u = argValues[0]; v = argValues[1]; channel = Int(argValues[2])
+            } else {
+                return 0.5
+            }
+            let dot = u * 12.9898 + v * 78.233
+            let n = sin(dot) * 43758.5453
+            let noise = n - floor(n)
+            switch channel {
+            case 0: return Swift.max(0, Swift.min(1, u * 0.7 + noise * 0.3))
+            case 1: return Swift.max(0, Swift.min(1, (u + v) * 0.35 + noise * 0.2))
+            case 2: return Swift.max(0, Swift.min(1, v * 0.7 + noise * 0.3))
+            default: return 0
+            }
 
         // Hardware builtins - return 0 in Loom mode
         case "microphone", "sample", "text":
