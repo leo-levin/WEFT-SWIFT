@@ -434,7 +434,7 @@ struct LoomView: View {
         let sel = state.selectedSampleIndices.contains(si)
         let rad: CGFloat = sel ? 3.5 : 2
         ctx.fill(Path(ellipseIn: CGRect(x: sp2.x - rad, y: sp2.y - rad, width: rad * 2, height: rad * 2)),
-                 with: .color(state.layers[li].color.opacity(sel ? 1.0 : 0.7)))
+                 with: .color(state.layers[li].color.opacity(sel ? 1.0 : 0.4)))
     }
 
     private func drawLine(_ ctx: GraphicsContext, _ sz: CGSize, _ si: Int,
@@ -443,6 +443,8 @@ struct LoomView: View {
                            _ samples: [[SIMD2<Double>]]) {
         guard si < samples.count, samples[si].count >= cnt else { return }
         let sample = samples[si]
+
+        // Project all points
         var pts: [CGPoint] = []
         for li in 0..<cnt {
             let val = sample[li]
@@ -458,10 +460,35 @@ struct LoomView: View {
             pts.append(state.camera.project(pt, viewSize: sz))
         }
         guard pts.count >= 2 else { return }
-        var path = Path()
-        path.move(to: pts[0])
-        for i in 1..<pts.count { path.addLine(to: pts[i]) }
-        ctx.stroke(path, with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+
+        // Group layer indices by z-slot for fan-out/in
+        var slotGroups: [(slot: Int, layers: [Int])] = []
+        var i = 0
+        while i < cnt {
+            let slot = layout.zSlots[i]
+            var group = [i]
+            i += 1
+            while i < cnt && layout.zSlots[i] == slot {
+                group.append(i)
+                i += 1
+            }
+            slotGroups.append((slot, group))
+        }
+
+        let style = StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+        let color: GraphicsContext.Shading = .color(.white.opacity(0.6))
+
+        // Draw lines between adjacent slot groups (fan-out / fan-in)
+        for gi in 0..<(slotGroups.count - 1) {
+            for fromIdx in slotGroups[gi].layers {
+                for toIdx in slotGroups[gi + 1].layers {
+                    var path = Path()
+                    path.move(to: pts[fromIdx])
+                    path.addLine(to: pts[toIdx])
+                    ctx.stroke(path, with: color, style: style)
+                }
+            }
+        }
     }
 
     // MARK: - Tap Handling (multi-select)
@@ -491,38 +518,63 @@ struct LoomView: View {
         let size = canvasSize
         var bestDist = Double.infinity
         var bestSample = -1
+        var bestLayer = -1
 
         for si in 0..<samples.count {
             for li in 0..<Swift.min(samples[si].count, layerCount) {
-                let val = samples[si][li]
-                let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
-                let r = ranges[li]
-                let pt: SIMD3<Double>
-                switch state.layers[li].type {
-                case .plane:
-                    pt = SIMD3(norm(val.x, r.min.x, r.max.x) - 0.5, norm(val.y, r.min.y, r.max.y) - 0.5, z)
-                case .axis:
-                    pt = SIMD3(layout.xOffsets[li], norm(val.x, r.min.x, r.max.x) - 0.5, z)
-                }
-                let sp = state.camera.project(pt, viewSize: size)
+                let sp = projectSample(si: si, li: li, layout: layout, totalSpread: totalSpread,
+                                       ranges: ranges, samples: samples, size: size)
                 let dx = sp.x - location.x
                 let dy = sp.y - location.y
                 let dist = sqrt(dx * dx + dy * dy)
-                if dist < bestDist { bestDist = dist; bestSample = si }
+                if dist < bestDist { bestDist = dist; bestSample = si; bestLayer = li }
             }
         }
 
         if bestDist < 20 && bestSample >= 0 {
-            // Multi-select: toggle individual points
+            // Find all samples that map to the same projected location at the tapped layer
+            let targetPt = projectSample(si: bestSample, li: bestLayer, layout: layout,
+                                          totalSpread: totalSpread, ranges: ranges,
+                                          samples: samples, size: size)
+            var matching: Set<Int> = []
+            for si in 0..<samples.count {
+                guard bestLayer < samples[si].count else { continue }
+                let pt = projectSample(si: si, li: bestLayer, layout: layout,
+                                        totalSpread: totalSpread, ranges: ranges,
+                                        samples: samples, size: size)
+                let dx = pt.x - targetPt.x
+                let dy = pt.y - targetPt.y
+                if sqrt(dx * dx + dy * dy) < 8 {
+                    matching.insert(si)
+                }
+            }
+
+            // Toggle: if already selected, deselect all matching; otherwise select all
             if state.selectedSampleIndices.contains(bestSample) {
-                state.selectedSampleIndices.remove(bestSample)
+                state.selectedSampleIndices.subtract(matching)
             } else {
-                state.selectedSampleIndices.insert(bestSample)
+                state.selectedSampleIndices.formUnion(matching)
             }
         } else {
             // Tapped empty space: clear all
             state.selectedSampleIndices = []
         }
+    }
+
+    private func projectSample(si: Int, li: Int, layout: SlotLayout, totalSpread: Double,
+                                ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)],
+                                samples: [[SIMD2<Double>]], size: CGSize) -> CGPoint {
+        let val = samples[si][li]
+        let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
+        let r = ranges[li]
+        let pt: SIMD3<Double>
+        switch state.layers[li].type {
+        case .plane:
+            pt = SIMD3(norm(val.x, r.min.x, r.max.x) - 0.5, norm(val.y, r.min.y, r.max.y) - 0.5, z)
+        case .axis:
+            pt = SIMD3(layout.xOffsets[li], norm(val.x, r.min.x, r.max.x) - 0.5, z)
+        }
+        return state.camera.project(pt, viewSize: size)
     }
 }
 

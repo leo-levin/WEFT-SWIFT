@@ -91,22 +91,7 @@ struct LoomLayerPanel: View {
                     Text("No additional bundles")
                 } else {
                     ForEach(available, id: \.self) { name in
-                        let bundle = program.bundles[name]!
-                        let strandCount = bundle.strands.count
-                        if strandCount >= 2 {
-                            Menu(name) {
-                                Button("As Plane") {
-                                    addLayerAsPlane(bundleName: name, program: program)
-                                }
-                                Button("As Axes (Group)") {
-                                    addLayerAsAxisGroup(bundleName: name, program: program)
-                                }
-                            }
-                        } else {
-                            Button(name) {
-                                addLayerAsAxis(bundleName: name, strandName: bundle.strands[0].name, expr: bundle.strands[0].expr)
-                            }
-                        }
+                        addMenuItem(name: name, program: program)
                     }
                 }
             }
@@ -117,6 +102,26 @@ struct LoomLayerPanel: View {
         }
         .menuStyle(.borderlessButton)
         .frame(width: 18)
+    }
+
+    @ViewBuilder
+    private func addMenuItem(name: String, program: IRProgram) -> some View {
+        if let bundle = program.bundles[name] {
+            if bundle.strands.count >= 2 {
+                Menu(name) {
+                    Button("As Plane") {
+                        addLayerAsPlane(bundleName: name, program: program)
+                    }
+                    Button("As Axes (Group)") {
+                        addLayerAsAxisGroup(bundleName: name, program: program)
+                    }
+                }
+            } else if !bundle.strands.isEmpty {
+                Button(name) {
+                    addLayerAsAxis(bundleName: name, strandName: bundle.strands[0].name, expr: bundle.strands[0].expr)
+                }
+            }
+        }
     }
 
     // MARK: - Helpers

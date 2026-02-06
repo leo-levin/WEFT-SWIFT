@@ -229,8 +229,25 @@ public class IRInterpreter {
             let scaled = sinVal * 43758.5453
             return scaled - floor(scaled)
 
+        // Resource builtins - synthetic coordinate-passthrough values for Loom
+        case "camera", "texture", "load":
+            if argValues.count >= 3 {
+                let u = argValues[0]
+                let v = argValues[1]
+                let channel = Int(argValues[2])
+                switch channel {
+                case 0: return u
+                case 1: return v
+                case 2: return (u + v) / 2
+                default: return 0
+                }
+            } else if argValues.count >= 2 {
+                return argValues[0]
+            }
+            return 0.5
+
         // Hardware builtins - return 0 in Loom mode
-        case "camera", "texture", "microphone", "sample", "load", "text":
+        case "microphone", "sample", "text":
             return 0.0
 
         // Input builtins - return 0 in Loom mode
