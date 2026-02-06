@@ -1,10 +1,10 @@
-// DraftControls.swift - Control strip for Draft visualization
+// LoomControls.swift - Control strip for Loom visualization
 
 import SwiftUI
 import WEFTLib
 
-struct DraftControls: View {
-    @ObservedObject var state: DraftState
+struct LoomControls: View {
+    @ObservedObject var state: LoomState
     let coordinator: Coordinator
 
     var body: some View {
@@ -50,13 +50,13 @@ struct DraftControls: View {
                 Slider(
                     value: Binding(
                         get: { Double(state.resolution) },
-                        set: { state.resolution = max(2, min(DraftState.maxResolution, Int($0))) }
+                        set: { state.resolution = max(2, min(LoomState.maxResolution, Int($0))) }
                     ),
-                    in: 2...Double(DraftState.maxResolution),
+                    in: 2...Double(LoomState.maxResolution),
                     step: 1
                 )
                 .frame(width: 60)
-                Text("\(state.resolution)×\(state.resolution)")
+                Text("\(state.resolution)\u{00D7}\(state.resolution)")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
                     .frame(width: 36, alignment: .trailing)
@@ -83,13 +83,13 @@ struct DraftControls: View {
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.tertiary)
 
-                regionField("x₀", value: $state.regionMin.x)
-                regionField("y₀", value: $state.regionMin.y)
-                Text("–")
+                regionField("x\u{2080}", value: $state.regionMin.x)
+                regionField("y\u{2080}", value: $state.regionMin.y)
+                Text("\u{2013}")
                     .font(.system(size: 9))
                     .foregroundStyle(.quaternary)
-                regionField("x₁", value: $state.regionMax.x)
-                regionField("y₁", value: $state.regionMax.y)
+                regionField("x\u{2081}", value: $state.regionMax.x)
+                regionField("y\u{2081}", value: $state.regionMax.y)
 
                 Button {
                     state.regionMin = SIMD2(0, 0)

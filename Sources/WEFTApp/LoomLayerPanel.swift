@@ -1,10 +1,10 @@
-// DraftLayerPanel.swift - Layer list sidebar for Draft visualization
+// LoomLayerPanel.swift - Layer list sidebar for Loom visualization
 
 import SwiftUI
 import WEFTLib
 
-struct DraftLayerPanel: View {
-    @ObservedObject var state: DraftState
+struct LoomLayerPanel: View {
+    @ObservedObject var state: LoomState
     let coordinator: Coordinator
 
     var body: some View {
@@ -38,7 +38,7 @@ struct DraftLayerPanel: View {
 
     // MARK: - Layer Row
 
-    private func layerRow(layer: DraftLayer, index: Int) -> some View {
+    private func layerRow(layer: LoomLayer, index: Int) -> some View {
         HStack(spacing: Spacing.xs) {
             // Color indicator
             Circle()
@@ -119,7 +119,7 @@ struct DraftLayerPanel: View {
         guard let bundle = program.bundles[bundleName] else { return }
         let strands = bundle.strands.sorted(by: { $0.index < $1.index })
 
-        let type: DraftLayerSpec.LayerType
+        let type: LoomLayerSpec.LayerType
         let label: String
         let strandExprs: [(String, IRExpr)]
 
@@ -136,20 +136,19 @@ struct DraftLayerPanel: View {
             return
         }
 
-        let spec = DraftLayerSpec(bundleName: bundleName, type: type, label: label, strandExprs: strandExprs)
-        let t = state.layers.isEmpty ? 0.5 : 0.5 // Middle color for manually added
+        let spec = LoomLayerSpec(bundleName: bundleName, type: type, label: label, strandExprs: strandExprs)
         let color = Color.purple.opacity(0.8)
-        state.layers.append(DraftLayer(from: spec, color: color))
+        state.layers.append(LoomLayer(from: spec, color: color))
     }
 
-    private func layerTypeIcon(_ type: DraftLayerSpec.LayerType) -> String {
+    private func layerTypeIcon(_ type: LoomLayerSpec.LayerType) -> String {
         switch type {
         case .plane: return "square"
         case .axis: return "line.diagonal"
         }
     }
 
-    private func layerTypeLabel(_ type: DraftLayerSpec.LayerType) -> String {
+    private func layerTypeLabel(_ type: LoomLayerSpec.LayerType) -> String {
         switch type {
         case .plane: return "plane"
         case .axis: return "axis"

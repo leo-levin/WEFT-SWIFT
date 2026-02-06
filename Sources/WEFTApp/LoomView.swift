@@ -1,13 +1,13 @@
-// DraftView.swift - Draft coordinate visualization (3D stacked planes/axes)
+// LoomView.swift - Loom coordinate visualization (3D stacked planes/axes)
 
 import SwiftUI
 import Combine
 import WEFTLib
 
-// MARK: - Draft State
+// MARK: - Loom State
 
-class DraftState: ObservableObject {
-    @Published var layers: [DraftLayer] = []
+class LoomState: ObservableObject {
+    @Published var layers: [LoomLayer] = []
     @Published var samples: [[SIMD2<Double>]] = []
     @Published var selectedSampleIndices: Set<Int> = []
 
@@ -32,17 +32,17 @@ class DraftState: ObservableObject {
     static let maxResolution = 50
 }
 
-// MARK: - Draft Layer
+// MARK: - Loom Layer
 
-struct DraftLayer: Identifiable {
+struct LoomLayer: Identifiable {
     let id: UUID
     let bundleName: String
     let label: String
-    let type: DraftLayerSpec.LayerType
+    let type: LoomLayerSpec.LayerType
     let strandExprs: [(strandName: String, expr: IRExpr)]
     let color: Color
 
-    init(from spec: DraftLayerSpec, color: Color) {
+    init(from spec: LoomLayerSpec, color: Color) {
         self.id = spec.id
         self.bundleName = spec.bundleName
         self.label = spec.label
@@ -52,14 +52,14 @@ struct DraftLayer: Identifiable {
     }
 }
 
-// MARK: - Draft View
+// MARK: - Loom View
 
-struct DraftView: View {
+struct LoomView: View {
     let coordinator: Coordinator
-    @Binding var draftNodeName: String?
-    @StateObject private var state = DraftState()
+    @Binding var loomNodeName: String?
+    @StateObject private var state = LoomState()
     @State private var dragStart: CGPoint? = nil
-    @State private var timer: AnyCancellable? = nil
+    @State private var canvasSize: CGSize = .zero
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,23 +67,23 @@ struct DraftView: View {
                 EmptyStateView(
                     "perspective",
                     message: "No chain selected",
-                    hint: "Select a node in Graph and tap \"View in Draft\""
+                    hint: "Select a node in Graph and tap \"View in Loom\""
                 )
             } else {
                 HSplitView {
-                    draftCanvas
+                    loomCanvas
                         .frame(minWidth: 200)
-                    DraftLayerPanel(state: state, coordinator: coordinator)
+                    LoomLayerPanel(state: state, coordinator: coordinator)
                         .frame(minWidth: 120, idealWidth: 150, maxWidth: 200)
                 }
 
                 SubtleDivider(.horizontal)
 
-                DraftControls(state: state, coordinator: coordinator)
+                LoomControls(state: state, coordinator: coordinator)
             }
         }
         .background(Color(NSColor.windowBackgroundColor))
-        .onChange(of: draftNodeName) { _, newName in
+        .onChange(of: loomNodeName) { _, newName in
             if let name = newName {
                 setupChain(for: name)
             }
@@ -95,31 +95,21 @@ struct DraftView: View {
             if !state.isPlaying { refreshSamples() }
         }
         .onChange(of: state.layers.count) { _, _ in refreshSamples() }
-        .onChange(of: state.isPlaying) { _, playing in
-            if playing { startTimer() } else { stopTimer() }
+        .task(id: state.isPlaying) {
+            guard state.isPlaying else { return }
+            while !Task.isCancelled {
+                refreshSamples()
+                try? await Task.sleep(for: .milliseconds(100))
+            }
         }
         .onAppear {
-            if let name = draftNodeName {
+            if let name = loomNodeName {
                 setupChain(for: name)
             }
-            if state.isPlaying { startTimer() }
         }
-        .onDisappear { stopTimer() }
     }
 
-    // MARK: - Timer for Live Playback
-
-    private func startTimer() {
-        stopTimer()
-        timer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common)
-            .autoconnect()
-            .sink { _ in refreshSamples() }
-    }
-
-    private func stopTimer() {
-        timer?.cancel()
-        timer = nil
-    }
+    // MARK: - Refresh
 
     private func refreshSamples() {
         let time = state.isPlaying ? coordinator.time : state.scrubTime
@@ -128,13 +118,20 @@ struct DraftView: View {
 
     // MARK: - 3D Canvas
 
-    private var draftCanvas: some View {
+    private var loomCanvas: some View {
         Canvas { context, size in
-            drawDraft(context: context, size: size)
+            drawLoom(context: context, size: size)
         }
         .background(Color(NSColor.windowBackgroundColor))
-        .gesture(dragGesture)
+        .overlay(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { canvasSize = geo.size }
+                    .onChange(of: geo.size) { _, newSize in canvasSize = newSize }
+            }
+        )
         .gesture(tapGesture)
+        .simultaneousGesture(dragGesture)
     }
 
     // MARK: - Gestures
@@ -177,9 +174,9 @@ struct DraftView: View {
         let specs = tracer.trace(from: bundleName)
         guard !specs.isEmpty else { return }
 
-        let layers = specs.enumerated().map { (i, spec) -> DraftLayer in
+        let layers = specs.enumerated().map { (i, spec) -> LoomLayer in
             let t = specs.count <= 1 ? 0.0 : Double(i) / Double(specs.count - 1)
-            return DraftLayer(from: spec, color: layerColor(t: t))
+            return LoomLayer(from: spec, color: layerColor(t: t))
         }
 
         state.layers = layers
@@ -246,7 +243,7 @@ struct DraftView: View {
 
     // MARK: - Drawing
 
-    private func drawDraft(context: GraphicsContext, size: CGSize) {
+    private func drawLoom(context: GraphicsContext, size: CGSize) {
         guard !state.layers.isEmpty else { return }
 
         let layerCount = state.layers.count
@@ -309,9 +306,9 @@ struct DraftView: View {
         // Labels
         for li in 0..<layerCount {
             let z = layerZ(li, layerCount, totalSpread)
-            let p = state.camera.project(SIMD3(-0.6, 0.55, z), viewSize: size)
+            let p = state.camera.project(SIMD3(-0.55, 0.58, z), viewSize: size)
             context.draw(
-                Text(state.layers[li].label).font(.system(size: 9, weight: .medium)).foregroundColor(state.layers[li].color),
+                Text(state.layers[li].label).font(.system(size: 11, weight: .medium)).foregroundColor(state.layers[li].color),
                 at: p, anchor: .leading
             )
         }
@@ -335,8 +332,8 @@ struct DraftView: View {
         path.move(to: p[0]); path.addLine(to: p[1]); path.addLine(to: p[2]); path.addLine(to: p[3])
         path.closeSubpath()
         let col = state.layers[li].color
-        ctx.fill(path, with: .color(col.opacity(0.04)))
-        ctx.stroke(path, with: .color(col.opacity(0.3)), lineWidth: 1)
+        ctx.fill(path, with: .color(col.opacity(0.10)))
+        ctx.stroke(path, with: .color(col.opacity(0.6)), lineWidth: 1.5)
     }
 
     private func drawAxis(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ cnt: Int, _ sp: Double) {
@@ -344,7 +341,7 @@ struct DraftView: View {
         var path = Path()
         path.move(to: state.camera.project(SIMD3(0, 0.5, z), viewSize: sz))
         path.addLine(to: state.camera.project(SIMD3(0, -0.5, z), viewSize: sz))
-        ctx.stroke(path, with: .color(state.layers[li].color.opacity(0.5)), lineWidth: 2)
+        ctx.stroke(path, with: .color(state.layers[li].color.opacity(0.8)), lineWidth: 3)
     }
 
     private func drawPt(_ ctx: GraphicsContext, _ sz: CGSize, _ si: Int, _ li: Int,
@@ -364,7 +361,7 @@ struct DraftView: View {
         }
         let sp2 = state.camera.project(pt, viewSize: sz)
         let sel = state.selectedSampleIndices.contains(si)
-        let rad: CGFloat = sel ? 4 : 2.5
+        let rad: CGFloat = sel ? 6 : 4
         ctx.fill(Path(ellipseIn: CGRect(x: sp2.x - rad, y: sp2.y - rad, width: rad * 2, height: rad * 2)),
                  with: .color(state.layers[li].color.opacity(sel ? 1.0 : 0.7)))
     }
@@ -393,7 +390,7 @@ struct DraftView: View {
         var path = Path()
         path.move(to: pts[0])
         for i in 1..<pts.count { path.addLine(to: pts[i]) }
-        ctx.stroke(path, with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        ctx.stroke(path, with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
     }
 
     // MARK: - Tap Handling
@@ -419,8 +416,7 @@ struct DraftView: View {
             }
         }
 
-        // Need actual view size for hit testing — use a reasonable default
-        let size = CGSize(width: 400, height: 300)
+        let size = canvasSize
         var bestDist = Double.infinity
         var bestSample = -1
 
@@ -444,7 +440,7 @@ struct DraftView: View {
             }
         }
 
-        if bestDist < 15 && bestSample >= 0 {
+        if bestDist < 20 && bestSample >= 0 {
             if state.selectedSampleIndices.contains(bestSample) {
                 state.selectedSampleIndices.remove(bestSample)
             } else {
@@ -458,7 +454,7 @@ struct DraftView: View {
 
 // MARK: - LayerType Extension
 
-extension DraftLayerSpec.LayerType {
+extension LoomLayerSpec.LayerType {
     var isPlane: Bool {
         switch self {
         case .plane: return true
