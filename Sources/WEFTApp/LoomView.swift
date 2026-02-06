@@ -96,7 +96,10 @@ struct LoomView: View {
                 setupChain(for: name)
             }
         }
-        .onChange(of: state.resolution) { _, _ in refreshSamples() }
+        .onChange(of: state.resolution) { _, _ in
+            state.selectedSampleIndices = []
+            refreshSamples()
+        }
         .onChange(of: state.regionMin) { _, _ in refreshSamples() }
         .onChange(of: state.regionMax) { _, _ in refreshSamples() }
         .onChange(of: state.scrubTime) { _, _ in
