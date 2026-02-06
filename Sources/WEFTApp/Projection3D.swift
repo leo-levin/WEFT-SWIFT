@@ -3,10 +3,15 @@
 import SwiftUI
 import simd
 
-struct Camera3D {
+struct Camera3D: Equatable {
     var yaw: Double = -0.4      // Rotation around Y axis (from drag)
     var pitch: Double = 0.3     // Rotation around X axis (from drag)
     var scale: Double = 0.7     // Viewport scale factor
+    var offsetX: Double = 0     // Pan offset X (in screen units, normalized)
+    var offsetY: Double = 0     // Pan offset Y (in screen units, normalized)
+
+    /// Default camera state for reset
+    static let `default` = Camera3D()
 
     /// Project a 3D point to 2D screen coordinates (isometric — no perspective).
     func project(_ point: SIMD3<Double>, viewSize: CGSize) -> CGPoint {
@@ -15,8 +20,8 @@ struct Camera3D {
         let halfH = viewSize.height * 0.5
         let s = min(halfW, halfH) * scale
         return CGPoint(
-            x: halfW + rotated.x * s,
-            y: halfH - rotated.y * s
+            x: halfW + rotated.x * s + offsetX * s,
+            y: halfH - rotated.y * s + offsetY * s
         )
     }
 
