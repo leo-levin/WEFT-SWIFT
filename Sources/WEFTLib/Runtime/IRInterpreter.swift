@@ -229,16 +229,20 @@ public class IRInterpreter {
             let scaled = sinVal * 43758.5453
             return scaled - floor(scaled)
 
-        // Resource builtins - synthetic coordinate-passthrough values for Loom
+        // Resource builtins - synthetic procedural image for Loom
         case "camera", "texture", "load":
             if argValues.count >= 3 {
                 let u = argValues[0]
                 let v = argValues[1]
                 let channel = Int(argValues[2])
+                // Hash-noise for texture variation
+                let dot = u * 12.9898 + v * 78.233
+                let n = sin(dot) * 43758.5453
+                let noise = n - floor(n)
                 switch channel {
-                case 0: return u
-                case 1: return v
-                case 2: return (u + v) / 2
+                case 0: return Swift.max(0, Swift.min(1, u * 0.7 + noise * 0.3))
+                case 1: return Swift.max(0, Swift.min(1, (u + v) * 0.35 + noise * 0.2))
+                case 2: return Swift.max(0, Swift.min(1, v * 0.7 + noise * 0.3))
                 default: return 0
                 }
             } else if argValues.count >= 2 {
