@@ -29,6 +29,7 @@ struct GraphEdge: Identifiable {
 
 struct GraphView: View {
     let coordinator: Coordinator
+    var onViewInDraft: ((String) -> Void)? = nil
     @State private var hoveredNode: String? = nil
     @State private var selectedNode: String? = nil
     @State private var nodePositions: [String: CGPoint] = [:]
@@ -75,7 +76,7 @@ struct GraphView: View {
 
                 // Popover for selected node
                 if let nodeName = selectedNode, let node = graphNodes[nodeName], let pos = nodePositions[nodeName] {
-                    NodePopover(node: node, onDismiss: { selectedNode = nil })
+                    NodePopover(node: node, onDismiss: { selectedNode = nil }, onViewInDraft: onViewInDraft)
                         .position(x: pos.x, y: pos.y - layoutParams.nodeHeight / 2 - 60)
                 }
             }
@@ -371,6 +372,7 @@ struct GraphView: View {
 struct NodePopover: View {
     let node: GraphNode
     let onDismiss: () -> Void
+    var onViewInDraft: ((String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -428,6 +430,26 @@ struct NodePopover: View {
                 if !node.dependents.isEmpty {
                     infoRow("Used by", value: node.dependents.sorted().joined(separator: ", "))
                 }
+            }
+
+            if onViewInDraft != nil {
+                Divider()
+                Button {
+                    onViewInDraft?(node.name)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "perspective")
+                            .font(.system(size: 8))
+                        Text("View in Draft")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(8)

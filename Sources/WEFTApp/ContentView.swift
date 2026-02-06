@@ -5,6 +5,13 @@ import AppKit
 import UniformTypeIdentifiers
 import WEFTLib
 
+// MARK: - Graph Panel Mode
+
+enum GraphPanelMode {
+    case graph
+    case draft
+}
+
 struct ContentView: View {
     @StateObject private var viewModel = WeftViewModel()
     @State private var showGraph = true
@@ -12,6 +19,8 @@ struct ContentView: View {
     @State private var showStats = true
     @State private var showDevMode = false
     @State private var devModeTab: DevModeTab = .ir
+    @State private var graphPanelMode: GraphPanelMode = .graph
+    @State private var draftNodeName: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,6 +36,7 @@ struct ContentView: View {
         .focusedSceneValue(\.showErrors, $showErrors)
         .focusedSceneValue(\.showStats, $showStats)
         .focusedSceneValue(\.showDevMode, $showDevMode)
+        .focusedSceneValue(\.graphPanelMode, $graphPanelMode)
         .navigationTitle(viewModel.documentTitle)
         .onOpenURL { url in
             viewModel.loadFile(from: url)
@@ -350,9 +360,14 @@ struct ContentView: View {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
-                Text("Graph")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+
+                Picker("", selection: $graphPanelMode) {
+                    Text("Graph").tag(GraphPanelMode.graph)
+                    Text("Draft").tag(GraphPanelMode.draft)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
+
                 Spacer()
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -371,7 +386,17 @@ struct ContentView: View {
 
             SubtleDivider(.horizontal)
 
-            GraphView(coordinator: viewModel.coordinator)
+            switch graphPanelMode {
+            case .graph:
+                GraphView(coordinator: viewModel.coordinator, onViewInDraft: { nodeName in
+                    draftNodeName = nodeName
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        graphPanelMode = .draft
+                    }
+                })
+            case .draft:
+                DraftView(coordinator: viewModel.coordinator, draftNodeName: $draftNodeName)
+            }
         }
     }
 }

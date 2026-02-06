@@ -90,6 +90,7 @@ struct PanelCommands: Commands {
     @FocusedBinding(\.showErrors) var showErrors
     @FocusedBinding(\.showStats) var showStats
     @FocusedBinding(\.showDevMode) var showDevMode
+    @FocusedBinding(\.graphPanelMode) var graphPanelMode
 
     var body: some Commands {
         CommandGroup(after: .toolbar) {
@@ -99,6 +100,15 @@ struct PanelCommands: Commands {
                     set: { showGraph = $0 }
                 ))
                 .keyboardShortcut("g", modifiers: [.command, .shift])
+
+                Toggle("Draft View", isOn: Binding(
+                    get: { graphPanelMode == .draft },
+                    set: { newValue in
+                        graphPanelMode = newValue ? .draft : .graph
+                        if newValue { showGraph = true }
+                    }
+                ))
+                .keyboardShortcut("d", modifiers: [.command, .option])
 
                 Toggle("Errors", isOn: Binding(
                     get: { showErrors ?? true },
@@ -156,6 +166,10 @@ struct ShowDevModeKey: FocusedValueKey {
     typealias Value = Binding<Bool>
 }
 
+struct GraphPanelModeKey: FocusedValueKey {
+    typealias Value = Binding<GraphPanelMode>
+}
+
 extension FocusedValues {
     var viewModel: WeftViewModel? {
         get { self[ViewModelKey.self] }
@@ -180,6 +194,11 @@ extension FocusedValues {
     var showDevMode: Binding<Bool>? {
         get { self[ShowDevModeKey.self] }
         set { self[ShowDevModeKey.self] = newValue }
+    }
+
+    var graphPanelMode: Binding<GraphPanelMode>? {
+        get { self[GraphPanelModeKey.self] }
+        set { self[GraphPanelModeKey.self] = newValue }
     }
 }
 
