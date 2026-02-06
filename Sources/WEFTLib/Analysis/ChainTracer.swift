@@ -1,11 +1,11 @@
-// ChainTracer.swift - Auto-trace signal chain for Draft visualization
+// ChainTracer.swift - Auto-trace signal chain for Loom visualization
 
 import Foundation
 
-// MARK: - Draft Layer Spec
+// MARK: - Loom Layer Spec
 
-/// Describes a layer in the Draft coordinate visualization.
-public struct DraftLayerSpec: Identifiable {
+/// Describes a layer in the Loom coordinate visualization.
+public struct LoomLayerSpec: Identifiable {
     public let id: UUID
 
     public enum LayerType: Equatable {
@@ -37,7 +37,7 @@ public struct DraftLayerSpec: Identifiable {
 
 // MARK: - Chain Tracer
 
-/// Traces upstream from a selected bundle to build an ordered list of Draft layers.
+/// Traces upstream from a selected bundle to build an ordered list of Loom layers.
 public class ChainTracer {
     private let program: IRProgram
     private let graph: DependencyGraph
@@ -50,7 +50,7 @@ public class ChainTracer {
     }
 
     /// Trace upstream from the selected bundle, returning layers from input coordinates to the target.
-    public func trace(from bundleName: String) -> [DraftLayerSpec] {
+    public func trace(from bundleName: String) -> [LoomLayerSpec] {
         guard program.bundles[bundleName] != nil else { return [] }
 
         // Get all transitive dependencies
@@ -78,11 +78,11 @@ public class ChainTracer {
         let isVisual = determineIsVisual(bundleName: bundleName)
 
         // Build layers
-        var layers: [DraftLayerSpec] = []
+        var layers: [LoomLayerSpec] = []
 
         // Prepend synthetic "me" input layer
         if isVisual {
-            layers.append(DraftLayerSpec(
+            layers.append(LoomLayerSpec(
                 bundleName: "me",
                 type: .plane(xStrand: "me.x", yStrand: "me.y"),
                 label: "me.x, me.y",
@@ -92,7 +92,7 @@ public class ChainTracer {
                 ]
             ))
         } else {
-            layers.append(DraftLayerSpec(
+            layers.append(LoomLayerSpec(
                 bundleName: "me",
                 type: .axis(strand: "me.i"),
                 label: "me.i",
@@ -140,12 +140,12 @@ public class ChainTracer {
         return true // Default to visual
     }
 
-    private func layersForBundle(_ bundle: IRBundle) -> [DraftLayerSpec] {
+    private func layersForBundle(_ bundle: IRBundle) -> [LoomLayerSpec] {
         let strands = bundle.strands.sorted(by: { $0.index < $1.index })
 
         if strands.count == 2 {
             // Natural pair → plane
-            return [DraftLayerSpec(
+            return [LoomLayerSpec(
                 bundleName: bundle.name,
                 type: .plane(
                     xStrand: "\(bundle.name).\(strands[0].name)",
@@ -156,16 +156,15 @@ public class ChainTracer {
             )]
         } else if strands.count == 1 {
             // Single strand → axis
-            return [DraftLayerSpec(
+            return [LoomLayerSpec(
                 bundleName: bundle.name,
                 type: .axis(strand: "\(bundle.name).\(strands[0].name)"),
                 label: "\(bundle.name).\(strands[0].name)",
                 strandExprs: [( strands[0].name, strands[0].expr)]
             )]
         } else if strands.count >= 3 {
-            // 3+ strands: first two as plane, rest as axes
-            var layers: [DraftLayerSpec] = []
-            layers.append(DraftLayerSpec(
+            // 3+ strands: show as plane using first two strands only
+            return [LoomLayerSpec(
                 bundleName: bundle.name,
                 type: .plane(
                     xStrand: "\(bundle.name).\(strands[0].name)",
@@ -173,16 +172,7 @@ public class ChainTracer {
                 ),
                 label: "\(bundle.name).\(strands[0].name), \(bundle.name).\(strands[1].name)",
                 strandExprs: [(strands[0].name, strands[0].expr), (strands[1].name, strands[1].expr)]
-            ))
-            for strand in strands.dropFirst(2) {
-                layers.append(DraftLayerSpec(
-                    bundleName: bundle.name,
-                    type: .axis(strand: "\(bundle.name).\(strand.name)"),
-                    label: "\(bundle.name).\(strand.name)",
-                    strandExprs: [(strand.name, strand.expr)]
-                ))
-            }
-            return layers
+            )]
         }
         return []
     }

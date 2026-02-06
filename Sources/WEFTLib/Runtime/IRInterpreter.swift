@@ -1,9 +1,9 @@
-// IRInterpreter.swift - CPU-side expression evaluator for Draft visualization
+// IRInterpreter.swift - CPU-side expression evaluator for Loom visualization
 
 import Foundation
 
 /// Evaluates IRExpr trees at arbitrary coordinate values on the CPU.
-/// Used by Draft to sample strand values at a grid of input coordinates.
+/// Used by Loom to sample strand values at a grid of input coordinates.
 public class IRInterpreter {
     public let program: IRProgram
 
@@ -111,7 +111,7 @@ public class IRInterpreter {
             return evaluate(remapped, coordinates: coordinates)
 
         case .cacheRead:
-            return 0.0 // Cache history not available in Draft mode
+            return 0.0 // Cache history not available in Loom mode
         }
     }
 
@@ -229,11 +229,11 @@ public class IRInterpreter {
             let scaled = sinVal * 43758.5453
             return scaled - floor(scaled)
 
-        // Hardware builtins - return 0 in Draft mode
+        // Hardware builtins - return 0 in Loom mode
         case "camera", "texture", "microphone", "sample", "load", "text":
             return 0.0
 
-        // Input builtins - return 0 in Draft mode
+        // Input builtins - return 0 in Loom mode
         case "mouse", "key":
             return 0.0
 

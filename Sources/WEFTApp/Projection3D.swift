@@ -1,4 +1,4 @@
-// Projection3D.swift - 3D camera rotation and perspective projection for Draft
+// Projection3D.swift - 3D camera rotation and isometric projection for Loom
 
 import SwiftUI
 import simd
@@ -6,19 +6,17 @@ import simd
 struct Camera3D {
     var yaw: Double = -0.4      // Rotation around Y axis (from drag)
     var pitch: Double = 0.3     // Rotation around X axis (from drag)
-    var distance: Double = 4.0  // Camera distance for perspective
-    var scale: Double = 0.32    // Viewport scale factor
+    var scale: Double = 0.7     // Viewport scale factor
 
-    /// Project a 3D point to 2D screen coordinates.
+    /// Project a 3D point to 2D screen coordinates (isometric — no perspective).
     func project(_ point: SIMD3<Double>, viewSize: CGSize) -> CGPoint {
         let rotated = rotateYX(point)
-        let perspectiveScale = distance / (distance + rotated.z)
         let halfW = viewSize.width * 0.5
         let halfH = viewSize.height * 0.5
         let s = min(halfW, halfH) * scale
         return CGPoint(
-            x: halfW + rotated.x * perspectiveScale * s,
-            y: halfH - rotated.y * perspectiveScale * s
+            x: halfW + rotated.x * s,
+            y: halfH - rotated.y * s
         )
     }
 

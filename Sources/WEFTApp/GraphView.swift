@@ -29,7 +29,7 @@ struct GraphEdge: Identifiable {
 
 struct GraphView: View {
     let coordinator: Coordinator
-    var onViewInDraft: ((String) -> Void)? = nil
+    var onViewInLoom: ((String) -> Void)? = nil
     @State private var hoveredNode: String? = nil
     @State private var selectedNode: String? = nil
     @State private var nodePositions: [String: CGPoint] = [:]
@@ -76,7 +76,7 @@ struct GraphView: View {
 
                 // Popover for selected node
                 if let nodeName = selectedNode, let node = graphNodes[nodeName], let pos = nodePositions[nodeName] {
-                    NodePopover(node: node, onDismiss: { selectedNode = nil }, onViewInDraft: onViewInDraft)
+                    NodePopover(node: node, onDismiss: { selectedNode = nil }, onViewInLoom: onViewInLoom)
                         .position(x: pos.x, y: pos.y - layoutParams.nodeHeight / 2 - 60)
                 }
             }
@@ -372,7 +372,7 @@ struct GraphView: View {
 struct NodePopover: View {
     let node: GraphNode
     let onDismiss: () -> Void
-    var onViewInDraft: ((String) -> Void)? = nil
+    var onViewInLoom: ((String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -432,15 +432,15 @@ struct NodePopover: View {
                 }
             }
 
-            if onViewInDraft != nil {
+            if onViewInLoom != nil {
                 Divider()
                 Button {
-                    onViewInDraft?(node.name)
+                    onViewInLoom?(node.name)
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "perspective")
                             .font(.system(size: 8))
-                        Text("View in Draft")
+                        Text("View in Loom")
                             .font(.system(size: 9, weight: .medium))
                     }
                     .foregroundStyle(.secondary)

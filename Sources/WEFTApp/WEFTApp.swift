@@ -101,10 +101,10 @@ struct PanelCommands: Commands {
                 ))
                 .keyboardShortcut("g", modifiers: [.command, .shift])
 
-                Toggle("Draft View", isOn: Binding(
-                    get: { graphPanelMode == .draft },
+                Toggle("Loom View", isOn: Binding(
+                    get: { graphPanelMode == .loom },
                     set: { newValue in
-                        graphPanelMode = newValue ? .draft : .graph
+                        graphPanelMode = newValue ? .loom : .graph
                         if newValue { showGraph = true }
                     }
                 ))

@@ -9,7 +9,7 @@ import WEFTLib
 
 enum GraphPanelMode {
     case graph
-    case draft
+    case loom
 }
 
 struct ContentView: View {
@@ -20,7 +20,7 @@ struct ContentView: View {
     @State private var showDevMode = false
     @State private var devModeTab: DevModeTab = .ir
     @State private var graphPanelMode: GraphPanelMode = .graph
-    @State private var draftNodeName: String? = nil
+    @State private var loomNodeName: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -363,7 +363,7 @@ struct ContentView: View {
 
                 Picker("", selection: $graphPanelMode) {
                     Text("Graph").tag(GraphPanelMode.graph)
-                    Text("Draft").tag(GraphPanelMode.draft)
+                    Text("Loom").tag(GraphPanelMode.loom)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 120)
@@ -388,14 +388,14 @@ struct ContentView: View {
 
             switch graphPanelMode {
             case .graph:
-                GraphView(coordinator: viewModel.coordinator, onViewInDraft: { nodeName in
-                    draftNodeName = nodeName
+                GraphView(coordinator: viewModel.coordinator, onViewInLoom: { nodeName in
+                    loomNodeName = nodeName
                     withAnimation(.easeInOut(duration: 0.15)) {
-                        graphPanelMode = .draft
+                        graphPanelMode = .loom
                     }
                 })
-            case .draft:
-                DraftView(coordinator: viewModel.coordinator, draftNodeName: $draftNodeName)
+            case .loom:
+                LoomView(coordinator: viewModel.coordinator, loomNodeName: $loomNodeName)
             }
         }
     }
