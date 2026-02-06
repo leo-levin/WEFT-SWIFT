@@ -115,16 +115,36 @@ struct LoomControls: View {
                 .help("Reset region")
             }
 
+            SubtleDivider(.vertical)
+                .frame(height: 14)
+
+            // Camera reset
+            Button {
+                state.camera = Camera3D.default
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Reset camera (R)")
+
             Spacer()
 
-            // Sample count
-            Text("\(state.sampleCount) samples")
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.quaternary)
+            // Sample count and keyboard hints
+            HStack(spacing: Spacing.md) {
+                Text("\(state.sampleCount) samples")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.quaternary)
+
+                Text("Space: play  Arrows: rotate  R: reset")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.quaternary)
+            }
         }
         .padding(.horizontal, Spacing.sm)
         .padding(.vertical, Spacing.xs)
-        .background(Color.panelHeaderBackground)
+        .background(.regularMaterial)
     }
 
     private func regionField(_ label: String, value: Binding<Double>) -> some View {

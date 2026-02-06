@@ -41,6 +41,7 @@ struct LoomLayer: Identifiable {
     let type: LoomLayerSpec.LayerType
     let strandExprs: [(strandName: String, expr: IRExpr)]
     let color: Color
+    var isVisible: Bool = true
 
     init(from spec: LoomLayerSpec, color: Color) {
         self.id = spec.id
@@ -49,6 +50,7 @@ struct LoomLayer: Identifiable {
         self.type = spec.type
         self.strandExprs = spec.strandExprs
         self.color = color
+        self.isVisible = true
     }
 }
 
@@ -70,6 +72,24 @@ struct LoomView: View {
     @State private var canvasSize: CGSize = .zero
     @State private var playStartWallTime: Double = 0
     @State private var playStartScrubTime: Double = 0
+
+    // Background evaluation infrastructure
+    private let evaluationQueue = DispatchQueue(label: "loom.evaluation", qos: .userInitiated)
+    @State private var evaluationInFlight = false
+
+    // Progressive resolution state
+    @State private var isShowingPreview = false
+    @State private var refinementTask: Task<Void, Never>? = nil
+    private let previewResolution = 8
+
+    // Stable ranges during playback
+    @State private var lockedRanges: [(min: SIMD2<Double>, max: SIMD2<Double>)]? = nil
+
+    // Keyboard focus
+    @FocusState private var canvasFocused: Bool
+
+    // Drag mode tracking
+    @State private var isPanning: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -99,24 +119,42 @@ struct LoomView: View {
             }
         }
         .onChange(of: state.resolution) { _, _ in
+            refinementTask?.cancel()
             state.selectedSampleIndices = []
+            refreshSamples(forceFullResolution: true)
+        }
+        .onChange(of: state.regionMin) { _, _ in
+            refinementTask?.cancel()
             refreshSamples()
         }
-        .onChange(of: state.regionMin) { _, _ in refreshSamples() }
-        .onChange(of: state.regionMax) { _, _ in refreshSamples() }
+        .onChange(of: state.regionMax) { _, _ in
+            refinementTask?.cancel()
+            refreshSamples()
+        }
         .onChange(of: state.scrubTime) { _, _ in
+            refinementTask?.cancel()
             if !state.isPlaying { refreshSamples() }
         }
         .onChange(of: state.layers.count) { _, _ in refreshSamples() }
         .task(id: state.isPlaying) {
-            guard state.isPlaying else { return }
-            playStartWallTime = Date().timeIntervalSinceReferenceDate
-            playStartScrubTime = state.scrubTime
-            while !Task.isCancelled {
-                let elapsed = Date().timeIntervalSinceReferenceDate - playStartWallTime
-                state.scrubTime = playStartScrubTime + elapsed
-                refreshSamples()
-                try? await Task.sleep(for: .milliseconds(100))
+            if state.isPlaying {
+                refinementTask?.cancel()
+                playStartWallTime = Date().timeIntervalSinceReferenceDate
+                playStartScrubTime = state.scrubTime
+                // Lock ranges at playback start for stability
+                lockedRanges = computeRanges()
+                while !Task.isCancelled {
+                    let elapsed = Date().timeIntervalSinceReferenceDate - playStartWallTime
+                    state.scrubTime = playStartScrubTime + elapsed
+                    refreshSamples()
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            } else {
+                // Paused - unlock ranges and trigger refinement if showing preview
+                lockedRanges = nil
+                if isShowingPreview {
+                    scheduleRefinement()
+                }
             }
         }
         .onAppear {
@@ -128,8 +166,67 @@ struct LoomView: View {
 
     // MARK: - Refresh
 
-    private func refreshSamples() {
-        evaluateSamples(time: state.scrubTime)
+    private func refreshSamples(forceFullResolution: Bool = false) {
+        guard !evaluationInFlight else { return }
+        evaluationInFlight = true
+
+        // Use preview resolution only during playback, not when scrubbing while paused
+        let usePreview = !forceFullResolution && state.isPlaying
+        let effectiveResolution = usePreview ? min(state.resolution, previewResolution) : state.resolution
+
+        // Capture state snapshot for background computation
+        let resolution = effectiveResolution
+        let regionMin = state.regionMin
+        let regionMax = state.regionMax
+        let time = state.scrubTime
+        let layers = state.layers
+
+        guard let program = coordinator.program, !layers.isEmpty else {
+            state.samples = []
+            evaluationInFlight = false
+            return
+        }
+        let sampler = coordinator.buildResourceSampler()
+
+        evaluationQueue.async {
+            let newSamples = Self.computeSamples(
+                resolution: resolution,
+                regionMin: regionMin,
+                regionMax: regionMax,
+                time: time,
+                layers: layers,
+                program: program,
+                sampler: sampler
+            )
+
+            DispatchQueue.main.async {
+                // Update state on main thread
+                if resolution != self.state.resolution {
+                    // Resolution mismatch means we showed a preview
+                    self.isShowingPreview = true
+                } else {
+                    self.isShowingPreview = false
+                }
+                self.state.samples = newSamples
+                self.evaluationInFlight = false
+
+                // Schedule refinement if we showed preview and not playing
+                if usePreview && !self.state.isPlaying {
+                    self.scheduleRefinement()
+                }
+            }
+        }
+    }
+
+    private func scheduleRefinement() {
+        refinementTask?.cancel()
+        refinementTask = Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self.refreshSamples(forceFullResolution: true)
+            }
+        }
     }
 
     // MARK: - 3D Canvas
@@ -146,26 +243,131 @@ struct LoomView: View {
                     .onChange(of: geo.size) { _, newSize in canvasSize = newSize }
             }
         )
+        .overlay(alignment: .topTrailing) {
+            if isShowingPreview {
+                Text("...")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(4)
+            }
+        }
         .gesture(tapGesture)
+        .gesture(doubleTapGesture)
         .simultaneousGesture(dragGesture)
+        .simultaneousGesture(magnifyGesture)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($canvasFocused)
+        .onKeyPress { key in
+            handleKeyPress(key)
+        }
+        .onAppear { canvasFocused = true }
+    }
+
+    // MARK: - Keyboard Shortcuts
+
+    private func handleKeyPress(_ key: KeyPress) -> KeyPress.Result {
+        switch key.key {
+        case .space:
+            state.isPlaying.toggle()
+            return .handled
+        case .upArrow:
+            state.camera.pitch += 0.1
+            state.camera.pitch = max(-1.2, min(1.2, state.camera.pitch))
+            return .handled
+        case .downArrow:
+            state.camera.pitch -= 0.1
+            state.camera.pitch = max(-1.2, min(1.2, state.camera.pitch))
+            return .handled
+        case .leftArrow:
+            state.camera.yaw -= 0.1
+            return .handled
+        case .rightArrow:
+            state.camera.yaw += 0.1
+            return .handled
+        default:
+            break
+        }
+
+        // Character-based shortcuts
+        if let char = key.characters.first {
+            switch char {
+            case "r", "R":
+                withAnimation(.spring(duration: 0.3)) {
+                    state.camera = Camera3D.default
+                }
+                return .handled
+            case "0":
+                state.regionMin = SIMD2(0, 0)
+                state.regionMax = SIMD2(1, 1)
+                return .handled
+            case "+", "=":
+                state.resolution = min(LoomState.maxResolution, state.resolution + 2)
+                return .handled
+            case "-", "_":
+                state.resolution = max(2, state.resolution - 2)
+                return .handled
+            default:
+                break
+            }
+        }
+        return .ignored
     }
 
     // MARK: - Gestures
 
     private var dragGesture: some Gesture {
         DragGesture()
+            .modifiers(.option)
             .onChanged { value in
+                // Option-drag = pan
                 if let start = dragStart {
                     let dx = value.location.x - start.x
                     let dy = value.location.y - start.y
-                    state.camera.yaw += dx * 0.008
-                    state.camera.pitch += dy * 0.008
-                    state.camera.pitch = max(-1.2, min(1.2, state.camera.pitch))
+                    state.camera.offsetX += dx * 0.005
+                    state.camera.offsetY -= dy * 0.005
                 }
                 dragStart = value.location
+                isPanning = true
             }
             .onEnded { _ in
                 dragStart = nil
+                isPanning = false
+            }
+            .simultaneously(with:
+                DragGesture()
+                    .onChanged { value in
+                        guard !isPanning else { return }
+                        // Normal drag = rotate
+                        if let start = dragStart {
+                            let dx = value.location.x - start.x
+                            let dy = value.location.y - start.y
+                            state.camera.yaw += dx * 0.008
+                            state.camera.pitch += dy * 0.008
+                            state.camera.pitch = max(-1.2, min(1.2, state.camera.pitch))
+                        }
+                        dragStart = value.location
+                    }
+                    .onEnded { _ in
+                        dragStart = nil
+                    }
+            )
+    }
+
+    private var magnifyGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let newScale = 0.7 * value.magnification
+                state.camera.scale = max(0.3, min(2.0, newScale))
+            }
+    }
+
+    private var doubleTapGesture: some Gesture {
+        TapGesture(count: 2)
+            .onEnded {
+                withAnimation(.spring(duration: 0.3)) {
+                    state.camera = Camera3D.default
+                }
             }
     }
 
@@ -249,26 +451,27 @@ struct LoomView: View {
         return -spread / 2 + spread * Double(slot) / Double(totalSlots - 1)
     }
 
-    // MARK: - Evaluation
+    // MARK: - Evaluation (Pure Computation)
 
-    private func evaluateSamples(time: Double) {
-        guard let program = coordinator.program, !state.layers.isEmpty else {
-            state.samples = []
-            return
-        }
-
-        let interpreter = IRInterpreter(program: program,
-                                         resourceSampler: coordinator.buildResourceSampler())
-        let res = state.resolution
+    private static func computeSamples(
+        resolution: Int,
+        regionMin: SIMD2<Double>,
+        regionMax: SIMD2<Double>,
+        time: Double,
+        layers: [LoomLayer],
+        program: IRProgram,
+        sampler: ResourceSampler?
+    ) -> [[SIMD2<Double>]] {
+        let interpreter = IRInterpreter(program: program, resourceSampler: sampler)
         var newSamples: [[SIMD2<Double>]] = []
-        newSamples.reserveCapacity(res * res)
+        newSamples.reserveCapacity(resolution * resolution)
 
-        for yi in 0..<res {
-            for xi in 0..<res {
-                let x = state.regionMin.x + (state.regionMax.x - state.regionMin.x)
-                    * (res <= 1 ? 0.5 : Double(xi) / Double(res - 1))
-                let y = state.regionMin.y + (state.regionMax.y - state.regionMin.y)
-                    * (res <= 1 ? 0.5 : Double(yi) / Double(res - 1))
+        for yi in 0..<resolution {
+            for xi in 0..<resolution {
+                let x = regionMin.x + (regionMax.x - regionMin.x)
+                    * (resolution <= 1 ? 0.5 : Double(xi) / Double(resolution - 1))
+                let y = regionMin.y + (regionMax.y - regionMin.y)
+                    * (resolution <= 1 ? 0.5 : Double(yi) / Double(resolution - 1))
 
                 let coords: [String: Double] = [
                     "x": x, "y": y, "t": time, "w": 512, "h": 512,
@@ -276,9 +479,9 @@ struct LoomView: View {
                 ]
 
                 var layerValues: [SIMD2<Double>] = []
-                layerValues.reserveCapacity(state.layers.count)
+                layerValues.reserveCapacity(layers.count)
 
-                for layer in state.layers {
+                for layer in layers {
                     let exprs = layer.strandExprs
                     switch layer.type {
                     case .plane:
@@ -293,7 +496,33 @@ struct LoomView: View {
                 newSamples.append(layerValues)
             }
         }
-        state.samples = newSamples
+        return newSamples
+    }
+
+    // MARK: - Range Computation
+
+    /// Compute fresh ranges from current samples
+    private func computeRanges() -> [(min: SIMD2<Double>, max: SIMD2<Double>)] {
+        let layerCount = state.layers.count
+        var ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)] = Array(
+            repeating: (SIMD2(.infinity, .infinity), SIMD2(-.infinity, -.infinity)),
+            count: layerCount
+        )
+        for sample in state.samples {
+            for (li, val) in sample.enumerated() where li < layerCount {
+                ranges[li].min = SIMD2(Swift.min(ranges[li].min.x, val.x), Swift.min(ranges[li].min.y, val.y))
+                ranges[li].max = SIMD2(Swift.max(ranges[li].max.x, val.x), Swift.max(ranges[li].max.y, val.y))
+            }
+        }
+        return ranges
+    }
+
+    /// Return locked ranges during playback, or compute fresh ranges when paused
+    private func currentRanges() -> [(min: SIMD2<Double>, max: SIMD2<Double>)] {
+        if state.isPlaying, let locked = lockedRanges, locked.count == state.layers.count {
+            return locked
+        }
+        return computeRanges()
     }
 
     // MARK: - Drawing
@@ -305,37 +534,31 @@ struct LoomView: View {
         let layout = computeSlots()
         let totalSpread = state.spread * Double(layout.totalSlots - 1) * 1.5
         let samples = state.samples
-
-        // Auto-range per layer
-        var ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)] = Array(
-            repeating: (SIMD2(.infinity, .infinity), SIMD2(-.infinity, -.infinity)),
-            count: layerCount
-        )
-        for sample in samples {
-            for (li, val) in sample.enumerated() where li < layerCount {
-                ranges[li].min = SIMD2(Swift.min(ranges[li].min.x, val.x), Swift.min(ranges[li].min.y, val.y))
-                ranges[li].max = SIMD2(Swift.max(ranges[li].max.x, val.x), Swift.max(ranges[li].max.y, val.y))
-            }
-        }
+        let ranges = currentRanges()
 
         // Collect drawables for depth sorting
         struct Drawable {
             enum Kind {
-                case planeOutline(Int), axisLine(Int), point(Int, Int), connector(Int)
+                case planeOutline(Int), axisLine(Int), point(Int, Int), connector(Int), rangeLabel(Int, Bool)
             }
             let kind: Kind
             let depth: Double
         }
         var drawables: [Drawable] = []
 
-        for li in 0..<layerCount {
+        for li in 0..<layerCount where state.layers[li].isVisible {
             let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
-            drawables.append(Drawable(kind: state.layers[li].type.isPlane ? .planeOutline(li) : .axisLine(li),
-                                      depth: state.camera.depth(SIMD3(layout.xOffsets[li], 0, z))))
+            let d = state.camera.depth(SIMD3(layout.xOffsets[li], 0, z))
+            drawables.append(Drawable(kind: state.layers[li].type.isPlane ? .planeOutline(li) : .axisLine(li), depth: d))
+            // Range labels for axis layers
+            if !state.layers[li].type.isPlane {
+                drawables.append(Drawable(kind: .rangeLabel(li, false), depth: d - 0.001)) // min
+                drawables.append(Drawable(kind: .rangeLabel(li, true), depth: d - 0.001))  // max
+            }
         }
 
         for si in 0..<samples.count {
-            for li in 0..<Swift.min(samples[si].count, layerCount) {
+            for li in 0..<Swift.min(samples[si].count, layerCount) where state.layers[li].isVisible {
                 let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
                 let val = samples[si][li]
                 let xo = layout.xOffsets[li]
@@ -353,9 +576,13 @@ struct LoomView: View {
             }
         }
 
+        // Only draw connectors through visible layers
+        let visibleIndices = state.layers.indices.filter { state.layers[$0].isVisible }
         for si in state.selectedSampleIndices where si < samples.count {
-            let z = slotZ(layout.zSlots[0], layout.totalSlots, totalSpread)
-            drawables.append(Drawable(kind: .connector(si), depth: state.camera.depth(SIMD3(0, 0, z)) - 0.01))
+            if let firstVisible = visibleIndices.first {
+                let z = slotZ(layout.zSlots[firstVisible], layout.totalSlots, totalSpread)
+                drawables.append(Drawable(kind: .connector(si), depth: state.camera.depth(SIMD3(0, 0, z)) - 0.01))
+            }
         }
 
         drawables.sort { $0.depth > $1.depth }
@@ -363,14 +590,15 @@ struct LoomView: View {
         for d in drawables {
             switch d.kind {
             case .planeOutline(let li): drawPlane(context, size, li, layout, totalSpread)
-            case .axisLine(let li): drawAxis(context, size, li, layout, totalSpread)
+            case .axisLine(let li): drawAxis(context, size, li, layout, totalSpread, ranges)
             case .point(let si, let li): drawPt(context, size, si, li, layout, totalSpread, ranges, samples)
-            case .connector(let si): drawLine(context, size, si, layerCount, layout, totalSpread, ranges, samples)
+            case .connector(let si): drawConnector(context, size, si, layout, totalSpread, ranges, samples)
+            case .rangeLabel(let li, let isMax): drawRangeLabel(context, size, li, layout, totalSpread, ranges, isMax)
             }
         }
 
-        // Labels with shadow for readability
-        for li in 0..<layerCount {
+        // Labels with shadow for readability (only visible layers)
+        for li in 0..<layerCount where state.layers[li].isVisible {
             let z = slotZ(layout.zSlots[li], layout.totalSlots, totalSpread)
             let xo = layout.xOffsets[li]
             let labelPos: SIMD3<Double>
@@ -415,13 +643,37 @@ struct LoomView: View {
         ctx.stroke(path, with: .color(col.opacity(0.6)), lineWidth: 1.5)
     }
 
-    private func drawAxis(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ layout: SlotLayout, _ sp: Double) {
+    private func drawAxis(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ layout: SlotLayout, _ sp: Double,
+                          _ ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)]) {
         let z = slotZ(layout.zSlots[li], layout.totalSlots, sp)
         let xo = layout.xOffsets[li]
         var path = Path()
         path.move(to: state.camera.project(SIMD3(xo, 0.5, z), viewSize: sz))
         path.addLine(to: state.camera.project(SIMD3(xo, -0.5, z), viewSize: sz))
         ctx.stroke(path, with: .color(state.layers[li].color.opacity(0.8)), lineWidth: 3)
+    }
+
+    private func drawRangeLabel(_ ctx: GraphicsContext, _ sz: CGSize, _ li: Int, _ layout: SlotLayout,
+                                 _ sp: Double, _ ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)], _ isMax: Bool) {
+        guard li < ranges.count else { return }
+        let z = slotZ(layout.zSlots[li], layout.totalSlots, sp)
+        let xo = layout.xOffsets[li]
+        let r = ranges[li]
+
+        // Skip if range is invalid
+        guard r.min.x.isFinite && r.max.x.isFinite && r.max.x > r.min.x else { return }
+
+        let yPos: Double = isMax ? 0.52 : -0.52
+        let value = isMax ? r.max.x : r.min.x
+        let pos = state.camera.project(SIMD3(xo + 0.08, yPos, z), viewSize: sz)
+
+        let label = Text(String(format: "%.2f", value))
+            .font(.system(size: 8, design: .monospaced))
+            .foregroundColor(state.layers[li].color.opacity(0.6))
+
+        var shadowCtx = ctx
+        shadowCtx.addFilter(.shadow(color: .black.opacity(0.7), radius: 2))
+        shadowCtx.draw(label, at: pos, anchor: isMax ? .bottomLeading : .topLeading)
     }
 
     private func drawPt(_ ctx: GraphicsContext, _ sz: CGSize, _ si: Int, _ li: Int,
@@ -446,39 +698,42 @@ struct LoomView: View {
                  with: .color(state.layers[li].color.opacity(sel ? 1.0 : 0.4)))
     }
 
-    private func drawLine(_ ctx: GraphicsContext, _ sz: CGSize, _ si: Int,
-                           _ cnt: Int, _ layout: SlotLayout, _ sp: Double,
-                           _ ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)],
-                           _ samples: [[SIMD2<Double>]]) {
-        guard si < samples.count, samples[si].count >= cnt else { return }
+    private func drawConnector(_ ctx: GraphicsContext, _ sz: CGSize, _ si: Int,
+                                 _ layout: SlotLayout, _ sp: Double,
+                                 _ ranges: [(min: SIMD2<Double>, max: SIMD2<Double>)],
+                                 _ samples: [[SIMD2<Double>]]) {
+        guard si < samples.count else { return }
         let sample = samples[si]
 
-        // Project all points
-        var pts: [CGPoint] = []
-        for li in 0..<cnt {
+        // Only include visible layers
+        let visibleIndices = state.layers.indices.filter { $0 < sample.count && state.layers[$0].isVisible }
+        guard visibleIndices.count >= 2 else { return }
+
+        // Project visible points
+        var pts: [(li: Int, pt: CGPoint)] = []
+        for li in visibleIndices {
             let val = sample[li]
             let z = slotZ(layout.zSlots[li], layout.totalSlots, sp)
             let r = ranges[li]
-            let pt: SIMD3<Double>
+            let pt3: SIMD3<Double>
             switch state.layers[li].type {
             case .plane:
-                pt = SIMD3(norm(val.x, r.min.x, r.max.x) - 0.5, norm(val.y, r.min.y, r.max.y) - 0.5, z)
+                pt3 = SIMD3(norm(val.x, r.min.x, r.max.x) - 0.5, norm(val.y, r.min.y, r.max.y) - 0.5, z)
             case .axis:
-                pt = SIMD3(layout.xOffsets[li], norm(val.x, r.min.x, r.max.x) - 0.5, z)
+                pt3 = SIMD3(layout.xOffsets[li], norm(val.x, r.min.x, r.max.x) - 0.5, z)
             }
-            pts.append(state.camera.project(pt, viewSize: sz))
+            pts.append((li, state.camera.project(pt3, viewSize: sz)))
         }
-        guard pts.count >= 2 else { return }
 
-        // Group layer indices by z-slot for fan-out/in
-        var slotGroups: [(slot: Int, layers: [Int])] = []
+        // Group by z-slot (for visible layers only)
+        var slotGroups: [(slot: Int, indices: [(li: Int, pt: CGPoint)])] = []
         var i = 0
-        while i < cnt {
-            let slot = layout.zSlots[i]
-            var group = [i]
+        while i < pts.count {
+            let slot = layout.zSlots[pts[i].li]
+            var group = [pts[i]]
             i += 1
-            while i < cnt && layout.zSlots[i] == slot {
-                group.append(i)
+            while i < pts.count && layout.zSlots[pts[i].li] == slot {
+                group.append(pts[i])
                 i += 1
             }
             slotGroups.append((slot, group))
@@ -489,11 +744,11 @@ struct LoomView: View {
 
         // Draw lines between adjacent slot groups (fan-out / fan-in)
         for gi in 0..<(slotGroups.count - 1) {
-            for fromIdx in slotGroups[gi].layers {
-                for toIdx in slotGroups[gi + 1].layers {
+            for from in slotGroups[gi].indices {
+                for to in slotGroups[gi + 1].indices {
                     var path = Path()
-                    path.move(to: pts[fromIdx])
-                    path.addLine(to: pts[toIdx])
+                    path.move(to: from.pt)
+                    path.addLine(to: to.pt)
                     ctx.stroke(path, with: color, style: style)
                 }
             }
