@@ -217,10 +217,10 @@ public struct CallExtract: Equatable {
 // MARK: - Remap Expression
 
 public struct RemapExpr: Equatable {
-    public let base: StrandAccess
+    public let base: Expr
     public let remappings: [RemapArg]
 
-    public init(base: StrandAccess, remappings: [RemapArg]) {
+    public init(base: Expr, remappings: [RemapArg]) {
         self.base = base
         self.remappings = remappings
     }

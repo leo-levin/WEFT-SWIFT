@@ -890,6 +890,85 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(bar.strands.count, 1)
     }
 
+    // MARK: - Temporal Remap Tests
+
+    func testTemporalRemapBasic() throws {
+        // b.v(me.t ~ me.t - 1) should lower to a remap at the lowering level
+        // (conversion to cache happens later in the pipeline)
+        let source = """
+        b.v = 1.0
+        a.v = b.v(me.t ~ me.t - 1)
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let a = ir.bundles["a"]!
+        // Should be a remap expression at lowering level
+        guard case .remap(let base, let substitutions) = a.strands[0].expr else {
+            XCTFail("Expected remap expression, got \(a.strands[0].expr)")
+            return
+        }
+
+        // Base should reference b.0
+        if case .index(let bundle, _) = base {
+            XCTAssertEqual(bundle, "b")
+        } else {
+            XCTFail("Expected index expression for base, got \(base)")
+        }
+
+        // Substitution should have me.t key
+        XCTAssertNotNil(substitutions["me.t"])
+    }
+
+    func testTemporalRemapForwardPure() throws {
+        // Forward temporal remap on pure expression should produce a remap (no error)
+        let source = """
+        b.v = sin(me.t)
+        a.v = b.v(me.t ~ me.t + 5)
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let a = ir.bundles["a"]!
+        // Should be a remap, not an error
+        if case .remap(_, let substitutions) = a.strands[0].expr {
+            XCTAssertNotNil(substitutions["me.t"])
+        } else {
+            XCTFail("Expected remap expression, got \(a.strands[0].expr)")
+        }
+    }
+
+    func testNonTemporalRemapPassthrough() throws {
+        // me.x ~ 0.5 should still produce a normal remap, not cache
+        let source = """
+        b.v = me.x
+        a.v = b.v(me.x ~ 0.5)
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let a = ir.bundles["a"]!
+        // Should be a remap, not a cache builtin
+        if case .builtin(let name, _) = a.strands[0].expr {
+            XCTAssertNotEqual(name, "cache", "Non-temporal remap should not produce cache builtin")
+        }
+        // Should be a remap expression
+        if case .remap = a.strands[0].expr {
+            // OK - normal remap
+        } else {
+            XCTFail("Expected remap expression for spatial remap, got \(a.strands[0].expr)")
+        }
+    }
+
     func testEndToEndTagViaCompiler() throws {
         let compiler = WeftCompiler()
         let source = """

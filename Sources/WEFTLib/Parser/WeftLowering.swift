@@ -674,17 +674,7 @@ public class WeftLowering {
     }
 
     private func lowerRemapExpr(_ remap: RemapExpr, subs: [IRExpr]?) throws -> IRExpr {
-        let irBase: IRExpr
-
-        if remap.base.bundle == nil {
-            // Bare strand access in remap context
-            guard let subs = subs else {
-                throw LoweringError.bareStrandOutsidePattern
-            }
-            irBase = try lowerBareStrandAccess(remap.base.accessor, subs: subs)
-        } else {
-            irBase = try lowerStrandAccess(remap.base, subs: subs)
-        }
+        let irBase = try lowerExpr(remap.base, subs: subs)
 
         var subMap: [String: IRExpr] = [:]
 
@@ -692,18 +682,19 @@ public class WeftLowering {
             let domainIR = try lowerStrandAccess(r.domain, subs: subs)
 
             // Extract the key from the domain
-            guard case .index(let bundle, let indexExpr) = domainIR,
-                  case .num(let idx) = indexExpr else {
+            let key: String
+            if case .index(let bundle, let indexExpr) = domainIR {
+                if case .num(let idx) = indexExpr {
+                    key = "\(bundle).\(Int(idx))"
+                } else if case .param(let field) = indexExpr {
+                    key = "\(bundle).\(field)"
+                } else {
+                    throw LoweringError.invalidRemapArg
+                }
+            } else {
                 throw LoweringError.invalidRemapArg
             }
-
-            let key = "\(bundle).\(Int(idx))"
             subMap[key] = try lowerExpr(r.expr, subs: subs)
-        }
-
-        if remap.base.bundle == nil {
-            // For bare strand access, apply substitution directly
-            return substituteInExpr(irBase, substitutions: subMap)
         }
 
         return .remap(base: irBase, substitutions: subMap)
@@ -749,122 +740,60 @@ public class WeftLowering {
         case "camera":
             let u = try lowerExpr(args[0], subs: subs)
             let v = try lowerExpr(args[1], subs: subs)
-            return (0..<spec.width).map { channel in
-                .builtin(name: "camera", args: [u, v, .num(Double(channel))])
-            }
+            return expandChannels(spec.width, name: "camera", baseArgs: [u, v])
 
         case "microphone":
             let offset = try lowerExpr(args[0], subs: subs)
-            return (0..<spec.width).map { channel in
-                .builtin(name: "microphone", args: [offset, .num(Double(channel))])
-            }
+            return expandChannels(spec.width, name: "microphone", baseArgs: [offset])
 
         case "texture":
             guard case .string(let path) = args[0] else {
                 throw LoweringError.invalidExpression("texture() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = resourceIndex[path] {
-                resourceId = existing
-            } else {
-                resourceId = resources.count
-                resources.append(path)
-                resourceIndex[path] = resourceId
-            }
-
+            let resourceId = registerResource(path)
             let u = try lowerExpr(args[1], subs: subs)
             let v = try lowerExpr(args[2], subs: subs)
-
-            return (0..<spec.width).map { channel in
-                .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
-            }
+            return expandChannels(spec.width, name: "texture", baseArgs: [.num(Double(resourceId)), u, v])
 
         case "load":
-            // load(path) uses me.x, me.y as default UVs
-            // load(path, u, v) uses specified UVs
             guard case .string(let path) = args[0] else {
                 throw LoweringError.invalidExpression("load() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = resourceIndex[path] {
-                resourceId = existing
-            } else {
-                resourceId = resources.count
-                resources.append(path)
-                resourceIndex[path] = resourceId
-            }
-
-            // Determine UV coordinates
+            let resourceId = registerResource(path)
             let u: IRExpr
             let v: IRExpr
             if args.count >= 3 {
                 u = try lowerExpr(args[1], subs: subs)
                 v = try lowerExpr(args[2], subs: subs)
             } else {
-                // Default to me.x, me.y
                 u = .index(bundle: "me", indexExpr: .param("x"))
                 v = .index(bundle: "me", indexExpr: .param("y"))
             }
-
-            return (0..<spec.width).map { channel in
-                .builtin(name: "texture", args: [.num(Double(resourceId)), u, v, .num(Double(channel))])
-            }
+            return expandChannels(spec.width, name: "texture", baseArgs: [.num(Double(resourceId)), u, v])
 
         case "sample":
-            // sample(path) uses me.i as default offset
-            // sample(path, offset) uses specified offset
             guard case .string(let path) = args[0] else {
                 throw LoweringError.invalidExpression("sample() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = resourceIndex[path] {
-                resourceId = existing
-            } else {
-                resourceId = resources.count
-                resources.append(path)
-                resourceIndex[path] = resourceId
-            }
-
-            // Determine sample offset
+            let resourceId = registerResource(path)
             let offset: IRExpr
             if args.count >= 2 {
                 offset = try lowerExpr(args[1], subs: subs)
             } else {
-                // Default to me.i (sample index)
                 offset = .index(bundle: "me", indexExpr: .param("i"))
             }
-
-            return (0..<spec.width).map { channel in
-                .builtin(name: "sample", args: [.num(Double(resourceId)), offset, .num(Double(channel))])
-            }
+            return expandChannels(spec.width, name: "sample", baseArgs: [.num(Double(resourceId)), offset])
 
         case "mouse":
-            // mouse() returns [x, y, down] - channel 0=x, 1=y, 2=down
-            return (0..<spec.width).map { channel in
-                .builtin(name: "mouse", args: [.num(Double(channel))])
-            }
+            return expandChannels(spec.width, name: "mouse", baseArgs: [])
 
         case "text":
-            // text(content, x, y) -> alpha mask value
             guard case .string(let content) = args[0] else {
                 throw LoweringError.invalidExpression("text() first argument must be a string literal")
             }
-
-            let resourceId: Int
-            if let existing = textResourceIndex[content] {
-                resourceId = existing
-            } else {
-                resourceId = textResources.count
-                textResources.append(content)
-                textResourceIndex[content] = resourceId
-            }
-
+            let resourceId = registerTextResource(content)
             let x = try lowerExpr(args[1], subs: subs)
             let y = try lowerExpr(args[2], subs: subs)
-
             return [.builtin(name: "text", args: [.num(Double(resourceId)), x, y])]
 
         default:
@@ -873,6 +802,28 @@ public class WeftLowering {
     }
 
     // MARK: - Helper Functions
+
+    private func registerResource(_ path: String) -> Int {
+        if let existing = resourceIndex[path] { return existing }
+        let id = resources.count
+        resources.append(path)
+        resourceIndex[path] = id
+        return id
+    }
+
+    private func registerTextResource(_ content: String) -> Int {
+        if let existing = textResourceIndex[content] { return existing }
+        let id = textResources.count
+        textResources.append(content)
+        textResourceIndex[content] = id
+        return id
+    }
+
+    private func expandChannels(_ width: Int, name: String, baseArgs: [IRExpr]) -> [IRExpr] {
+        (0..<width).map { channel in
+            .builtin(name: name, args: baseArgs + [.num(Double(channel))])
+        }
+    }
 
     private func getBundleInfo(_ name: String) throws -> BundleInfo {
         if let scope = scope, let local = scope.locals[name] {
@@ -930,6 +881,9 @@ public class WeftLowering {
         case .tagExpr(let tag):
             return try inferWidth(tag.expr)
 
+        case .remapExpr(let remap):
+            return try inferWidth(remap.base)
+
         default:
             return 1
         }
@@ -943,45 +897,12 @@ public class WeftLowering {
     }
 
     private func substituteInExpr(_ expr: IRExpr, substitutions: [String: IRExpr]) -> IRExpr {
-        switch expr {
-        case .num, .param, .cacheRead:
-            return expr
-
-        case .index(let bundle, let indexExpr):
-            if case .num(let idx) = indexExpr {
-                let key = "\(bundle).\(Int(idx))"
-                if let sub = substitutions[key] {
-                    return sub
-                }
-            }
-            return .index(bundle: bundle, indexExpr: substituteInExpr(indexExpr, substitutions: substitutions))
-
-        case .binaryOp(let op, let left, let right):
-            return .binaryOp(
-                op: op,
-                left: substituteInExpr(left, substitutions: substitutions),
-                right: substituteInExpr(right, substitutions: substitutions)
-            )
-
-        case .unaryOp(let op, let operand):
-            return .unaryOp(op: op, operand: substituteInExpr(operand, substitutions: substitutions))
-
-        case .builtin(let name, let args):
-            return .builtin(name: name, args: args.map { substituteInExpr($0, substitutions: substitutions) })
-
-        case .call(let spindle, let args):
-            return .call(spindle: spindle, args: args.map { substituteInExpr($0, substitutions: substitutions) })
-
-        case .extract(let call, let index):
-            return .extract(call: substituteInExpr(call, substitutions: substitutions), index: index)
-
-        case .remap(let base, let subs):
-            var newSubs: [String: IRExpr] = [:]
-            for (k, v) in subs {
-                newSubs[k] = substituteInExpr(v, substitutions: substitutions)
-            }
-            return .remap(base: substituteInExpr(base, substitutions: substitutions), substitutions: newSubs)
+        if case .index(let bundle, let indexExpr) = expr,
+           case .num(let idx) = indexExpr,
+           let sub = substitutions["\(bundle).\(Int(idx))"] {
+            return sub
         }
+        return expr.mapChildren { substituteInExpr($0, substitutions: substitutions) }
     }
 
     // MARK: - Range Handling
@@ -1032,6 +953,7 @@ public class WeftLowering {
                 visit(extract.call, inExprAccessor: false, bundleName: nil)
 
             case .remapExpr(let remap):
+                visit(remap.base, inExprAccessor: false, bundleName: nil)
                 for r in remap.remappings {
                     visit(r.expr, inExprAccessor: false, bundleName: nil)
                 }
@@ -1137,10 +1059,11 @@ public class WeftLowering {
                 return .callExtract(CallExtract(call: newCall, index: extract.index))
 
             case .remapExpr(let remap):
+                let newBase = substitute(remap.base, bundleContext: nil)
                 let newRemappings = remap.remappings.map { r in
                     RemapArg(domain: r.domain, expr: substitute(r.expr, bundleContext: nil))
                 }
-                return .remapExpr(RemapExpr(base: remap.base, remappings: newRemappings))
+                return .remapExpr(RemapExpr(base: newBase, remappings: newRemappings))
 
             case .bundleLit(let elements):
                 let newElements = elements.map { substitute($0, bundleContext: nil) }
@@ -1188,7 +1111,7 @@ public class WeftLowering {
             visiting.insert(i)
 
             for strand in declarations[i].strands {
-                for ref in strand.expr.freeVars() {
+                for ref in strand.expr.currentTickFreeVars() {
                     if ref.contains(".") {
                         if let dep = strandToDecl[ref], dep != i {
                             try visit(dep)

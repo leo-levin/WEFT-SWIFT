@@ -169,6 +169,13 @@ public class Coordinator: CameraCaptureDelegate {
         // This transforms cache(localRef, ...) inside spindles to cache(targetBundle, ...)
         var mutableProgramForInlining = program
         IRTransformations.inlineSpindleCacheCalls(program: &mutableProgramForInlining)
+
+        // Convert temporal remaps to cache builtins where base is stateful or self-referential
+        IRTransformations.convertTemporalRemapsToCache(
+            program: &mutableProgramForInlining,
+            statefulBuiltins: registry.allStatefulBuiltins
+        )
+
         self.program = mutableProgramForInlining
 
         // Analyze cache nodes (now sees correct target references after spindle inlining)

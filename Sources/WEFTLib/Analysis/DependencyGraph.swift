@@ -44,8 +44,7 @@ public class DependencyGraph {
             var bundleDeps = Set<String>()
 
             for strand in bundle.strands {
-                let refs = collectBundleReferences(expr: strand.expr, program: program)
-                bundleDeps.formUnion(refs)
+                bundleDeps.formUnion(strand.expr.collectBundleReferences(excludeMe: true))
             }
 
             // Remove self-reference (handled separately for stateful analysis)
@@ -57,53 +56,6 @@ public class DependencyGraph {
             for dep in bundleDeps {
                 dependents[dep, default: []].insert(bundleName)
             }
-        }
-    }
-
-    /// Collect all bundle references from an expression
-    private func collectBundleReferences(expr: IRExpr, program: IRProgram) -> Set<String> {
-        switch expr {
-        case .num, .param:
-            return []
-
-        case .index(let bundle, let indexExpr):
-            var refs = collectBundleReferences(expr: indexExpr, program: program)
-            // Only add if it's a real bundle (not "me" which is special)
-            if bundle != "me" {
-                refs.insert(bundle)
-            }
-            return refs
-
-        case .binaryOp(_, let left, let right):
-            return collectBundleReferences(expr: left, program: program)
-                .union(collectBundleReferences(expr: right, program: program))
-
-        case .unaryOp(_, let operand):
-            return collectBundleReferences(expr: operand, program: program)
-
-        case .call(_, let args):
-            return args.reduce(into: Set<String>()) {
-                $0.formUnion(collectBundleReferences(expr: $1, program: program))
-            }
-
-        case .builtin(_, let args):
-            return args.reduce(into: Set<String>()) {
-                $0.formUnion(collectBundleReferences(expr: $1, program: program))
-            }
-
-        case .extract(let call, _):
-            return collectBundleReferences(expr: call, program: program)
-
-        case .cacheRead:
-            // cacheRead doesn't reference bundles directly
-            return []
-
-        case .remap(let base, let substitutions):
-            var refs = collectBundleReferences(expr: base, program: program)
-            for (_, subExpr) in substitutions {
-                refs.formUnion(collectBundleReferences(expr: subExpr, program: program))
-            }
-            return refs
         }
     }
 

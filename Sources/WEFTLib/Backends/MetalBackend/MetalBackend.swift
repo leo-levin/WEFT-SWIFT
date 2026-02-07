@@ -43,7 +43,7 @@ public class MetalBackend: Backend {
     public static let hardwareOwned: Set<IRHardware> = [.camera, .gpu]
     public static let ownedBuiltins: Set<String> = ["camera", "texture", "load", "text"]
     public static let externalBuiltins: Set<String> = ["camera", "texture"]
-    public static let statefulBuiltins: Set<String> = ["cache"]
+    public static let statefulBuiltins: Set<String> = ["cache", "camera", "mouse"]
     public static let coordinateFields = ["x", "y", "t", "w", "h"]
 
     // MARK: - Domain Annotation Specs
