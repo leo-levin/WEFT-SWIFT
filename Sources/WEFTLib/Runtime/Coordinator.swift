@@ -284,11 +284,21 @@ public class Coordinator: CameraCaptureDelegate {
                 )
                 metalBackend!.setInputProviders(visualProviders)
 
-                // Pass cache descriptors to codegen via backend
+                // Build cross-domain input map for this visual swatch
+                var crossDomainInputs: [String: [String]] = [:]
+                for inputBundleName in swatch.inputBuffers {
+                    if let bundle = program.bundles[inputBundleName] {
+                        let strandNames = bundle.strands.sorted(by: { $0.index < $1.index }).map { $0.name }
+                        crossDomainInputs[inputBundleName] = strandNames
+                    }
+                }
+
+                // Pass cache descriptors and cross-domain inputs to codegen via backend
                 let unit = try metalBackend!.compile(
                     swatch: swatch,
                     ir: program,
-                    cacheDescriptors: cacheManager.getDescriptors()
+                    cacheDescriptors: cacheManager.getDescriptors(),
+                    crossDomainInputs: crossDomainInputs
                 )
                 compiledUnits[swatch.id] = unit
 
@@ -351,6 +361,18 @@ public class Coordinator: CameraCaptureDelegate {
                         print("Coordinator: Warning - sample loading failed: \(error)")
                     }
                 }
+
+                // Allocate cross-domain output buffers for bundles that visual side needs
+                var crossDomainOutputs: [String: CrossDomainBuffer] = [:]
+                for outputName in swatch.outputBuffers {
+                    if let bundle = program.bundles[outputName] {
+                        let buffer = bufferManager.getBuffer(name: outputName, width: bundle.strands.count)
+                        if let cdBuf = buffer as? CrossDomainBuffer {
+                            crossDomainOutputs[outputName] = cdBuf
+                        }
+                    }
+                }
+                audioBackend?.crossDomainOutputBuffers = crossDomainOutputs
 
                 // Pass cache manager to audio backend for shared buffer access
                 let unit = try audioBackend!.compile(
@@ -474,6 +496,16 @@ public class Coordinator: CameraCaptureDelegate {
         // Find visual sink swatch
         for swatch in swatches where swatch.backend == MetalBackend.identifier && swatch.isSink {
             if let unit = compiledUnits[swatch.id] {
+                // Copy cross-domain buffer data to MetalBackend before rendering
+                if !swatch.inputBuffers.isEmpty, let metalBackend = metalBackend {
+                    var allData: [Float] = []
+                    for inputName in swatch.inputBuffers.sorted() {
+                        if let buffer = bufferManager.getAllBuffers()[inputName] as? CrossDomainBuffer {
+                            allData.append(contentsOf: buffer.data)
+                        }
+                    }
+                    metalBackend.crossDomainData = allData
+                }
                 metalBackend?.render(unit: unit, to: drawable, time: time, cacheManager: cacheManager)
                 return
             }

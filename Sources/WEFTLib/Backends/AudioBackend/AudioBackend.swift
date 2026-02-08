@@ -11,16 +11,21 @@ public class AudioCompiledUnit: CompiledUnit {
     public let scopeFunction: ScopeRenderFunction?
     public let scopeStrandNames: [String]
 
+    /// Cross-domain output evaluators: [(bundleName, [(strandName, evaluator)])]
+    public let outputEvaluators: [(String, [(String, (AudioContext) -> Float)])]
+
     public init(
         swatchId: UUID,
         renderFunction: @escaping AudioRenderFunction,
         scopeFunction: ScopeRenderFunction? = nil,
-        scopeStrandNames: [String] = []
+        scopeStrandNames: [String] = [],
+        outputEvaluators: [(String, [(String, (AudioContext) -> Float)])] = []
     ) {
         self.swatchId = swatchId
         self.renderFunction = renderFunction
         self.scopeFunction = scopeFunction
         self.scopeStrandNames = scopeStrandNames
+        self.outputEvaluators = outputEvaluators
     }
 }
 
@@ -54,7 +59,7 @@ public class AudioBackend: Backend {
         "sample": PrimitiveSpec(
             name: "sample",
             outputDomain: [IRDimension(name: "t", access: .free)],
-            hardwareRequired: [],
+            hardwareRequired: [.speaker],
             addsState: false
         ),
         "cache": PrimitiveSpec(
@@ -96,6 +101,9 @@ public class AudioBackend: Backend {
     /// Scope buffer for oscilloscope data -- set by Coordinator
     public var scopeBuffer: ScopeBuffer?
 
+    /// Cross-domain output buffers -- set by Coordinator
+    public var crossDomainOutputBuffers: [String: CrossDomainBuffer] = [:]
+
     /// Input providers set via setInputProviders
     private var inputProviders: [String: any InputProvider] = [:]
 
@@ -134,13 +142,17 @@ public class AudioBackend: Backend {
         let renderFunction = try codegen.generateRenderFunction()
         let scopeResult = try codegen.generateScopeFunction()
 
+        // Generate cross-domain output evaluators if this swatch has output buffers
+        let outputEvaluators = try codegen.generateOutputEvaluators(outputBundles: swatch.outputBuffers)
+
         print("Audio backend compiled successfully")
 
         return AudioCompiledUnit(
             swatchId: swatch.id,
             renderFunction: renderFunction,
             scopeFunction: scopeResult?.0,
-            scopeStrandNames: scopeResult?.1 ?? []
+            scopeStrandNames: scopeResult?.1 ?? [],
+            outputEvaluators: outputEvaluators
         )
     }
 
@@ -227,6 +239,21 @@ public class AudioBackend: Backend {
             // Batch write scope data outside the per-frame loop
             if !scopeFrames.isEmpty {
                 scopeBuffer?.write(values: scopeFrames)
+            }
+
+            // Write cross-domain output values (once per callback, using last sample's time)
+            if !unit.outputEvaluators.isEmpty {
+                let lastSampleIndex = self.sampleIndex + Int(frameCount) - 1
+                let lastTime = self.startTime + Double(lastSampleIndex) / self.sampleRate
+                let ctx = AudioContext(sampleIndex: lastSampleIndex, time: lastTime, sampleRate: self.sampleRate)
+                let outputBuffers = self.crossDomainOutputBuffers
+                for (bundleName, strandEvals) in unit.outputEvaluators {
+                    if let buffer = outputBuffers[bundleName] {
+                        for (i, (_, eval)) in strandEvals.enumerated() where i < buffer.data.count {
+                            buffer.data[i] = eval(ctx)
+                        }
+                    }
+                }
             }
 
             self.sampleIndex += Int(frameCount)

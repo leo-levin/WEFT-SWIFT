@@ -13,14 +13,18 @@ public class MetalCompiledUnit: CompiledUnit {
     public let usedInputs: Set<String>
     public let usedTextureIds: Set<Int>
     public let usedTextIds: Set<Int>
+    public let crossDomainSlotCount: Int
+    public let crossDomainSlotMap: [String: Int]
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = []) {
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:]) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
         self.usedInputs = usedInputs
         self.usedTextureIds = usedTextureIds
         self.usedTextIds = usedTextIds
+        self.crossDomainSlotCount = crossDomainSlotCount
+        self.crossDomainSlotMap = crossDomainSlotMap
     }
 }
 
@@ -155,6 +159,12 @@ public class MetalBackend: Backend {
     /// Text textures by resource ID - set by TextManager via Coordinator
     public var textTextures: [Int: MTLTexture] = [:]
 
+    /// Cross-domain data buffer for passing audio values to shader
+    private var crossDomainMTLBuffer: MTLBuffer?
+
+    /// Cross-domain data to copy into the Metal buffer before each render
+    public var crossDomainData: [Float] = []
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw BackendError.deviceNotAvailable("Metal device not available")
@@ -223,9 +233,9 @@ public class MetalBackend: Backend {
         return try compile(swatch: swatch, ir: ir, cacheDescriptors: [])
     }
 
-    /// Compile swatch to Metal pipeline with cache descriptors
-    public func compile(swatch: Swatch, ir: IRProgram, cacheDescriptors: [CacheNodeDescriptor]) throws -> CompiledUnit {
-        let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors)
+    /// Compile swatch to Metal pipeline with cache descriptors and cross-domain inputs
+    public func compile(swatch: Swatch, ir: IRProgram, cacheDescriptors: [CacheNodeDescriptor], crossDomainInputs: [String: [String]] = [:]) throws -> CompiledUnit {
+        let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors, crossDomainInputs: crossDomainInputs)
         let shaderSource = try codegen.generate()
         var usedInputs = codegen.usedInputs()
         let usedTextureIds = codegen.usedTextureIds()
@@ -275,7 +285,9 @@ public class MetalBackend: Backend {
             shaderSource: shaderSource,
             usedInputs: usedInputs,
             usedTextureIds: usedTextureIds,
-            usedTextIds: usedTextIds
+            usedTextIds: usedTextIds,
+            crossDomainSlotCount: codegen.crossDomainSlotCount,
+            crossDomainSlotMap: codegen.crossDomainSlotMap
         )
     }
 
@@ -323,6 +335,21 @@ public class MetalBackend: Backend {
         // Bind key state buffer (always at index 1 for input)
         if metalUnit.usedInputs.contains("key") {
             computeEncoder.setBuffer(keyStateBuffer, offset: 0, index: 1)
+        }
+
+        // Bind cross-domain data buffer if needed
+        if metalUnit.crossDomainSlotCount > 0 {
+            let byteCount = max(metalUnit.crossDomainSlotCount, 1) * MemoryLayout<Float>.stride
+            if crossDomainMTLBuffer == nil || crossDomainMTLBuffer!.length < byteCount {
+                crossDomainMTLBuffer = device.makeBuffer(length: byteCount, options: .storageModeShared)
+            }
+            if let buf = crossDomainMTLBuffer, !crossDomainData.isEmpty {
+                let copyCount = min(crossDomainData.count, metalUnit.crossDomainSlotCount)
+                crossDomainData.withUnsafeBufferPointer { ptr in
+                    buf.contents().copyMemory(from: ptr.baseAddress!, byteCount: copyCount * MemoryLayout<Float>.stride)
+                }
+                computeEncoder.setBuffer(buf, offset: 0, index: 30)
+            }
         }
 
         // Dispatch
@@ -452,6 +479,21 @@ public class MetalBackend: Backend {
                 if let signalBuffer = manager.getBuffer(index: descriptor.signalBufferIndex) {
                     computeEncoder.setBuffer(signalBuffer.mtlBuffer, offset: 0, index: signalIdx)
                 }
+            }
+        }
+
+        // Bind cross-domain data buffer if needed
+        if metalUnit.crossDomainSlotCount > 0 {
+            let byteCount = max(metalUnit.crossDomainSlotCount, 1) * MemoryLayout<Float>.stride
+            if crossDomainMTLBuffer == nil || crossDomainMTLBuffer!.length < byteCount {
+                crossDomainMTLBuffer = device.makeBuffer(length: byteCount, options: .storageModeShared)
+            }
+            if let buf = crossDomainMTLBuffer, !crossDomainData.isEmpty {
+                let copyCount = min(crossDomainData.count, metalUnit.crossDomainSlotCount)
+                crossDomainData.withUnsafeBufferPointer { ptr in
+                    buf.contents().copyMemory(from: ptr.baseAddress!, byteCount: copyCount * MemoryLayout<Float>.stride)
+                }
+                computeEncoder.setBuffer(buf, offset: 0, index: 30)
             }
         }
 

@@ -87,6 +87,22 @@ public class AudioCodeGen {
         return (scopeFn, strandNames)
     }
 
+    /// Generate evaluators for bundles that need cross-domain output.
+    /// Returns [(bundleName, [(strandName, evaluator)])]
+    public func generateOutputEvaluators(outputBundles: Set<String>) throws
+        -> [(String, [(String, (AudioContext) -> Float)])]
+    {
+        var result: [(String, [(String, (AudioContext) -> Float)])] = []
+        for bundleName in outputBundles.sorted() {
+            guard let bundle = program.bundles[bundleName] else { continue }
+            let strandEvals = try bundle.strands.sorted(by: { $0.index < $1.index }).map { strand in
+                (strand.name, try buildEvaluator(for: strand.expr))
+            }
+            result.append((bundleName, strandEvals))
+        }
+        return result
+    }
+
     /// Build an evaluator closure for an expression
     private func buildEvaluator(for expr: IRExpr) throws -> (AudioContext) -> Float {
         switch expr {

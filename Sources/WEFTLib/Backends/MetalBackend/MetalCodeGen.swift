@@ -20,11 +20,31 @@ public class MetalCodeGen {
     /// Base texture index for text textures (text textures start at 100)
     public static let textTextureBaseIndex = 100
 
-    public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = []) {
+    /// Cross-domain inputs: bundleName -> ordered list of strand names
+    private let crossDomainInputs: [String: [String]]
+
+    /// Pre-computed mapping: "bundle.strand" -> index into crossDomainData buffer
+    public private(set) var crossDomainSlotMap: [String: Int] = [:]
+
+    /// Total number of cross-domain float slots
+    public private(set) var crossDomainSlotCount: Int = 0
+
+    public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = [], crossDomainInputs: [String: [String]] = [:]) {
         self.program = program
         self.swatch = swatch
+        self.crossDomainInputs = crossDomainInputs
         // Filter to only visual domain caches
         self.cacheDescriptors = cacheDescriptors.filter { $0.domain == .visual }
+
+        // Build slot map for cross-domain inputs
+        var slot = 0
+        for (bundle, strands) in crossDomainInputs.sorted(by: { $0.key < $1.key }) {
+            for strand in strands {
+                crossDomainSlotMap["\(bundle).\(strand)"] = slot
+                slot += 1
+            }
+        }
+        crossDomainSlotCount = slot
     }
 
     /// Get set of texture resource IDs used in this swatch
@@ -125,7 +145,8 @@ public class MetalCodeGen {
                 usedBuiltins.insert(name)
             }
             if case .index(let bundle, _) = expr,
-               bundle != "me", !visitedBundles.contains(bundle) {
+               bundle != "me", !visitedBundles.contains(bundle),
+               swatch.bundles.contains(bundle) {
                 visitedBundles.insert(bundle)
                 if let targetBundle = program.bundles[bundle] {
                     for strand in targetBundle.strands {
@@ -239,6 +260,11 @@ public class MetalCodeGen {
         // Add key state buffer parameter if key() builtin is used
         if usedInputNames.contains("key") {
             extraParams += "\n    device float* keyStates [[buffer(1)]],"
+        }
+
+        // Add cross-domain data buffer parameter
+        if crossDomainSlotCount > 0 {
+            extraParams += "\n    device float* crossDomainData [[buffer(30)]],"
         }
 
         // Generate cache helper code if needed
@@ -362,6 +388,26 @@ public class MetalCodeGen {
 
             // Access another bundle's strand
             if let targetBundle = program.bundles[bundle] {
+                // Check if the referenced bundle is in this swatch — if not, it's cross-domain
+                if !swatch.bundles.contains(bundle) {
+                    // Try cross-domain buffer read
+                    if case .param(let field) = indexExpr,
+                       let slot = crossDomainSlotMap["\(bundle).\(field)"] {
+                        return "crossDomainData[\(slot)]"
+                    }
+                    if case .num(let idx) = indexExpr,
+                       let strands = crossDomainInputs[bundle] {
+                        let i = Int(idx)
+                        if i < strands.count,
+                           let slot = crossDomainSlotMap["\(bundle).\(strands[i])"] {
+                            return "crossDomainData[\(slot)]"
+                        }
+                    }
+                    throw BackendError.unsupportedExpression(
+                        "Cannot use bundle '\(bundle)' in display — no cross-domain buffer available"
+                    )
+                }
+
                 if case .num(let idx) = indexExpr {
                     let strandIdx = Int(idx)
                     if strandIdx < targetBundle.strands.count {
