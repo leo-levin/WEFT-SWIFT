@@ -503,18 +503,72 @@ public enum IRTransformations {
         }
     }
 
-    /// Resolve builtins used by a remap base, following bundle indirection.
-    private static func resolveBaseBuiltins(_ expr: IRExpr, program: IRProgram) -> Set<String> {
-        if case .index(let bundle, let indexExpr) = expr, bundle != "me",
-           let targetBundle = program.bundles[bundle] {
-            if case .num(let idx) = indexExpr {
-                let strandIdx = Int(idx)
-                if strandIdx < targetBundle.strands.count {
-                    return targetBundle.strands[strandIdx].expr.allBuiltins()
+    /// Convert temporal remaps to cache builtins in spindle locals.
+    /// Must be called BEFORE `inlineSpindleCacheCalls` so that cache builtins
+    /// exist in the spindle locals before inlining substitutes cycle targets.
+    public static func convertSpindleTemporalRemapsToCache(
+        program: inout IRProgram,
+        statefulBuiltins: Set<String>
+    ) {
+        for (spindleName, spindle) in program.spindles {
+            // Build a dict of local bundles for resolveBaseBuiltins lookups
+            let localBundleDict = Dictionary(
+                spindle.locals.map { ($0.name, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+
+            var modifiedLocals: [IRBundle] = []
+            for local in spindle.locals {
+                var modifiedStrands: [IRStrand] = []
+                for strand in local.strands {
+                    let keys = ["\(local.name).\(strand.index)", "\(local.name).\(strand.name)", local.name]
+
+                    let phase1 = convertNonSelfRefTemporalRemaps(
+                        in: strand.expr, strandKeys: keys, statefulBuiltins: statefulBuiltins,
+                        program: program, localBundles: localBundleDict
+                    )
+
+                    let finalExpr: IRExpr
+                    if let info = findFirstSelfRefTemporalRemap(in: phase1, strandKeys: keys) {
+                        let unwrapped = unwrapSelfRefTemporalRemaps(in: phase1, strandKeys: keys)
+                        finalExpr = .builtin(name: "cache", args: [
+                            unwrapped, .num(Double(info.offset + 1)),
+                            .num(Double(info.offset)), info.signal
+                        ])
+                    } else {
+                        finalExpr = phase1
+                    }
+                    modifiedStrands.append(IRStrand(name: strand.name, index: strand.index, expr: finalExpr))
                 }
-            } else if case .param(let field) = indexExpr {
-                if let strand = targetBundle.strands.first(where: { $0.name == field }) {
-                    return strand.expr.allBuiltins()
+                modifiedLocals.append(IRBundle(name: local.name, strands: modifiedStrands))
+            }
+
+            program.spindles[spindleName] = IRSpindle(
+                name: spindle.name, params: spindle.params,
+                locals: modifiedLocals, returns: spindle.returns
+            )
+        }
+    }
+
+    /// Resolve builtins used by a remap base, following bundle indirection.
+    /// Checks both program bundles and optional local bundles (for spindle contexts).
+    private static func resolveBaseBuiltins(
+        _ expr: IRExpr,
+        program: IRProgram,
+        localBundles: [String: IRBundle] = [:]
+    ) -> Set<String> {
+        if case .index(let bundle, let indexExpr) = expr, bundle != "me" {
+            // Check local bundles first (spindle locals), then program bundles
+            if let targetBundle = localBundles[bundle] ?? program.bundles[bundle] {
+                if case .num(let idx) = indexExpr {
+                    let strandIdx = Int(idx)
+                    if strandIdx < targetBundle.strands.count {
+                        return targetBundle.strands[strandIdx].expr.allBuiltins()
+                    }
+                } else if case .param(let field) = indexExpr {
+                    if let strand = targetBundle.strands.first(where: { $0.name == field }) {
+                        return strand.expr.allBuiltins()
+                    }
                 }
             }
         }
@@ -526,12 +580,14 @@ public enum IRTransformations {
         in expr: IRExpr,
         strandKeys: [String],
         statefulBuiltins: Set<String>,
-        program: IRProgram
+        program: IRProgram,
+        localBundles: [String: IRBundle] = [:]
     ) -> IRExpr {
         let recurse = { (e: IRExpr) -> IRExpr in
             convertNonSelfRefTemporalRemaps(
                 in: e, strandKeys: strandKeys,
-                statefulBuiltins: statefulBuiltins, program: program
+                statefulBuiltins: statefulBuiltins, program: program,
+                localBundles: localBundles
             )
         }
 
@@ -544,7 +600,7 @@ public enum IRTransformations {
         }
 
         // Temporal remap -- check statefulness and self-reference
-        let baseBuiltins = resolveBaseBuiltins(base, program: program)
+        let baseBuiltins = resolveBaseBuiltins(base, program: program, localBundles: localBundles)
         let isStateful = !baseBuiltins.isDisjoint(with: statefulBuiltins)
         let baseVars = base.freeVars()
         let isSelfRef = strandKeys.contains(where: { baseVars.contains($0) })

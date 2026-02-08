@@ -168,9 +168,16 @@ public class Coordinator: CameraCaptureDelegate {
         let swatches = partitioner.partition()
         self.swatchGraph = swatches
 
+        // Convert temporal remaps in spindle locals to cache builtins
+        // Must happen before inlineSpindleCacheCalls so cache nodes exist for cycle-breaking
+        var mutableProgramForInlining = program
+        IRTransformations.convertSpindleTemporalRemapsToCache(
+            program: &mutableProgramForInlining,
+            statefulBuiltins: registry.allStatefulBuiltins
+        )
+
         // Inline spindle calls with cache target substitution before cache analysis
         // This transforms cache(localRef, ...) inside spindles to cache(targetBundle, ...)
-        var mutableProgramForInlining = program
         IRTransformations.inlineSpindleCacheCalls(program: &mutableProgramForInlining)
 
         // Convert temporal remaps to cache builtins where base is stateful or self-referential

@@ -389,4 +389,170 @@ final class SpindleCacheInliningTest: XCTestCase {
             XCTFail("Compilation failed: \(error)")
         }
     }
+
+    // MARK: - Spindle Temporal Remap to Cache Tests
+
+    func testSpindleTemporalRemapSelfRef() throws {
+        // spindle decay(input, rate) {
+        //     trail.v = max(input, trail.v(me.t ~ me.t - 1) * rate)
+        //     return.0 = trail.v
+        // }
+        // After convertSpindleTemporalRemapsToCache, trail.v should contain cache()
+
+        let source = """
+        spindle decay(input, rate) {
+            trail.v = max(input, trail.v(me.t ~ me.t - 1) * rate)
+            return.0 = trail.v
+        }
+        dot.v = 1
+        display[r,g,b] = [decay(dot.v, 0.99), 0, 0]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        // Before transformation, the spindle local should have a remap
+        let spindleBefore = ir.spindles["decay"]!
+        let trailBefore = spindleBefore.locals.first(where: { $0.name == "trail" })!
+        let exprBefore = "\(trailBefore.strands[0].expr)"
+        XCTAssertTrue(exprBefore.contains("remap") || exprBefore.contains("[me.t"),
+                       "Before conversion, trail.v should contain a remap, got: \(exprBefore)")
+
+        // Apply the transformation
+        var mutableIR = ir
+        IRTransformations.convertSpindleTemporalRemapsToCache(
+            program: &mutableIR,
+            statefulBuiltins: ["osc", "cache", "noise", "microphone", "camera", "sample", "text"]
+        )
+
+        // After transformation, the spindle local should have cache() instead of remap
+        let spindleAfter = mutableIR.spindles["decay"]!
+        let trailAfter = spindleAfter.locals.first(where: { $0.name == "trail" })!
+        let exprAfter = trailAfter.strands[0].expr
+
+        if case .builtin(let name, let args) = exprAfter {
+            XCTAssertEqual(name, "cache", "Self-ref temporal remap should become cache builtin")
+            XCTAssertEqual(args.count, 4, "Cache should have 4 args: value, historySize, tapIndex, signal")
+        } else {
+            XCTFail("Expected cache builtin after conversion, got: \(exprAfter)")
+        }
+    }
+
+    func testSpindleTemporalRemapNonSelfRef() throws {
+        // Temporal remap on a non-self-referencing stateful base in a spindle local
+        // The base references a param (which is opaque/potentially stateful at spindle level),
+        // so this tests that pure temporal remaps are left as remaps
+
+        let source = """
+        spindle delay(input) {
+            prev.v = input(me.t ~ me.t - 1)
+            return.0 = prev.v
+        }
+        a.v = sin(me.t)
+        display[r,g,b] = [delay(a.v), 0, 0]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        var mutableIR = ir
+        IRTransformations.convertSpindleTemporalRemapsToCache(
+            program: &mutableIR,
+            statefulBuiltins: ["osc", "cache", "noise", "microphone", "camera", "sample", "text"]
+        )
+
+        // param("input") has no builtins, so it's not stateful -> should stay as remap
+        let spindle = mutableIR.spindles["delay"]!
+        let prev = spindle.locals.first(where: { $0.name == "prev" })!
+        let expr = prev.strands[0].expr
+
+        if case .remap = expr {
+            // Correct: pure param reference stays as remap
+        } else {
+            // Also acceptable if it became cache (if resolveBaseBuiltins found something)
+            // but for a bare param, it should stay remap
+            XCTFail("Expected remap for pure param temporal remap, got: \(expr)")
+        }
+    }
+
+    func testSpindleTemporalRemapFullPipeline() throws {
+        // Full pipeline test: spindle with temporal remap -> convert -> inline -> should produce cache
+
+        let source = """
+        spindle decay(input, rate) {
+            trail.v = max(input, trail.v(me.t ~ me.t - 1) * rate)
+            return.0 = trail.v
+        }
+        dot.v = 1
+        env.v = decay(dot.v, 0.99)
+        display[r,g,b] = [env.v, env.v, env.v]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        var mutableIR = ir
+
+        // Step 1: Convert temporal remaps in spindle locals to cache
+        IRTransformations.convertSpindleTemporalRemapsToCache(
+            program: &mutableIR,
+            statefulBuiltins: ["osc", "cache", "noise", "microphone", "camera", "sample", "text"]
+        )
+
+        // Verify spindle now has cache in its local
+        let spindleAfterConvert = mutableIR.spindles["decay"]!
+        let trailLocal = spindleAfterConvert.locals.first(where: { $0.name == "trail" })!
+        if case .builtin(let name, _) = trailLocal.strands[0].expr {
+            XCTAssertEqual(name, "cache")
+        } else {
+            XCTFail("Expected cache in spindle local after temporal remap conversion")
+        }
+
+        // Step 2: Inline spindle calls with cache target substitution
+        IRTransformations.inlineSpindleCacheCalls(program: &mutableIR)
+
+        // After inlining, env.v should contain a cache that references env (not trail)
+        if let envBundle = mutableIR.bundles["env"] {
+            let envExpr = "\(envBundle.strands[0].expr)"
+            XCTAssertTrue(envExpr.contains("cache"), "Inlined expression should contain cache: \(envExpr)")
+            XCTAssertTrue(envExpr.contains("env"), "Cache target should reference env (not trail): \(envExpr)")
+        } else {
+            XCTFail("env bundle should exist after transformation")
+        }
+    }
+
+    func testSpindleTemporalRemapWithStatefulLocal() throws {
+        // Spindle local that references another local containing a stateful builtin
+        // The temporal remap base references a local whose expression uses osc()
+
+        let source = """
+        spindle wobble(freq) {
+            raw.v = osc(freq)
+            prev.v = raw.v(me.t ~ me.t - 1)
+            return.0 = raw.v - prev.v
+        }
+        display[r,g,b] = [wobble(10), 0, 0]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        var mutableIR = ir
+        IRTransformations.convertSpindleTemporalRemapsToCache(
+            program: &mutableIR,
+            statefulBuiltins: ["osc", "cache", "noise", "microphone", "camera", "sample", "text"]
+        )
+
+        // prev.v references raw.v which contains osc() — stateful, non-self-ref
+        // Should be converted to cache
+        let spindle = mutableIR.spindles["wobble"]!
+        let prev = spindle.locals.first(where: { $0.name == "prev" })!
+        let expr = prev.strands[0].expr
+
+        if case .builtin(let name, _) = expr {
+            XCTAssertEqual(name, "cache", "Stateful local ref temporal remap should become cache")
+        } else {
+            XCTFail("Expected cache for stateful local ref, got: \(expr)")
+        }
+    }
 }
