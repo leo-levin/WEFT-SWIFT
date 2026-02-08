@@ -17,8 +17,8 @@ zip -r WEFT.zip WEFT.app
 echo "Creating GitHub release '$VERSION'..."
 gh release create "$VERSION" WEFT.zip \
     --title "WEFT $VERSION" \
-    --notes "Install with: \`curl -fsSL https://raw.githubusercontent.com/leo-levin/WEFT-SWIFT/master/install.sh | bash\`"
+    --notes "Install with: \`curl -fsSL https://weft.media/install.sh | bash\`"
 
 echo ""
 echo "Done! Release published."
-echo "Install command: curl -fsSL https://raw.githubusercontent.com/leo-levin/WEFT-SWIFT/master/install.sh | bash"
+echo "Install command: curl -fsSL https://weft.media/install.sh | bash"
