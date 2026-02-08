@@ -521,6 +521,142 @@ final class SpindleCacheInliningTest: XCTestCase {
         }
     }
 
+    // MARK: - Signal Return Through Remap Tests
+
+    /// Verify that remapping a spindle return inlines the return expression
+    /// and applies coordinate substitution (the "signal return" property).
+    func testBasicRemapThroughSpindleReturn() throws {
+        // gradient returns lerp(a, b, me.x)
+        // shifted.v remaps gradient's return with me.x ~ me.x + 0.1
+        // After inlining, shifted.v should be lerp(0, 1, (me.x + 0.1))
+        let source = """
+        spindle gradient(a, b) {
+            return.0 = lerp(a, b, me.x)
+        }
+
+        g.v = gradient(0, 1)
+        shifted.v = g.v(me.x ~ me.x + 0.1)
+        display[r,g,b] = [shifted.v, shifted.v, shifted.v]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        // Inline the full expression for shifted.v
+        let shiftedBundle = ir.bundles["shifted"]!
+        let inlined = try IRTransformations.inlineExpression(
+            shiftedBundle.strands[0].expr, program: ir
+        )
+
+        // After inlining, the expression should be lerp(0, 1, (me.x + 0.1))
+        // Key check: it should contain lerp (from the spindle return)
+        // and NOT contain a .call or .remap node (everything got resolved)
+        XCTAssertTrue(inlined.allBuiltins().contains("lerp"),
+                      "Inlined expression should contain lerp from spindle return, got: \(inlined)")
+        XCTAssertFalse(inlined.containsCall(),
+                       "Should not contain unresolved spindle calls, got: \(inlined)")
+
+        // Verify me.x was substituted: the expression should contain a + 0.1
+        let desc = inlined.description
+        XCTAssertTrue(desc.contains("0.1"),
+                      "Should contain the remap offset 0.1, got: \(desc)")
+    }
+
+    /// Verify remap through a spindle with local variables.
+    func testRemapThroughSpindleWithLocals() throws {
+        // The spindle uses a local, and the caller remaps the result.
+        // The local's expression should be fully inlined with the remap applied.
+        let source = """
+        spindle curve(a, b) {
+            mid.v = (a + b) / 2
+            return.0 = lerp(mid.v, b, me.x)
+        }
+
+        c.v = curve(0, 1)
+        remapped.v = c.v(me.x ~ me.x * 2)
+        display[r,g,b] = [remapped.v, 0, 0]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        let remappedBundle = ir.bundles["remapped"]!
+        let inlined = try IRTransformations.inlineExpression(
+            remappedBundle.strands[0].expr, program: ir
+        )
+
+        // Should contain lerp (from spindle body) with me.x * 2 substituted
+        XCTAssertTrue(inlined.allBuiltins().contains("lerp"),
+                      "Should contain lerp after inlining, got: \(inlined)")
+        XCTAssertFalse(inlined.containsCall(),
+                       "Should not contain unresolved calls, got: \(inlined)")
+    }
+
+    /// Verify chained spindle calls where the outer spindle remaps
+    /// an inner spindle's return value.
+    func testChainedSpindleCallsWithRemap() throws {
+        let source = """
+        spindle base(freq) {
+            return.0 = sin(me.x * freq)
+        }
+
+        spindle shifted(freq, offset) {
+            b.v = base(freq)
+            return.0 = b.v(me.x ~ me.x + offset)
+        }
+
+        result.v = shifted(10, 0.25)
+        display[r,g,b] = [result.v, result.v, result.v]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        let resultBundle = ir.bundles["result"]!
+        let inlined = try IRTransformations.inlineExpression(
+            resultBundle.strands[0].expr, program: ir
+        )
+
+        // After full inlining: sin((me.x + 0.25) * 10)
+        // Should contain sin, should not have unresolved calls
+        XCTAssertTrue(inlined.allBuiltins().contains("sin"),
+                      "Should contain sin from base spindle, got: \(inlined)")
+        XCTAssertFalse(inlined.containsCall(),
+                       "Should not contain unresolved calls, got: \(inlined)")
+        let desc = inlined.description
+        XCTAssertTrue(desc.contains("0.25"),
+                      "Should contain the remap offset 0.25, got: \(desc)")
+    }
+
+    /// Verify multi-return spindle where each strand is remapped independently.
+    func testMultiReturnSpindleWithRemap() throws {
+        let source = """
+        spindle gradient2(a, b) {
+            return.0 = lerp(a, b, me.x)
+            return.1 = lerp(b, a, me.x)
+        }
+
+        g[u,v] = gradient2(0, 1)
+        shifted[u,v] = g -> { 0..2(me.x ~ me.x + 0.5) }
+        display[r,g,b] = [shifted.u, shifted.v, 0]
+        """
+
+        let compiler = WeftCompiler()
+        let ir = try compiler.compile(source)
+
+        // Both strands of shifted should have inlined lerp with me.x + 0.5
+        let shiftedBundle = ir.bundles["shifted"]!
+        for strand in shiftedBundle.strands {
+            let inlined = try IRTransformations.inlineExpression(strand.expr, program: ir)
+            XCTAssertTrue(inlined.allBuiltins().contains("lerp"),
+                          "Strand \(strand.name) should contain lerp, got: \(inlined)")
+            XCTAssertFalse(inlined.containsCall(),
+                           "Strand \(strand.name) should not contain unresolved calls, got: \(inlined)")
+        }
+    }
+
+    // MARK: - Spindle Temporal Remap to Cache Tests
+
     func testSpindleTemporalRemapWithStatefulLocal() throws {
         // Spindle local that references another local containing a stateful builtin
         // The temporal remap base references a local whose expression uses osc()
