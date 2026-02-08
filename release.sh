@@ -14,12 +14,8 @@ echo "Creating zip..."
 rm -f WEFT.zip
 zip -r WEFT.zip WEFT.app
 
-echo "Deleting previous 'latest' release if it exists..."
-gh release delete latest --yes 2>/dev/null || true
-git push origin :refs/tags/latest 2>/dev/null || true
-
-echo "Creating GitHub release..."
-gh release create latest WEFT.zip \
+echo "Creating GitHub release '$VERSION'..."
+gh release create "$VERSION" WEFT.zip \
     --title "WEFT $VERSION" \
     --notes "Install with: \`curl -fsSL https://raw.githubusercontent.com/leo-levin/WEFT-SWIFT/master/install.sh | bash\`"
 
