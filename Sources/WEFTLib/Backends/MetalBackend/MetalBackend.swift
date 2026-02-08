@@ -16,7 +16,13 @@ public class MetalCompiledUnit: CompiledUnit {
     public let crossDomainSlotCount: Int
     public let crossDomainSlotMap: [String: Int]
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:]) {
+    /// Intermediate pipeline states for heavy remap textures
+    public let intermediatePipelines: [MTLComputePipelineState]
+
+    /// Number of intermediate textures needed
+    public let intermediateCount: Int
+
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:], intermediatePipelines: [MTLComputePipelineState] = [], intermediateCount: Int = 0) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
@@ -25,6 +31,8 @@ public class MetalCompiledUnit: CompiledUnit {
         self.usedTextIds = usedTextIds
         self.crossDomainSlotCount = crossDomainSlotCount
         self.crossDomainSlotMap = crossDomainSlotMap
+        self.intermediatePipelines = intermediatePipelines
+        self.intermediateCount = intermediateCount
     }
 }
 
@@ -165,6 +173,9 @@ public class MetalBackend: Backend {
     /// Cross-domain data to copy into the Metal buffer before each render
     public var crossDomainData: [Float] = []
 
+    /// Intermediate textures for heavy remap expressions (r32Float)
+    private var intermediateTextures: [MTLTexture] = []
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw BackendError.deviceNotAvailable("Metal device not available")
@@ -279,6 +290,15 @@ public class MetalBackend: Backend {
             throw BackendError.compilationFailed("Could not create pipeline state: \(error.localizedDescription)")
         }
 
+        // Build intermediate pipelines for heavy remap textures
+        var intermediatePipelines: [MTLComputePipelineState] = []
+        for i in 0..<codegen.intermediateTextureCount {
+            guard let fn = library.makeFunction(name: "intermediateKernel\(i)") else {
+                throw BackendError.compilationFailed("Could not find intermediateKernel\(i)")
+            }
+            intermediatePipelines.append(try device.makeComputePipelineState(function: fn))
+        }
+
         return MetalCompiledUnit(
             swatchId: swatch.id,
             pipelineState: pipelineState,
@@ -287,7 +307,9 @@ public class MetalBackend: Backend {
             usedTextureIds: usedTextureIds,
             usedTextIds: usedTextIds,
             crossDomainSlotCount: codegen.crossDomainSlotCount,
-            crossDomainSlotMap: codegen.crossDomainSlotMap
+            crossDomainSlotMap: codegen.crossDomainSlotMap,
+            intermediatePipelines: intermediatePipelines,
+            intermediateCount: codegen.intermediateTextureCount
         )
     }
 
@@ -300,7 +322,6 @@ public class MetalBackend: Backend {
     ) {
         guard let metalUnit = unit as? MetalCompiledUnit else { return }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
-        guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else { return }
 
         // Ensure output texture exists
         if outputTexture == nil {
@@ -327,17 +348,7 @@ public class MetalBackend: Backend {
             InputState.shared.copyKeyStates(to: keyBuffer.contents().assumingMemoryBound(to: Float.self))
         }
 
-        // Configure compute encoder
-        computeEncoder.setComputePipelineState(metalUnit.pipelineState)
-        computeEncoder.setTexture(texture, index: 0)
-        computeEncoder.setBuffer(uniformBuffer, offset: 0, index: 0)
-
-        // Bind key state buffer (always at index 1 for input)
-        if metalUnit.usedInputs.contains("key") {
-            computeEncoder.setBuffer(keyStateBuffer, offset: 0, index: 1)
-        }
-
-        // Bind cross-domain data buffer if needed
+        // Prepare cross-domain data buffer if needed
         if metalUnit.crossDomainSlotCount > 0 {
             let byteCount = max(metalUnit.crossDomainSlotCount, 1) * MemoryLayout<Float>.stride
             if crossDomainMTLBuffer == nil || crossDomainMTLBuffer!.length < byteCount {
@@ -348,17 +359,43 @@ public class MetalBackend: Backend {
                 crossDomainData.withUnsafeBufferPointer { ptr in
                     buf.contents().copyMemory(from: ptr.baseAddress!, byteCount: copyCount * MemoryLayout<Float>.stride)
                 }
-                computeEncoder.setBuffer(buf, offset: 0, index: 30)
             }
         }
 
-        // Dispatch
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadGroups = MTLSize(
             width: (width + threadGroupSize.width - 1) / threadGroupSize.width,
             height: (height + threadGroupSize.height - 1) / threadGroupSize.height,
             depth: 1
         )
+
+        // Intermediate kernel passes
+        if metalUnit.intermediateCount > 0 {
+            ensureIntermediateTextures(count: metalUnit.intermediateCount, width: width, height: height)
+
+            for (i, pipeline) in metalUnit.intermediatePipelines.enumerated() {
+                guard let encoder = commandBuffer.makeComputeCommandEncoder() else { continue }
+                encoder.setComputePipelineState(pipeline)
+                encoder.setTexture(intermediateTextures[i], index: 0)
+                encoder.setBuffer(uniformBuffer, offset: 0, index: 0)
+                bindSharedResources(encoder: encoder, metalUnit: metalUnit, cacheManager: nil)
+                encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
+                encoder.endEncoding()
+            }
+        }
+
+        // Display kernel pass
+        guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        computeEncoder.setComputePipelineState(metalUnit.pipelineState)
+        computeEncoder.setTexture(texture, index: 0)
+        computeEncoder.setBuffer(uniformBuffer, offset: 0, index: 0)
+        bindSharedResources(encoder: computeEncoder, metalUnit: metalUnit, cacheManager: nil)
+
+        // Bind intermediate textures
+        for (i, tex) in intermediateTextures.prefix(metalUnit.intermediateCount).enumerated() {
+            computeEncoder.setTexture(tex, index: MetalCodeGen.intermediateTextureBaseIndex + i)
+        }
+
         computeEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
         computeEncoder.endEncoding()
 
@@ -389,7 +426,6 @@ public class MetalBackend: Backend {
     ) {
         guard let metalUnit = unit as? MetalCompiledUnit else { return }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
-        guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else { return }
 
         let texture = drawable.texture
 
@@ -412,14 +448,73 @@ public class MetalBackend: Backend {
             InputState.shared.copyKeyStates(to: keyBuffer.contents().assumingMemoryBound(to: Float.self))
         }
 
-        // Configure compute encoder
+        // Prepare cross-domain data buffer if needed
+        if metalUnit.crossDomainSlotCount > 0 {
+            let byteCount = max(metalUnit.crossDomainSlotCount, 1) * MemoryLayout<Float>.stride
+            if crossDomainMTLBuffer == nil || crossDomainMTLBuffer!.length < byteCount {
+                crossDomainMTLBuffer = device.makeBuffer(length: byteCount, options: .storageModeShared)
+            }
+            if let buf = crossDomainMTLBuffer, !crossDomainData.isEmpty {
+                let copyCount = min(crossDomainData.count, metalUnit.crossDomainSlotCount)
+                crossDomainData.withUnsafeBufferPointer { ptr in
+                    buf.contents().copyMemory(from: ptr.baseAddress!, byteCount: copyCount * MemoryLayout<Float>.stride)
+                }
+            }
+        }
+
+        let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
+        let threadGroups = MTLSize(
+            width: (texture.width + threadGroupSize.width - 1) / threadGroupSize.width,
+            height: (texture.height + threadGroupSize.height - 1) / threadGroupSize.height,
+            depth: 1
+        )
+
+        // --- Intermediate kernel passes (heavy remap expressions) ---
+        if metalUnit.intermediateCount > 0 {
+            ensureIntermediateTextures(count: metalUnit.intermediateCount, width: texture.width, height: texture.height)
+
+            for (i, pipeline) in metalUnit.intermediatePipelines.enumerated() {
+                guard let encoder = commandBuffer.makeComputeCommandEncoder() else { continue }
+                encoder.setComputePipelineState(pipeline)
+                encoder.setTexture(intermediateTextures[i], index: 0)
+                encoder.setBuffer(uniformBuffer, offset: 0, index: 0)
+                bindSharedResources(encoder: encoder, metalUnit: metalUnit, cacheManager: cacheManager)
+                encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
+                encoder.endEncoding()
+            }
+        }
+
+        // --- Display kernel pass ---
+        guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else { return }
         computeEncoder.setComputePipelineState(metalUnit.pipelineState)
         computeEncoder.setTexture(texture, index: 0)
         computeEncoder.setBuffer(uniformBuffer, offset: 0, index: 0)
+        bindSharedResources(encoder: computeEncoder, metalUnit: metalUnit, cacheManager: cacheManager)
 
-        // Bind key state buffer if needed (always at index 1)
+        // Bind intermediate textures for display kernel to sample from
+        for (i, tex) in intermediateTextures.prefix(metalUnit.intermediateCount).enumerated() {
+            computeEncoder.setTexture(tex, index: MetalCodeGen.intermediateTextureBaseIndex + i)
+        }
+
+        computeEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
+        computeEncoder.endEncoding()
+
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    // MARK: - Shared Resource Binding
+
+    /// Bind shared resources (textures, samplers, buffers) to a compute encoder.
+    /// Used by both intermediate and display kernel passes.
+    private func bindSharedResources(
+        encoder: MTLComputeCommandEncoder,
+        metalUnit: MetalCompiledUnit,
+        cacheManager: CacheManager?
+    ) {
+        // Bind key state buffer if needed
         if metalUnit.usedInputs.contains("key") {
-            computeEncoder.setBuffer(keyStateBuffer, offset: 0, index: 1)
+            encoder.setBuffer(keyStateBuffer, offset: 0, index: 1)
         }
 
         // Bind textures for used inputs (derived from bindings)
@@ -429,11 +524,11 @@ public class MetalBackend: Backend {
                     switch input.builtinName {
                     case "camera":
                         if let camTex = getCameraTexture() {
-                            computeEncoder.setTexture(camTex, index: textureIndex)
+                            encoder.setTexture(camTex, index: textureIndex)
                         }
                     case "microphone":
                         if let audioTex = audioBufferTexture {
-                            computeEncoder.setTexture(audioTex, index: 2) // microphone uses index 2
+                            encoder.setTexture(audioTex, index: 2)
                         }
                     default:
                         break
@@ -446,7 +541,7 @@ public class MetalBackend: Backend {
         for textureId in metalUnit.usedTextureIds {
             if let tex = loadedTextures[textureId] {
                 let textureIndex = MetalCodeGen.textureBaseIndex + textureId
-                computeEncoder.setTexture(tex, index: textureIndex)
+                encoder.setTexture(tex, index: textureIndex)
             }
         }
 
@@ -454,15 +549,16 @@ public class MetalBackend: Backend {
         for textId in metalUnit.usedTextIds {
             if let tex = textTextures[textId] {
                 let textureIndex = MetalCodeGen.textTextureBaseIndex + textId
-                computeEncoder.setTexture(tex, index: textureIndex)
+                encoder.setTexture(tex, index: textureIndex)
             }
         }
 
-        // Bind sampler if any input texture is used
+        // Bind sampler if any texture input is used
         let textureInputs = metalUnit.usedInputs.subtracting(["cache"])
-        if !textureInputs.isEmpty {
+        let needsSampler = !textureInputs.isEmpty || metalUnit.intermediateCount > 0
+        if needsSampler {
             if let sampler = samplerState {
-                computeEncoder.setSamplerState(sampler, index: 0)
+                encoder.setSamplerState(sampler, index: 0)
             }
         }
 
@@ -474,40 +570,48 @@ public class MetalBackend: Backend {
                 let signalIdx = CacheNodeDescriptor.shaderSignalBufferIndex(cachePosition: i)
 
                 if let historyBuffer = manager.getBuffer(index: descriptor.historyBufferIndex) {
-                    computeEncoder.setBuffer(historyBuffer.mtlBuffer, offset: 0, index: historyIdx)
+                    encoder.setBuffer(historyBuffer.mtlBuffer, offset: 0, index: historyIdx)
                 }
                 if let signalBuffer = manager.getBuffer(index: descriptor.signalBufferIndex) {
-                    computeEncoder.setBuffer(signalBuffer.mtlBuffer, offset: 0, index: signalIdx)
+                    encoder.setBuffer(signalBuffer.mtlBuffer, offset: 0, index: signalIdx)
                 }
             }
         }
 
         // Bind cross-domain data buffer if needed
         if metalUnit.crossDomainSlotCount > 0 {
-            let byteCount = max(metalUnit.crossDomainSlotCount, 1) * MemoryLayout<Float>.stride
-            if crossDomainMTLBuffer == nil || crossDomainMTLBuffer!.length < byteCount {
-                crossDomainMTLBuffer = device.makeBuffer(length: byteCount, options: .storageModeShared)
-            }
-            if let buf = crossDomainMTLBuffer, !crossDomainData.isEmpty {
-                let copyCount = min(crossDomainData.count, metalUnit.crossDomainSlotCount)
-                crossDomainData.withUnsafeBufferPointer { ptr in
-                    buf.contents().copyMemory(from: ptr.baseAddress!, byteCount: copyCount * MemoryLayout<Float>.stride)
-                }
-                computeEncoder.setBuffer(buf, offset: 0, index: 30)
+            if let buf = crossDomainMTLBuffer {
+                encoder.setBuffer(buf, offset: 0, index: 30)
             }
         }
+    }
 
-        // Dispatch
-        let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let threadGroups = MTLSize(
-            width: (texture.width + threadGroupSize.width - 1) / threadGroupSize.width,
-            height: (texture.height + threadGroupSize.height - 1) / threadGroupSize.height,
-            depth: 1
-        )
-        computeEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
-        computeEncoder.endEncoding()
+    // MARK: - Intermediate Texture Management
 
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
+    /// Ensure intermediate textures exist with the correct count and dimensions
+    private func ensureIntermediateTextures(count: Int, width: Int, height: Int) {
+        let needsRealloc = intermediateTextures.count != count
+            || (count > 0 && (intermediateTextures[0].width != width || intermediateTextures[0].height != height))
+
+        guard needsRealloc else { return }
+
+        var textures: [MTLTexture] = []
+        for _ in 0..<count {
+            let desc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .r32Float,
+                width: width,
+                height: height,
+                mipmapped: false
+            )
+            desc.usage = [.shaderWrite, .shaderRead]
+            desc.storageMode = .private
+            guard let tex = device.makeTexture(descriptor: desc) else {
+                print("Warning: Failed to allocate intermediate texture")
+                intermediateTextures = []
+                return
+            }
+            textures.append(tex)
+        }
+        intermediateTextures = textures
     }
 }
