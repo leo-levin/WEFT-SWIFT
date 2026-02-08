@@ -119,6 +119,43 @@ struct PanelCommands: Commands {
                     set: { showDevMode = $0 }
                 ))
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                Divider()
+
+                FrameRatePicker()
+                RenderScalePicker()
+            }
+        }
+    }
+}
+
+struct FrameRatePicker: View {
+    @AppStorage("preferredFPS") private var preferredFPS: Int = 60
+
+    static let options = [24, 30, 60, 120]
+
+    var body: some View {
+        Picker("Frame Rate", selection: $preferredFPS) {
+            ForEach(Self.options, id: \.self) { fps in
+                Text("\(fps) fps").tag(fps)
+            }
+        }
+    }
+}
+
+struct RenderScalePicker: View {
+    @AppStorage("renderScale") private var renderScale: Double = 2.0
+
+    static let options: [(label: String, value: Double)] = [
+        ("Low (0.5x)", 0.5),
+        ("Medium (1x)", 1.0),
+        ("High (2x)", 2.0),
+    ]
+
+    var body: some View {
+        Picker("Resolution", selection: $renderScale) {
+            ForEach(Self.options, id: \.value) { option in
+                Text(option.label).tag(option.value)
             }
         }
     }

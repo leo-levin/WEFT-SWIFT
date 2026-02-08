@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var showStats = true
     @State private var showDevMode = false
     @State private var devModeTab: DevModeTab = .ir
+    @AppStorage("preferredFPS") private var preferredFPS: Int = 60
+    @AppStorage("renderScale") private var renderScale: Double = 2.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -320,7 +322,7 @@ struct ContentView: View {
 
                 ZStack(alignment: .topTrailing) {
                     if viewModel.hasVisual {
-                        WeftMetalView(coordinator: viewModel.coordinator)
+                        WeftMetalView(coordinator: viewModel.coordinator, preferredFPS: preferredFPS, renderScale: renderScale)
 
                         if showStats {
                             StatsBadge(fps: renderStats.fps, frameTime: renderStats.frameTime)

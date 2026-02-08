@@ -18,7 +18,7 @@ public class RenderStats: ObservableObject {
     private var lastFrameTime: CFTimeInterval = 0
     private var frameTimeSamples: [Double] = []
     private var lastStatsUpdate: CFTimeInterval = 0
-    private var expectedFrameTime: Double = 1.0 / 60.0
+    var expectedFrameTime: Double = 1.0 / 60.0
 
     func recordFrame() {
         let now = CACurrentMediaTime()
@@ -66,6 +66,7 @@ public class RenderStats: ObservableObject {
 class WeftMetalViewCoordinator: NSObject, MTKViewDelegate {
     var weftCoordinator: Coordinator
     var startTime: CFTimeInterval = 0
+    var renderScale: CGFloat = 2.0
 
     init(coordinator: Coordinator) {
         self.weftCoordinator = coordinator
@@ -77,6 +78,15 @@ class WeftMetalViewCoordinator: NSObject, MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
+        // Update drawable size based on current bounds and render scale
+        let newSize = CGSize(
+            width: max(1, view.bounds.width * renderScale),
+            height: max(1, view.bounds.height * renderScale)
+        )
+        if view.drawableSize != newSize {
+            view.drawableSize = newSize
+        }
+
         guard let drawable = view.currentDrawable else { return }
 
         // Calculate time
@@ -201,6 +211,8 @@ class InputAwareMTKView: MTKView {
 
 struct WeftMetalView: NSViewRepresentable {
     let coordinator: Coordinator
+    var preferredFPS: Int = 60
+    var renderScale: Double = 2.0
 
     func makeCoordinator() -> WeftMetalViewCoordinator {
         WeftMetalViewCoordinator(coordinator: coordinator)
@@ -220,12 +232,19 @@ struct WeftMetalView: NSViewRepresentable {
         view.delegate = context.coordinator
         view.enableSetNeedsDisplay = false
         view.isPaused = false
-        view.preferredFramesPerSecond = 60
+        view.autoResizeDrawable = false
+        view.preferredFramesPerSecond = preferredFPS
+        RenderStats.shared.expectedFrameTime = 1.0 / Double(preferredFPS)
+        context.coordinator.renderScale = CGFloat(renderScale)
 
         return view
     }
 
     func updateNSView(_ nsView: InputAwareMTKView, context: Context) {
-        // Update if needed
+        if nsView.preferredFramesPerSecond != preferredFPS {
+            nsView.preferredFramesPerSecond = preferredFPS
+            RenderStats.shared.expectedFrameTime = 1.0 / Double(preferredFPS)
+        }
+        context.coordinator.renderScale = CGFloat(renderScale)
     }
 }
