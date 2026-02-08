@@ -36,7 +36,8 @@ public class AudioCodeGen {
 
         guard let bundleName = outputBundleName,
               let playBundle = program.bundles[bundleName] else {
-            throw BackendError.missingResource("audio output bundle not found")
+            // No play bundle -- return silent render function (scope-only programs)
+            return { _, _, _ in (0.0, 0.0) }
         }
 
         // Build expression evaluators for each channel
@@ -58,6 +59,32 @@ public class AudioCodeGen {
 
             return (left, right)
         }
+    }
+
+    /// Generate scope render function if a "scope" bundle exists in the swatch.
+    /// Returns (function, strandNames) or nil if no scope bundle.
+    public func generateScopeFunction() throws -> (ScopeRenderFunction, [String])? {
+        guard swatch.bundles.contains("scope"),
+              let scopeBundle = program.bundles["scope"] else {
+            return nil
+        }
+
+        let sortedStrands = scopeBundle.strands.sorted(by: { $0.index < $1.index })
+        let strandNames = sortedStrands.map { $0.name }
+        let evaluators = try sortedStrands.map { strand in
+            try buildEvaluator(for: strand.expr)
+        }
+
+        let scopeFn: ScopeRenderFunction = { (sampleIndex: Int, time: Double, sampleRate: Double) -> [Float] in
+            let context = AudioContext(
+                sampleIndex: sampleIndex,
+                time: time,
+                sampleRate: sampleRate
+            )
+            return evaluators.map { $0(context) }
+        }
+
+        return (scopeFn, strandNames)
     }
 
     /// Build an evaluator closure for an expression
@@ -513,6 +540,7 @@ public struct AudioContext {
 // MARK: - Audio Render Function Type
 
 public typealias AudioRenderFunction = (Int, Double, Double) -> (Float, Float)
+public typealias ScopeRenderFunction = (Int, Double, Double) -> [Float]
 
 // MARK: - Audio Input Source Protocol (Deprecated)
 

@@ -22,15 +22,11 @@ public class Partitioner {
         self.registry = registry
     }
 
-    /// Get output bundle name for a backend from registry
-    private func outputBundleName(for backendId: String) -> String? {
-        registry.allOutputBindings.first { $0.value.backendId == backendId }?.key
-    }
-
-    /// Check if a bundle is a sink for a backend
-    private func isSinkBundle(_ bundleName: String, for backendId: String) -> Bool {
-        guard let binding = registry.allOutputBindings[bundleName] else { return false }
-        return binding.backendId == backendId
+    /// Get all output bundle names for a backend from registry
+    private func outputBundleNames(for backendId: String) -> [String] {
+        registry.allOutputBindings
+            .filter { $0.value.backendId == backendId }
+            .map { $0.key }
     }
 
     /// Check if program has a sink bundle for a backend
@@ -69,8 +65,8 @@ public class Partitioner {
         }
 
         // Create a swatch for each backend that has bundles or a sink
-        for (backendId, backendType) in registry.allBackendTypes {
-            let outputBundle = outputBundleName(for: backendId)
+        for (backendId, _) in registry.allBackendTypes {
+            let outputBundles = outputBundleNames(for: backendId)
             var backendBundles = bundlesByBackend[backendId] ?? []
 
             // Check if this backend has a sink in the program
@@ -91,11 +87,10 @@ public class Partitioner {
                 }
             }
 
-            // Include output bundle if present in program
-            if let outputBundle = outputBundle, program.bundles[outputBundle] != nil {
+            // Include all output bundles present in program + their pure deps
+            for outputBundle in outputBundles where program.bundles[outputBundle] != nil {
                 backendBundles.insert(outputBundle)
 
-                // Also add pure dependencies of the output bundle
                 let deps = graph.transitiveDependencies(of: outputBundle)
                 for dep in deps {
                     if pureBundles.contains(dep) {
@@ -107,7 +102,7 @@ public class Partitioner {
             let swatch = Swatch(
                 backend: backendId,
                 bundles: backendBundles,
-                isSink: outputBundle.map { isSinkBundle($0, for: backendId) } ?? false
+                isSink: hasSink
             )
             swatchGraph.swatches.append(swatch)
 

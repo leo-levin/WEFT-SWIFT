@@ -34,6 +34,9 @@ public class Coordinator: CameraCaptureDelegate {
     // Input providers registry
     private var inputProviders: [String: any InputProvider] = [:]
 
+    // Scope buffer for oscilloscope data
+    public private(set) var scopeBuffer: ScopeBuffer?
+
     // Compiled units
     private var compiledUnits: [UUID: CompiledUnit] = [:]
 
@@ -356,6 +359,13 @@ public class Coordinator: CameraCaptureDelegate {
                     cacheManager: cacheManager
                 )
                 compiledUnits[swatch.id] = unit
+
+                // Set up scope buffer if scope strands exist
+                if let audioUnit = unit as? AudioCompiledUnit, !audioUnit.scopeStrandNames.isEmpty {
+                    let buffer = ScopeBuffer(strandNames: audioUnit.scopeStrandNames)
+                    self.scopeBuffer = buffer
+                    audioBackend?.scopeBuffer = buffer
+                }
             }
             // Unknown backend - skip (pure swatches or future backends)
         }
@@ -491,6 +501,7 @@ public class Coordinator: CameraCaptureDelegate {
     /// Stop audio playback
     public func stopAudio() {
         audioBackend?.stop()
+        scopeBuffer = nil
     }
 
     /// Start the coordinator (visual + audio)

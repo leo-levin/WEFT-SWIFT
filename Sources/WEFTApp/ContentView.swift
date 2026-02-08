@@ -5,6 +5,11 @@ import AppKit
 import UniformTypeIdentifiers
 import WEFTLib
 
+enum CanvasTab: String, CaseIterable {
+    case visual = "Visual"
+    case scope = "Scope"
+}
+
 struct ContentView: View {
     @StateObject private var viewModel = WeftViewModel()
     @State private var showGraph = true
@@ -12,6 +17,7 @@ struct ContentView: View {
     @State private var showStats = true
     @State private var showDevMode = false
     @State private var devModeTab: DevModeTab = .ir
+    @State private var canvasTab: CanvasTab = .visual
     @AppStorage("preferredFPS") private var preferredFPS: Int = 60
     @AppStorage("renderScale") private var renderScale: Double = 2.0
 
@@ -309,33 +315,77 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.15), value: showGraph)
     }
 
+    /// Resolve which tab to actually show
+    private var activeCanvasTab: CanvasTab {
+        if viewModel.hasScope && !viewModel.hasVisual { return .scope }
+        if viewModel.hasVisual && !viewModel.hasScope { return .visual }
+        return canvasTab
+    }
+
     private var canvasContent: some View {
-        GeometryReader { geo in
-            let aspectRatio: CGFloat = 16.0 / 10.0
-            let availableWidth = geo.size.width
-            let availableHeight = geo.size.height
-            let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
-            let fittedHeight = fittedWidth / aspectRatio
+        VStack(spacing: 0) {
+            // Tab bar -- only when multiple outputs available
+            if viewModel.hasVisual && viewModel.hasScope {
+                canvasTabBar
+                SubtleDivider(.horizontal)
+            }
 
-            ZStack {
-                Color.canvasBackground
+            // Content
+            GeometryReader { geo in
+                let aspectRatio: CGFloat = 16.0 / 10.0
+                let availableWidth = geo.size.width
+                let availableHeight = geo.size.height
+                let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
+                let fittedHeight = fittedWidth / aspectRatio
 
-                ZStack(alignment: .topTrailing) {
-                    if viewModel.hasVisual {
-                        WeftMetalView(coordinator: viewModel.coordinator, preferredFPS: preferredFPS, renderScale: renderScale)
+                ZStack {
+                    Color.canvasBackground
 
-                        if showStats {
-                            StatsBadge(fps: renderStats.fps, frameTime: renderStats.frameTime)
-                                .padding(Spacing.sm)
-                                .transition(.opacity)
+                    if activeCanvasTab == .scope, let scopeBuffer = viewModel.coordinator.scopeBuffer {
+                        ScopeView(scopeBuffer: scopeBuffer)
+                    } else if viewModel.hasVisual {
+                        ZStack(alignment: .topTrailing) {
+                            WeftMetalView(coordinator: viewModel.coordinator, preferredFPS: preferredFPS, renderScale: renderScale)
+
+                            if showStats {
+                                StatsBadge(fps: renderStats.fps, frameTime: renderStats.frameTime)
+                                    .padding(Spacing.sm)
+                                    .transition(.opacity)
+                            }
                         }
+                        .frame(width: fittedWidth, height: fittedHeight)
+                    } else if viewModel.hasScope, let scopeBuffer = viewModel.coordinator.scopeBuffer {
+                        ScopeView(scopeBuffer: scopeBuffer)
                     } else {
-                        EmptyStateView("play.circle", message: "Press ⌘Return to run")
+                        EmptyStateView("play.circle", message: "Press \u{2318}Return to run")
                     }
                 }
-                .frame(width: fittedWidth, height: fittedHeight)
             }
         }
+    }
+
+    private var canvasTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(CanvasTab.allCases, id: \.self) { tab in
+                let isAvailable = (tab == .visual && viewModel.hasVisual) || (tab == .scope && viewModel.hasScope)
+                if isAvailable {
+                    Button {
+                        canvasTab = tab
+                    } label: {
+                        Text(tab.rawValue)
+                            .font(.system(size: 10, weight: activeCanvasTab == tab ? .semibold : .regular))
+                            .foregroundStyle(activeCanvasTab == tab ? .primary : .secondary)
+                            .padding(.horizontal, Spacing.sm)
+                            .padding(.vertical, Spacing.xxs)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.xs)
+        .padding(.vertical, Spacing.xxs)
+        .background(Color.panelHeaderBackground)
     }
 
     private var collapsedGraphHeader: some View {
@@ -386,6 +436,7 @@ enum WeftExample: CaseIterable {
     case circle
     case sine
     case crossdomain
+    case scope
 
     var name: String {
         switch self {
@@ -394,6 +445,7 @@ enum WeftExample: CaseIterable {
         case .circle: return "Circle"
         case .sine: return "Sine Wave"
         case .crossdomain: return "Audio-Visual"
+        case .scope: return "Scope Demo"
         }
     }
 
@@ -448,6 +500,16 @@ enum WeftExample: CaseIterable {
             play[0] = sin(phase.v) * amp.v * 0.3
             display[r, g, b] = [amp.v, me.y, me.x]
             """
+
+        case .scope:
+            return """
+            // Scope demo -- visualize audio signals
+            freq.v = 440.0
+            lfo.v = sin(me.t * 2.0) * 0.5 + 0.5
+            osc.v = sin(me.i / me.sampleRate * freq.v * 6.28318) * lfo.v
+            play[0] = osc.v * 0.3
+            scope[oscillator, lfo, output] = [osc.v, lfo.v, play.0]
+            """
         }
     }
 }
@@ -469,6 +531,7 @@ class WeftViewModel: ObservableObject {
     @Published var compilationError = CompilationError(message: "", location: nil, codeContext: [])
     @Published var hasVisual = false
     @Published var hasAudio = false
+    @Published var hasScope = false
     @Published var isAudioPlaying = false
     @Published var hasError = false
     @Published var isRunning = false
@@ -596,6 +659,7 @@ class WeftViewModel: ObservableObject {
         }
         hasVisual = false
         hasAudio = false
+        hasScope = false
         isRunning = false
         statusText = "Stopped"
         RenderStats.shared.reset()
@@ -625,6 +689,7 @@ class WeftViewModel: ObservableObject {
 
             hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "visual" } ?? false
             hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "audio" } ?? false
+            hasScope = coordinator.scopeBuffer != nil
 
             isRunning = true
             statusText = resourceWarning != nil ? "Running (with warnings)" : "Running"

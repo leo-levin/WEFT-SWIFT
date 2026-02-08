@@ -8,10 +8,19 @@ import AVFoundation
 public class AudioCompiledUnit: CompiledUnit {
     public let swatchId: UUID
     public let renderFunction: AudioRenderFunction
+    public let scopeFunction: ScopeRenderFunction?
+    public let scopeStrandNames: [String]
 
-    public init(swatchId: UUID, renderFunction: @escaping AudioRenderFunction) {
+    public init(
+        swatchId: UUID,
+        renderFunction: @escaping AudioRenderFunction,
+        scopeFunction: ScopeRenderFunction? = nil,
+        scopeStrandNames: [String] = []
+    ) {
         self.swatchId = swatchId
         self.renderFunction = renderFunction
+        self.scopeFunction = scopeFunction
+        self.scopeStrandNames = scopeStrandNames
     }
 }
 
@@ -67,6 +76,10 @@ public class AudioBackend: Backend {
         .output(OutputBinding(
             bundleName: "play",
             kernelName: "audioCallback"
+        )),
+        .output(OutputBinding(
+            bundleName: "scope",
+            kernelName: "scopeCallback"
         ))
     ]
 
@@ -79,6 +92,9 @@ public class AudioBackend: Backend {
 
     /// Loaded audio samples by resource ID - set by SampleManager via Coordinator
     public var loadedSamples: [Int: AudioSampleBuffer] = [:]
+
+    /// Scope buffer for oscilloscope data -- set by Coordinator
+    public var scopeBuffer: ScopeBuffer?
 
     /// Input providers set via setInputProviders
     private var inputProviders: [String: any InputProvider] = [:]
@@ -116,12 +132,15 @@ public class AudioBackend: Backend {
         }
 
         let renderFunction = try codegen.generateRenderFunction()
+        let scopeResult = try codegen.generateScopeFunction()
 
         print("Audio backend compiled successfully")
 
         return AudioCompiledUnit(
             swatchId: swatch.id,
-            renderFunction: renderFunction
+            renderFunction: renderFunction,
+            scopeFunction: scopeResult?.0,
+            scopeStrandNames: scopeResult?.1 ?? []
         )
     }
 
@@ -180,6 +199,10 @@ public class AudioBackend: Backend {
             }
 
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let scopeBuffer = self.scopeBuffer
+            let scopeFn = unit.scopeFunction
+
+            var scopeFrames: [[Float]] = []
 
             for frame in 0..<Int(frameCount) {
                 let currentSampleIndex = self.sampleIndex + frame
@@ -187,12 +210,23 @@ public class AudioBackend: Backend {
 
                 let (left, right) = unit.renderFunction(currentSampleIndex, currentTime, self.sampleRate)
 
-                // Write to buffers
+                // Write to audio output buffers
                 for bufferIndex in 0..<ablPointer.count {
                     let buffer = ablPointer[bufferIndex]
                     let samples = buffer.mData?.assumingMemoryBound(to: Float.self)
                     samples?[frame] = bufferIndex == 0 ? left : right
                 }
+
+                // Evaluate scope strands
+                if let scopeFn = scopeFn {
+                    let scopeValues = scopeFn(currentSampleIndex, currentTime, self.sampleRate)
+                    scopeFrames.append(scopeValues)
+                }
+            }
+
+            // Batch write scope data outside the per-frame loop
+            if !scopeFrames.isEmpty {
+                scopeBuffer?.write(values: scopeFrames)
             }
 
             self.sampleIndex += Int(frameCount)
