@@ -997,4 +997,97 @@ final class ParserTests: XCTestCase {
             XCTFail("Expected num(0.5) for $amp")
         }
     }
+
+    // MARK: - Signal Parameters
+
+    func testRemapOnParam() throws {
+        // Any spindle parameter can be used as a remap base
+        let source = """
+        spindle shift(input, dx) {
+            return.0 = input(me.x ~ me.x + dx)
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .spindleDef(let def) = program.statements[0] else {
+            XCTFail("Expected spindle definition")
+            return
+        }
+
+        XCTAssertEqual(def.params, ["input", "dx"])
+    }
+
+    func testRemapOnIdentifier() throws {
+        // When an identifier is followed by (domain ~ expr), it should parse as remap, not call
+        let source = """
+        spindle edge(input, delta) {
+            l[v] = input(me.x ~ me.x - delta)
+            return.0 = l.v
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .spindleDef(let def) = program.statements[0] else {
+            XCTFail("Expected spindle definition")
+            return
+        }
+
+        // The first body statement should be a bundle decl for "l"
+        guard case .bundleDecl(let decl) = def.body[0] else {
+            XCTFail("Expected bundle declaration")
+            return
+        }
+        XCTAssertEqual(decl.name, "l")
+
+        // The expression should be a remap, not a spindle call
+        guard case .remapExpr(let remap) = decl.expr else {
+            XCTFail("Expected remap expression, got \(decl.expr)")
+            return
+        }
+
+        // Base should be the identifier "input"
+        guard case .identifier("input") = remap.base else {
+            XCTFail("Expected identifier 'input' as remap base, got \(remap.base)")
+            return
+        }
+
+        // Should have one remapping: me.x ~ me.x - delta
+        XCTAssertEqual(remap.remappings.count, 1)
+    }
+
+    func testSignalParamLowering() throws {
+        let source = """
+        gray[v] = me.x
+        spindle edge(input, delta) {
+            l[v] = input(me.x ~ me.x - delta)
+            return.0 = l.v
+        }
+        edges[mag] = edge(gray.v, 0.005)
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        // The "edge" spindle should have a remap in its local
+        let spindle = ir.spindles["edge"]!
+        XCTAssertEqual(spindle.locals.count, 1)
+
+        let local = spindle.locals[0]
+        XCTAssertEqual(local.name, "l")
+
+        // l.v should be a remap expression with param("input") as base
+        if case .remap(let base, let subs) = local.strands[0].expr {
+            if case .param("input") = base {} else {
+                XCTFail("Expected param('input') as remap base, got \(base)")
+            }
+            XCTAssertEqual(subs.count, 1)
+            XCTAssertNotNil(subs["me.x"])
+        } else {
+            XCTFail("Expected remap expression, got \(local.strands[0].expr)")
+        }
+    }
 }

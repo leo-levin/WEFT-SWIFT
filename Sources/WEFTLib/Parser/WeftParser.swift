@@ -212,6 +212,7 @@ public class WeftParser {
         return idents
     }
 
+
     private func parseBodyStatement() throws -> BodyStatement {
         if check(.return) {
             return .returnAssign(try parseReturnAssign())
@@ -564,8 +565,9 @@ public class WeftParser {
                 return .identifier(name)
             }
 
-            // Spindle call: name(args)
-            if match(.leftParen) {
+            // Spindle call: name(args) — but not remap: name(domain ~ expr)
+            if check(.leftParen) && !isRemapArgs() {
+                advance()  // consume (
                 var args: [Expr] = []
                 if !check(.rightParen) {
                     args = try parseExprList()

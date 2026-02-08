@@ -17,80 +17,142 @@ spindle edge(input, delta) {
 
 Patterns that require neighbor sampling (blur, edge detection, convolution, displacement mapping) can't be packaged as reusable spindles.
 
-## Interim Solution: Signal Parameters (Compile-Time)
+## Phase 1: Signal Parameters (Compile-Time) — IMPLEMENTED
 
-Add a marker on spindle parameters that tells the compiler "substitute the expression, don't evaluate it." This is purely compile-time — no runtime closures needed.
-
-### Syntax Options
-
-```weft
-// Option A: sigil on parameter name
-spindle edge(input~, delta) { ... }
-
-// Option B: keyword
-spindle edge(signal input, delta) { ... }
-
-// Option C: type annotation
-spindle edge(input: signal, delta) { ... }
-```
+All spindle parameters are signal-capable. No annotation needed. The parser disambiguates `ident(domain ~ expr)` as remap (not a call) by looking ahead for `~` inside the parens.
 
 ### How It Works
 
-1. At the call site `edges[mag] = edge(gray.v, 0.005)`, the compiler sees `input~` is a signal parameter
-2. Instead of evaluating `gray.v` and passing the value, it records the expression `gray.v`
-3. When inlining the spindle body, `input` is replaced with the expression `gray.v`
-4. Now `gray.v ~ me.x - delta` is valid — remap sees a bundle.strand
+1. At the call site `edges[mag] = edge(gray.v, 0.005)`, the compiler preserves `gray.v` as an expression (it always did — IR stores expressions, not values)
+2. Inside the spindle, `input(me.x ~ me.x - delta)` parses as a remap with `input` as the base
+3. In the IR: `.remap(base: .param("input"), substitutions: {"me.x": ...})`
+4. During codegen inlining, `.param("input")` is substituted with the actual expression for `gray.v`
+5. `getDirectExpression` resolves the bundle reference, `applyRemap` substitutes coordinates
 
 ### What This Enables
 
 ```weft
-spindle edge(input~, delta) {
-    l[v] = input ~ me.x - delta
-    r[v] = input ~ me.x + delta
-    return.mag = abs(l.v - r.v)
+spindle edge(input, delta) {
+    l[v] = input(me.x ~ me.x - delta)
+    r[v] = input(me.x ~ me.x + delta)
+    u[v] = input(me.y ~ me.y - delta)
+    d[v] = input(me.y ~ me.y + delta)
+    return.0 = abs(l.v - r.v) + abs(u.v - d.v)
 }
 
-spindle blur3x3(input~) {
-    sum.v = 0
-    // sample 3x3 neighborhood
-    for dx in [-1, 0, 1] {
-        for dy in [-1, 0, 1] {
-            sum.v = sum.v + (input ~ me.x + dx/me.w, me.y + dy/me.h)
-        }
-    }
-    return.0 = sum.v / 9
-}
-
-edges[mag] = edge(gray.v, 0.005)
-blurred[r,g,b] = blur3x3(img.r), blur3x3(img.g), blur3x3(img.b)
+// Works: thin white ring on black
+circle[v] = step(0.3, sqrt((me.x - 0.5)^2 + (me.y - 0.5)^2))
+e[v] = step(0.1, edge(circle.v, 0.003))
+display[r,g,b] = [e.v, e.v, e.v]
 ```
 
-### Limitations
+### Implementation
 
-- Signal params must be bundle.strand expressions (or chains of them) — you can't pass `sin(me.x)` as a signal unless it's first assigned to a bundle
-- No dynamic dispatch — the compiler must know the expression at compile time
-- No passing signals between spindles at runtime
+One parser change in `WeftParser.swift`: in `parsePrimaryExpr()`, the `ident(` path checks `isRemapArgs()` before treating it as a call. If the parens contain `~`, the identifier is returned as-is and postfix remap parsing handles it.
 
-### Implementation (Compiler Changes)
+No AST, IR, lowering, or codegen changes were needed.
 
-**Parser/AST**: New parameter modifier. In `WeftParser.swift`, signal params get a flag.
+### Known Limitation: Expression Explosion
 
-**Desugaring**: No change — signal params are carried through as expression references.
+Each remap creates a **full copy** of the signal's expression tree. The edge spindle above creates 4 copies (l, r, u, d). For simple expressions this is fine, but for deep spindle chains (e.g., `perlin3` → `_grad_dot` x8 → `_hash3x/y/z` x24) the expression tree explodes exponentially and crashes with stack overflow during Metal codegen.
 
-**Lowering** (`WeftLowering.swift`): When inlining a spindle call:
-- For normal params: evaluate to value, substitute
-- For signal params: substitute the raw expression (don't evaluate)
-- This is similar to the cache-inlining substitution (see `spindle-cache-inlining.md`)
+This is the motivation for Phase 2.
 
-**Codegen**: No change — by the time IR reaches codegen, signal params have been inlined away.
+## Phase 2: Texture Indirection for Remap
 
-### Files to Modify
+### Problem
 
-| File | Change |
-|------|--------|
-| `Sources/WEFTLib/Parser/WeftAST.swift` | Add `isSignal` flag to parameter definition |
-| `Sources/WEFTLib/Parser/WeftParser.swift` | Parse signal parameter syntax |
-| `Sources/WEFTLib/Lowering/WeftLowering.swift` | Expression substitution for signal params during inlining |
+Signal parameter remap inlines the full expression N times. For an edge detector sampling 4 neighbors of `perlin3`, that's 4 full perlin evaluations inlined into one shader. `perlin3` alone expands to ~100+ lines of Metal code after full inlining. Four copies = ~400+ lines, plus the recursive codegen to produce them overflows the stack.
+
+### Solution: Evaluate-Once, Sample-Many
+
+When a signal parameter is remapped, the compiler should detect that the base expression is "heavy" (contains spindle calls, or exceeds a depth/size threshold) and automatically:
+
+1. **Evaluate the signal to an intermediate texture** at full resolution
+2. **Sample from the texture** at remapped coordinates using Metal's texture sampling
+
+This turns N full expression evaluations into 1 evaluation + N texture reads.
+
+### How It Would Work
+
+```
+// User writes:
+n[v] = perlin3(me.x * 5, me.y * 5, 0)
+e[v] = step(0.1, edge(n.v, 0.003))
+
+// Compiler sees: edge remaps n.v at 4 coordinates
+// n.v contains a spindle call chain (heavy)
+
+// Compiler emits TWO dispatches instead of one:
+// Pass 1: Evaluate n.v to texture_n (standard display kernel for n)
+// Pass 2: Edge detection kernel reads from texture_n at offset UVs
+```
+
+### Metal Code for Pass 2
+
+```metal
+kernel void display_kernel(
+    texture2d<float, access::write> output [[texture(0)]],
+    texture2d<float, access::read> texture_n [[texture(N)]],  // intermediate
+    ...
+) {
+    // Instead of inlining perlin3 4 times:
+    float l = texture_n.read(uint2(gid.x - 1, gid.y)).r;
+    float r = texture_n.read(uint2(gid.x + 1, gid.y)).r;
+    float u = texture_n.read(uint2(gid.x, gid.y - 1)).r;
+    float d = texture_n.read(uint2(gid.x, gid.y + 1)).r;
+    float edge = abs(l - r) + abs(u - d);
+    ...
+}
+```
+
+### Detection Heuristic
+
+The compiler needs to decide when to use texture indirection vs direct inlining:
+
+```swift
+func shouldUseTextureIndirection(expr: IRExpr) -> Bool {
+    // Option A: Expression contains any spindle call
+    return expr.containsCall()
+
+    // Option B: Expression exceeds size threshold
+    return expr.nodeCount() > MAX_INLINE_NODES  // e.g., 50
+
+    // Option C: Expression depth exceeds threshold
+    return expr.depth() > MAX_INLINE_DEPTH  // e.g., 10
+}
+```
+
+Option A (any spindle call) is simplest and most conservative. Spindle calls are the main source of expression explosion. Pure math expressions (sin, floor, etc.) are cheap to duplicate.
+
+### Implementation
+
+| Component | Change |
+|-----------|--------|
+| **MetalCodeGen** | Detect heavy remap bases, emit texture read instead of inlining |
+| **MetalBackend** | Allocate intermediate textures, dispatch multi-pass rendering |
+| **Coordinator** | Manage intermediate texture lifecycle |
+| **Partitioner** | May need to split a swatch into multiple passes |
+
+The key architectural question: should this be a **codegen concern** (MetalCodeGen detects heaviness and emits texture reads) or a **partitioner concern** (partitioner splits heavy remaps into separate swatches with texture dependencies)?
+
+Partitioner approach is cleaner — it reuses the existing multi-swatch execution pipeline. The "intermediate texture" is just another swatch's output texture that the downstream swatch reads from. This is similar to how cross-domain buffers work, but within the same domain.
+
+### Relationship to Existing Infrastructure
+
+- **Cross-domain buffers**: Already handle audio→visual data flow via buffers. This is the same pattern but visual→visual.
+- **Multi-swatch rendering**: The coordinator already renders swatches in dependency order. An intermediate texture swatch would just be another swatch.
+- **Texture inputs**: MetalCodeGen already handles `camera` and `texture` builtins that read from textures. The infrastructure for texture reads in shaders exists.
+
+### Remap Coordinate Mapping
+
+The remap substitution `me.x ~ me.x - delta` needs to map to texture UV coordinates:
+
+- `me.x - delta` in normalized [0,1] space → `uint2((me.x - delta) * width, me.y * height)` for texture read
+- Or use Metal's sampler with normalized coordinates for proper filtering
+- Edge clamping: what happens when remapped coords go outside [0,1]? Clamp, wrap, or zero?
+
+Using a sampler with bilinear filtering would give smooth results for sub-pixel offsets. Using nearest-neighbor would preserve hard edges. The choice could be a parameter or default to nearest for consistency with the inline approach.
 
 ---
 
@@ -153,11 +215,12 @@ case apply(IRExpr, coordinates: [(String, IRExpr)])  // evaluate signal at given
 4. **Memoization** — If a signal is evaluated at the same coordinates multiple times, cache the result?
 5. **Type system** — Should the type system distinguish `Float` from `Signal<Float>`? This would be a major addition.
 
-### Implementation Phases
+### Status
 
-**Phase 1**: Signal parameters (compile-time, described above) — solves 80% of use cases
-**Phase 2**: Signal return values (still compile-time via monomorphization)
-**Phase 3**: Runtime signal dispatch (requires expression interpreter in shader or texture indirection)
+- **Remap on params** — DONE. All params are signal-capable, no annotation needed.
+- **Tighten RemapExpr.base type** — TODO. `RemapExpr.base` is currently `Expr` (any expression). Could be narrowed to `StrandAccess` for tighter type safety, but requires propagating the change through WeftDesugar, WeftLowering, and anywhere else that constructs/destructures `RemapExpr`. Low priority, purely internal cleanup.
+- **Texture indirection** — needed so heavy expressions (perlin3, fbm3) don't explode when remapped. Described above.
+- **First-class signals** — long-term. Signals as return values, dynamic dispatch, runtime composition. Described below.
 
 ### Relationship to Other Features
 
