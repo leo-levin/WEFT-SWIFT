@@ -23,6 +23,19 @@ public struct IRProgram: Codable, Equatable {
         self.textResources = textResources
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bundles = try container.decode([String: IRBundle].self, forKey: .bundles)
+        spindles = try container.decode([String: IRSpindle].self, forKey: .spindles)
+        order = try container.decode([OrderEntry].self, forKey: .order)
+        resources = try container.decodeIfPresent([String].self, forKey: .resources) ?? []
+        textResources = try container.decodeIfPresent([String].self, forKey: .textResources) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case bundles, spindles, order, resources, textResources
+    }
+
     public struct OrderEntry: Codable, Equatable {
         public var bundle: String
         public var strands: [String]?

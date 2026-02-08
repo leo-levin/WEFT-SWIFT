@@ -11,7 +11,7 @@ public enum WeftStdlib {
     public static let source = """
 // WEFT Standard Library
 // This file is automatically prepended to user code when includeStdlib is enabled
-#include "core.weft"
+#include "std_core.weft"
 """
 
     /// URL to the stdlib directory in the bundle (for "View Stdlib" menu)

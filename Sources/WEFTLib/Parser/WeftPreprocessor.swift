@@ -177,7 +177,7 @@ public class WeftPreprocessor {
     /// Matches: #include "path" with optional leading whitespace and trailing comment
     /// Does NOT match if inside a comment (handled separately)
     private static let includePattern = try! NSRegularExpression(
-        pattern: #"^(\s*)#include\s+"([^"]+)"(\s*(//.*)?)?$"#,
+        pattern: #"^(\s*)#include\s+"([^"]*)"(\s*(//.*)?)?$"#,
         options: []
     )
 
