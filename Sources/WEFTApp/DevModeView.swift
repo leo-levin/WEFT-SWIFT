@@ -492,6 +492,25 @@ struct SyntaxHighlightedCode: View {
     let source: String
     let language: CodeLanguage
 
+    private static let maxDisplayChars = 8_000
+
+    /// Truncate source for display, collapsing long lines to keep the view responsive.
+    private var displaySource: String {
+        // First, collapse any very long lines (inlined expressions)
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        let collapsed = lines.map { line -> String in
+            if line.count > 200 {
+                return String(line.prefix(100)) + " /* ... \(line.count - 200) chars ... */ " + String(line.suffix(100))
+            }
+            return String(line)
+        }.joined(separator: "\n")
+
+        if collapsed.count <= Self.maxDisplayChars {
+            return collapsed
+        }
+        return String(collapsed.prefix(Self.maxDisplayChars)) + "\n\n// ... truncated (\(source.count) chars total)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(highlightedCode)
@@ -503,10 +522,14 @@ struct SyntaxHighlightedCode: View {
     }
 
     private var highlightedCode: AttributedString {
-        var result = AttributedString(source)
+        let text = displaySource
+        var result = AttributedString(text)
 
         // Apply base style
         result.foregroundColor = NSColor.labelColor
+
+        // Skip expensive regex highlighting for large shaders
+        guard text.count < 10_000 else { return result }
 
         // Metal syntax highlighting
         if language == .metal {
@@ -526,7 +549,7 @@ struct SyntaxHighlightedCode: View {
     private static let metalAttribute = NSColor.adaptive(light: "#795e26", dark: "#dbdbab")
 
     private func highlightMetalSyntax(_ attributed: inout AttributedString) {
-        let sourceString = source
+        let sourceString = displaySource
 
         // Keywords (purple/magenta)
         let keywords = ["kernel", "void", "return", "if", "else", "for", "while", "struct", "constant", "device", "texture2d", "sampler", "float", "float2", "float3", "float4", "int", "int2", "uint", "uint2", "half", "half3", "half4", "bool", "using", "namespace", "metal", "access", "read", "write", "sample", "thread_position_in_grid"]

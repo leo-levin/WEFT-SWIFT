@@ -29,6 +29,17 @@ public class MetalCodeGen {
     /// Total number of cross-domain float slots
     public private(set) var crossDomainSlotCount: Int = 0
 
+    /// Intermediate textures needed for heavy remap expressions.
+    /// Each entry is a base expression (pre-getDirectExpression) that will be rendered
+    /// to an r32Float texture, then sampled at remapped UV coordinates.
+    private var intermediateTextures: [(id: String, baseExpr: IRExpr)] = []
+
+    /// Base texture index for intermediate textures (must be <= 127 for Metal)
+    public static let intermediateTextureBaseIndex = 115
+
+    /// Number of intermediate textures needed (exposed for MetalBackend)
+    public var intermediateTextureCount: Int { intermediateTextures.count }
+
     public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = [], crossDomainInputs: [String: [String]] = [:]) {
         self.program = program
         self.swatch = swatch
@@ -122,6 +133,14 @@ public class MetalCodeGen {
 
         // Generate compute kernel for output
         if let bundleName = outputBundleName, swatch.bundles.contains(bundleName) {
+            // Pre-scan for heavy remaps that need intermediate textures
+            scanForHeavyRemaps(bundleName: bundleName)
+
+            // Generate intermediate kernels first (one per heavy remap base)
+            for (i, intermediate) in intermediateTextures.enumerated() {
+                code += try generateIntermediateKernel(index: i, baseExpr: intermediate.baseExpr)
+            }
+
             code += try generateDisplayKernel(bundleName: bundleName)
         }
 
@@ -186,6 +205,159 @@ public class MetalCodeGen {
         return cacheDescriptors.count * 2  // history + signal per cache
     }
 
+    // MARK: - Heavy Remap Detection & Intermediate Texture Generation
+
+    /// Scan the display bundle and all transitively-referenced bundles for .remap nodes
+    /// whose base resolves to a heavy expression (containing spindle .call nodes).
+    /// Collect unique bases that need intermediate textures.
+    private func scanForHeavyRemaps(bundleName: String) {
+        var seen = Set<String>()
+        var visitedBundles = Set<String>()
+        scanBundleForHeavyRemaps(bundleName, seen: &seen, visitedBundles: &visitedBundles)
+    }
+
+    private func scanBundleForHeavyRemaps(_ bundleName: String, seen: inout Set<String>, visitedBundles: inout Set<String>) {
+        guard !visitedBundles.contains(bundleName) else { return }
+        visitedBundles.insert(bundleName)
+        guard let bundle = program.bundles[bundleName] else { return }
+
+        for strand in bundle.strands {
+            collectHeavyRemapBases(from: strand.expr, seen: &seen, visitedBundles: &visitedBundles)
+        }
+    }
+
+    private func collectHeavyRemapBases(from expr: IRExpr, seen: inout Set<String>, visitedBundles: inout Set<String>) {
+        if case .remap(let base, _) = expr {
+            let directExpr = IRTransformations.getDirectExpression(base, program: program)
+            if directExpr.isHeavyExpression() {
+                let key = base.description
+                if !seen.contains(key) {
+                    seen.insert(key)
+                    intermediateTextures.append((
+                        id: "intermediate_\(intermediateTextures.count)",
+                        baseExpr: base
+                    ))
+                }
+            }
+        }
+        // Follow .index references into other bundles so we find remaps
+        // deeper in the dependency chain (not just in the display bundle).
+        if case .index(let bundle, _) = expr, bundle != "me" {
+            scanBundleForHeavyRemaps(bundle, seen: &seen, visitedBundles: &visitedBundles)
+        }
+        expr.forEachChild { collectHeavyRemapBases(from: $0, seen: &seen, visitedBundles: &visitedBundles) }
+    }
+
+    /// Generate an intermediate compute kernel that evaluates one heavy expression
+    /// and writes to an r32Float texture.
+    private func generateIntermediateKernel(index: Int, baseExpr: IRExpr) throws -> String {
+        // Resolve the base to its direct expression (inline spindle calls etc.)
+        let directExpr = IRTransformations.getDirectExpression(baseExpr, program: program)
+        let valueCode = try generateExpression(directExpr)
+
+        // Build params: same resource bindings as the display kernel needs
+        let usedInputNames = usedInputs()
+        let usedTextures = usedTextureIds()
+        let usedTexts = usedTextIds()
+        var extraParams = ""
+        var needsSampler = false
+
+        for binding in MetalBackend.bindings {
+            if case .input(let input) = binding, usedInputNames.contains(input.builtinName) {
+                if let shaderParam = input.shaderParam {
+                    extraParams += "\n    \(shaderParam),"
+                    needsSampler = true
+                }
+            }
+        }
+
+        for textureId in usedTextures.sorted() {
+            let textureIndex = MetalCodeGen.textureBaseIndex + textureId
+            extraParams += "\n    texture2d<float, access::sample> texture\(textureId) [[texture(\(textureIndex))]],"
+            needsSampler = true
+        }
+
+        for textId in usedTexts.sorted() {
+            let textureIndex = MetalCodeGen.textTextureBaseIndex + textId
+            extraParams += "\n    texture2d<float, access::sample> textTexture\(textId) [[texture(\(textureIndex))]],"
+            needsSampler = true
+        }
+
+        if needsSampler {
+            extraParams += "\n    sampler textureSampler [[sampler(0)]],"
+        }
+
+        for (i, _) in cacheDescriptors.enumerated() {
+            let historyIdx = CacheNodeDescriptor.shaderHistoryBufferIndex(cachePosition: i)
+            let signalIdx = CacheNodeDescriptor.shaderSignalBufferIndex(cachePosition: i)
+            extraParams += "\n    device float* cache\(i)_history [[buffer(\(historyIdx))]],"
+            extraParams += "\n    device float* cache\(i)_signal [[buffer(\(signalIdx))]],"
+        }
+
+        if usedInputNames.contains("key") {
+            extraParams += "\n    device float* keyStates [[buffer(1)]],"
+        }
+
+        if crossDomainSlotCount > 0 {
+            extraParams += "\n    device float* crossDomainData [[buffer(30)]],"
+        }
+
+        // Text helper variables (needed if expression uses text())
+        var textHelpers = ""
+        for textId in usedTexts.sorted() {
+            textHelpers += """
+                float textTex\(textId)_w = float(textTexture\(textId).get_width());
+                float textTex\(textId)_h = float(textTexture\(textId).get_height());
+                float textTex\(textId)_aspect = textTex\(textId)_w / textTex\(textId)_h;
+
+            """
+        }
+
+        // Cache helper variables (READ-ONLY in intermediate kernels to avoid double-ticking).
+        // Only declare cache*_result by reading from history buffers; the display kernel
+        // handles the actual tick logic.
+        var cacheHelpers = ""
+        if !cacheDescriptors.isEmpty {
+            cacheHelpers = """
+
+                // Pixel index for cache buffer access
+                uint pixelIndex = gid.y * uint(uniforms.width) + gid.x;
+
+            """
+
+            for (cacheIdx, descriptor) in cacheDescriptors.enumerated() {
+                let historySize = descriptor.historySize
+                let tapIndex = min(descriptor.tapIndex, historySize - 1)
+
+                cacheHelpers += """
+
+                    // Cache \(cacheIdx): \(descriptor.id) (read-only)
+                    uint cache\(cacheIdx)_historyBase = pixelIndex * \(historySize);
+                    float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + \(tapIndex)];
+
+                """
+            }
+        }
+
+        return """
+        kernel void intermediateKernel\(index)(
+            texture2d<float, access::write> output [[texture(0)]],\(extraParams)
+            constant Uniforms& uniforms [[buffer(0)]],
+            uint2 gid [[thread_position_in_grid]]
+        ) {
+            float x = float(gid.x) / uniforms.width;
+            float y = float(gid.y) / uniforms.height;
+            float t = uniforms.time;
+            float w = uniforms.width;
+            float h = uniforms.height;
+            \(textHelpers)\(cacheHelpers)
+            float value = \(valueCode);
+            output.write(float4(value, 0.0, 0.0, 1.0), gid);
+        }
+
+        """
+    }
+
     /// Generate display compute kernel
     private func generateDisplayKernel(bundleName: String) throws -> String {
         guard let displayBundle = program.bundles[bundleName] else {
@@ -243,6 +415,13 @@ public class MetalCodeGen {
                 float textTex\(textId)_aspect = textTex\(textId)_w / textTex\(textId)_h;
 
             """
+        }
+
+        // Add intermediate texture parameters for heavy remap expressions
+        for (i, _) in intermediateTextures.enumerated() {
+            let texIndex = MetalCodeGen.intermediateTextureBaseIndex + i
+            extraParams += "\n    texture2d<float, access::sample> intermediateTex\(i) [[texture(\(texIndex))]],"
+            needsSampler = true
         }
 
         if needsSampler {
@@ -467,11 +646,28 @@ public class MetalCodeGen {
             return try generateExpression(inlined)
 
         case .remap(let base, let substitutions):
-            // Remap applies substitutions to the DIRECT expression of the base bundle,
-            // without recursively inlining its dependencies.
-            // e.g., bar.x(me.y ~ me.y-5) only affects me.y in bar.x's direct expression,
-            // not in foo.x if bar.x references foo.x
             let directExpr = IRTransformations.getDirectExpression(base, program: program)
+
+            // Check if this remap base has an intermediate texture (heavy expression)
+            if directExpr.isHeavyExpression(),
+               let intermediateIndex = intermediateTextures.firstIndex(where: { $0.baseExpr.description == base.description }) {
+                // Sample from pre-rendered intermediate texture at remapped UV coordinates
+                let uExpr: String
+                let vExpr: String
+                if let xSub = substitutions["me.x"] {
+                    uExpr = try generateExpression(xSub)
+                } else {
+                    uExpr = "x"
+                }
+                if let ySub = substitutions["me.y"] {
+                    vExpr = try generateExpression(ySub)
+                } else {
+                    vExpr = "y"
+                }
+                return "intermediateTex\(intermediateIndex).sample(textureSampler, float2(\(uExpr), \(vExpr))).r"
+            }
+
+            // Lightweight expression: inline as before
             let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try generateExpression(remapped)
 

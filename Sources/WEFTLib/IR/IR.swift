@@ -363,6 +363,27 @@ extension IRExpr {
         visit(self)
         return result
     }
+
+    /// Check if expression tree contains any spindle `.call` node (indicates "heavy" expression)
+    public func containsCall() -> Bool {
+        if case .call = self { return true }
+        var found = false
+        forEachChild { if $0.containsCall() { found = true } }
+        return found
+    }
+
+    /// Count the total number of nodes in this expression tree.
+    public func nodeCount() -> Int {
+        var count = 1
+        forEachChild { count += $0.nodeCount() }
+        return count
+    }
+
+    /// Check if expression is complex enough to warrant pre-rendering to an intermediate texture.
+    /// After spindle inlining, .call nodes may not exist, so we use node count as the heuristic.
+    public func isHeavyExpression(threshold: Int = 30) -> Bool {
+        return containsCall() || nodeCount() >= threshold
+    }
 }
 
 // MARK: - Tree Traversal
