@@ -33,6 +33,7 @@ public class MetalCodeGen {
     /// Each entry is a base expression (pre-getDirectExpression) that will be rendered
     /// to an r32Float texture, then sampled at remapped UV coordinates.
     private var intermediateTextures: [(id: String, baseExpr: IRExpr)] = []
+    private var currentlyGeneratingIntermediateIndex: Int? = nil
 
     /// Base texture index for intermediate textures (must be <= 127 for Metal)
     public static let intermediateTextureBaseIndex = 115
@@ -253,7 +254,9 @@ public class MetalCodeGen {
     private func generateIntermediateKernel(index: Int, baseExpr: IRExpr) throws -> String {
         // Resolve the base to its direct expression (inline spindle calls etc.)
         let directExpr = IRTransformations.getDirectExpression(baseExpr, program: program)
+        currentlyGeneratingIntermediateIndex = index
         let valueCode = try generateExpression(directExpr)
+        currentlyGeneratingIntermediateIndex = nil
 
         // Build params: same resource bindings as the display kernel needs
         let usedInputNames = usedInputs()
@@ -280,6 +283,13 @@ public class MetalCodeGen {
         for textId in usedTexts.sorted() {
             let textureIndex = MetalCodeGen.textTextureBaseIndex + textId
             extraParams += "\n    texture2d<float, access::sample> textTexture\(textId) [[texture(\(textureIndex))]],"
+            needsSampler = true
+        }
+
+        // Add prior intermediate texture params (for chained heavy remaps like edges(edges(...)))
+        for priorIdx in 0..<index {
+            let texIndex = MetalCodeGen.intermediateTextureBaseIndex + priorIdx
+            extraParams += "\n    texture2d<float, access::sample> intermediateTex\(priorIdx) [[texture(\(texIndex))]],"
             needsSampler = true
         }
 
@@ -648,9 +658,12 @@ public class MetalCodeGen {
         case .remap(let base, let substitutions):
             let directExpr = IRTransformations.getDirectExpression(base, program: program)
 
-            // Check if this remap base has an intermediate texture (heavy expression)
+            // Check if this remap base has an intermediate texture (heavy expression).
+            // When generating an intermediate kernel, only reference prior intermediates (index < current)
+            // to avoid self-references or forward references.
+            let maxIntermediateIndex = currentlyGeneratingIntermediateIndex ?? intermediateTextures.count
             if directExpr.isHeavyExpression(),
-               let intermediateIndex = intermediateTextures.firstIndex(where: { $0.baseExpr.description == base.description }) {
+               let intermediateIndex = intermediateTextures.prefix(maxIntermediateIndex).firstIndex(where: { $0.baseExpr.description == base.description }) {
                 // Sample from pre-rendered intermediate texture at remapped UV coordinates
                 let uExpr: String
                 let vExpr: String

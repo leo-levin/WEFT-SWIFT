@@ -379,6 +379,10 @@ public class MetalBackend: Backend {
                 encoder.setTexture(intermediateTextures[i], index: 0)
                 encoder.setBuffer(uniformBuffer, offset: 0, index: 0)
                 bindSharedResources(encoder: encoder, metalUnit: metalUnit, cacheManager: nil)
+                // Bind prior intermediate textures for chained heavy remaps
+                for priorIdx in 0..<i {
+                    encoder.setTexture(intermediateTextures[priorIdx], index: MetalCodeGen.intermediateTextureBaseIndex + priorIdx)
+                }
                 encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
                 encoder.endEncoding()
             }
@@ -479,6 +483,10 @@ public class MetalBackend: Backend {
                 encoder.setTexture(intermediateTextures[i], index: 0)
                 encoder.setBuffer(uniformBuffer, offset: 0, index: 0)
                 bindSharedResources(encoder: encoder, metalUnit: metalUnit, cacheManager: cacheManager)
+                // Bind prior intermediate textures for chained heavy remaps
+                for priorIdx in 0..<i {
+                    encoder.setTexture(intermediateTextures[priorIdx], index: MetalCodeGen.intermediateTextureBaseIndex + priorIdx)
+                }
                 encoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
                 encoder.endEncoding()
             }
