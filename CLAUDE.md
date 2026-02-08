@@ -8,7 +8,7 @@ You are an expert who double checks things, you are skeptical and you do researc
 
 ## Project Overview
 
-WEFT is a Swift-based compiler and runtime for WEFT, a domain-agnostic creative coding language for visual graphics and audio synthesis. It bridges a JavaScript parser/compiler frontend with a native Swift backend using Metal for GPU graphics and CoreAudio for audio synthesis.
+WEFT is a native Swift compiler and runtime for WEFT, a domain-agnostic creative coding language for visual graphics and audio synthesis. The entire pipeline — tokenizer, parser, desugaring, lowering, and code generation — is implemented in Swift, with Metal for GPU graphics and CoreAudio for audio synthesis.
 
 - Platform: macOS 14+ (Sonoma)
 - Language: Swift 5.9+
@@ -35,8 +35,14 @@ swift test --filter WEFTTests.IntegrationTests/testMetalCodeGeneration
 
 ```
 WEFT Source Code
-    ↓ (JSCompiler - JavaScriptCore)
-IR JSON (Bundles, Spindles, Strands, Expressions)
+    ↓ (WeftTokenizer)
+Tokens
+    ↓ (WeftParser)
+AST
+    ↓ (WeftDesugar)
+Desugared AST
+    ↓ (WeftLowering)
+IR (Bundles, Spindles, Strands, Expressions)
     ↓ (Analysis)
 Dependency Graph → Ownership → Purity
     ↓ (Partitioner)
@@ -59,13 +65,13 @@ Visual Output & Audio Playback
 
 | Directory                                | Purpose                                                     |
 | ---------------------------------------- | ----------------------------------------------------------- |
-| `Sources/WEFTLib/IR/`                    | Codable IR structures, JSON parsing                         |
+| `Sources/WEFTLib/IR/`                    | IR structures used by analysis and code generation          |
 | `Sources/WEFTLib/Analysis/`              | Dependency graph, ownership (visual/audio), purity analysis |
 | `Sources/WEFTLib/Partition/`             | Groups bundles into same-backend Swatches                   |
 | `Sources/WEFTLib/Backends/MetalBackend/` | IR → Metal Shading Language, GPU execution                  |
 | `Sources/WEFTLib/Backends/AudioBackend/` | IR → Swift closures, CoreAudio playback                     |
+| `Sources/WEFTLib/Parser/`                | Tokenizer, parser, AST, desugaring, lowering                |
 | `Sources/WEFTLib/Runtime/`               | Coordinator, buffer management, camera/mic capture          |
-| `Sources/WEFTLib/JSCompiler/`            | JavaScriptCore bridge to JS parser                          |
 | `Sources/WEFTApp/`                       | SwiftUI application, MetalKit view                          |
 
 ### Backend Protocol
@@ -105,10 +111,9 @@ Test programs in `Sources/WEFTApp/Resources/`:
 
 ### New Builtin Function
 
-1. Add to `BUILTINS` set in `weft-compiler.js` (~line 1054)
-2. Add Metal implementation in `MetalCodeGen.swift` (in `generateBuiltin` method)
-3. Add Swift implementation in `AudioCodeGen.swift` (in `generateBuiltin` method)
-4. Ensure same semantics in both backends
+1. Add Metal implementation in `MetalCodeGen.swift` (in `generateBuiltin` method)
+2. Add Swift implementation in `AudioCodeGen.swift` (in `generateBuiltin` method)
+3. Ensure same semantics in both backends
 
 Current builtins: `sin`, `cos`, `tan`, `abs`, `floor`, `ceil`, `sqrt`, `pow`, `min`, `max`, `lerp`, `clamp`, `step`, `smoothstep`, `fract`, `mod`, `osc`, `cache`
 
@@ -144,6 +149,6 @@ prev[r,g,b] = current -> {cache(0..3, 2, 1, me.t)}
 
 ## Known Issues / Technical Debt
 
-- Microphone input currently requires a `play` bundle even for visual-only programs (capture/playback coupling issue)
-- Audio backend may not have full feature parity with Metal backend (check cache support)
+- ~~Microphone input currently requires a `play` bundle even for visual-only programs~~ — Fixed by InputProvider refactor (PR #19)
+- ~~Audio backend may not have full feature parity with Metal backend~~ — Cache is now fully implemented in both backends
 - Multiple Claude instances have made patches; code organization could be improved
