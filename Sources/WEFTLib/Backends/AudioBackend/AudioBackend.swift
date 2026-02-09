@@ -14,18 +14,28 @@ public class AudioCompiledUnit: CompiledUnit {
     /// Cross-domain output evaluators: [(bundleName, [(strandName, evaluator)])]
     public let outputEvaluators: [(String, [(String, (AudioContext) -> Float)])]
 
+    /// Layout scope functions: [(bundleName, renderFunction, strandNames)]
+    public let layoutScopeFunctions: [(String, ScopeRenderFunction, [String])]
+
+    /// Layout scope info for creating ScopeBuffers: [(bundleName, strandNames)]
+    public var layoutScopeInfo: [(String, [String])] {
+        layoutScopeFunctions.map { ($0.0, $0.2) }
+    }
+
     public init(
         swatchId: UUID,
         renderFunction: @escaping AudioRenderFunction,
         scopeFunction: ScopeRenderFunction? = nil,
         scopeStrandNames: [String] = [],
-        outputEvaluators: [(String, [(String, (AudioContext) -> Float)])] = []
+        outputEvaluators: [(String, [(String, (AudioContext) -> Float)])] = [],
+        layoutScopeFunctions: [(String, ScopeRenderFunction, [String])] = []
     ) {
         self.swatchId = swatchId
         self.renderFunction = renderFunction
         self.scopeFunction = scopeFunction
         self.scopeStrandNames = scopeStrandNames
         self.outputEvaluators = outputEvaluators
+        self.layoutScopeFunctions = layoutScopeFunctions
     }
 }
 
@@ -101,6 +111,9 @@ public class AudioBackend: Backend {
     /// Scope buffer for oscilloscope data -- set by Coordinator
     public var scopeBuffer: ScopeBuffer?
 
+    /// Per-bundle scope buffers for audio layout previews -- set by Coordinator
+    public var layoutScopeBuffers: [String: ScopeBuffer] = [:]
+
     /// Cross-domain output buffers -- set by Coordinator
     public var crossDomainOutputBuffers: [String: CrossDomainBuffer] = [:]
 
@@ -125,7 +138,7 @@ public class AudioBackend: Backend {
     }
 
     /// Compile swatch to audio render function with cache manager
-    public func compile(swatch: Swatch, ir: IRProgram, cacheManager: CacheManager?) throws -> CompiledUnit {
+    public func compile(swatch: Swatch, ir: IRProgram, cacheManager: CacheManager?, layoutBundles: [String] = []) throws -> CompiledUnit {
         let codegen = AudioCodeGen(program: ir, swatch: swatch, cacheManager: cacheManager)
 
         // Pass loaded samples to codegen
@@ -141,6 +154,7 @@ public class AudioBackend: Backend {
 
         let renderFunction = try codegen.generateRenderFunction()
         let scopeResult = try codegen.generateScopeFunction()
+        let layoutScopeResults = try codegen.generateLayoutScopeFunctions(bundles: layoutBundles)
 
         // Generate cross-domain output evaluators if this swatch has output buffers
         let outputEvaluators = try codegen.generateOutputEvaluators(outputBundles: swatch.outputBuffers)
@@ -152,7 +166,8 @@ public class AudioBackend: Backend {
             renderFunction: renderFunction,
             scopeFunction: scopeResult?.0,
             scopeStrandNames: scopeResult?.1 ?? [],
-            outputEvaluators: outputEvaluators
+            outputEvaluators: outputEvaluators,
+            layoutScopeFunctions: layoutScopeResults
         )
     }
 
@@ -213,8 +228,11 @@ public class AudioBackend: Backend {
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
             let scopeBuffer = self.scopeBuffer
             let scopeFn = unit.scopeFunction
+            let layoutBuffers = self.layoutScopeBuffers
+            let layoutFns = unit.layoutScopeFunctions
 
             var scopeFrames: [[Float]] = []
+            var layoutFrames: [String: [[Float]]] = [:]
 
             for frame in 0..<Int(frameCount) {
                 let currentSampleIndex = self.sampleIndex + frame
@@ -234,11 +252,22 @@ public class AudioBackend: Backend {
                     let scopeValues = scopeFn(currentSampleIndex, currentTime, self.sampleRate)
                     scopeFrames.append(scopeValues)
                 }
+
+                // Evaluate layout scope strands
+                for (bundleName, fn, _) in layoutFns {
+                    let values = fn(currentSampleIndex, currentTime, self.sampleRate)
+                    layoutFrames[bundleName, default: []].append(values)
+                }
             }
 
             // Batch write scope data outside the per-frame loop
             if !scopeFrames.isEmpty {
                 scopeBuffer?.write(values: scopeFrames)
+            }
+
+            // Batch write layout scope data
+            for (bundleName, frames) in layoutFrames {
+                layoutBuffers[bundleName]?.write(values: frames)
             }
 
             // Write cross-domain output values (once per callback, using last sample's time)

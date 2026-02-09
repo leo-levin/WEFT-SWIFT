@@ -22,7 +22,13 @@ public class MetalCompiledUnit: CompiledUnit {
     /// Number of intermediate textures needed
     public let intermediateCount: Int
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:], intermediatePipelines: [MTLComputePipelineState] = [], intermediateCount: Int = 0) {
+    /// Number of scope textures for layout previews
+    public let scopeTextureCount: Int
+
+    /// Bundle names corresponding to each scope texture
+    public let scopedBundleNames: [String]
+
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:], intermediatePipelines: [MTLComputePipelineState] = [], intermediateCount: Int = 0, scopeTextureCount: Int = 0, scopedBundleNames: [String] = []) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
@@ -33,6 +39,8 @@ public class MetalCompiledUnit: CompiledUnit {
         self.crossDomainSlotMap = crossDomainSlotMap
         self.intermediatePipelines = intermediatePipelines
         self.intermediateCount = intermediateCount
+        self.scopeTextureCount = scopeTextureCount
+        self.scopedBundleNames = scopedBundleNames
     }
 }
 
@@ -176,6 +184,12 @@ public class MetalBackend: Backend {
     /// Intermediate textures for heavy remap expressions (r32Float)
     private var intermediateTextures: [MTLTexture] = []
 
+    /// Scope textures for layout preview (rgba8Unorm, shared storage for CPU readback)
+    private var scopeTextures: [MTLTexture] = []
+
+    /// Last command buffer — used to sync before CPU readback of scope textures
+    private var lastCommandBuffer: MTLCommandBuffer?
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw BackendError.deviceNotAvailable("Metal device not available")
@@ -244,9 +258,9 @@ public class MetalBackend: Backend {
         return try compile(swatch: swatch, ir: ir, cacheDescriptors: [])
     }
 
-    /// Compile swatch to Metal pipeline with cache descriptors and cross-domain inputs
-    public func compile(swatch: Swatch, ir: IRProgram, cacheDescriptors: [CacheNodeDescriptor], crossDomainInputs: [String: [String]] = [:]) throws -> CompiledUnit {
-        let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors, crossDomainInputs: crossDomainInputs)
+    /// Compile swatch to Metal pipeline with cache descriptors, cross-domain inputs, and scope bundles
+    public func compile(swatch: Swatch, ir: IRProgram, cacheDescriptors: [CacheNodeDescriptor], crossDomainInputs: [String: [String]] = [:], scopedBundles: [String] = []) throws -> CompiledUnit {
+        let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors, crossDomainInputs: crossDomainInputs, scopedBundles: scopedBundles)
         let shaderSource = try codegen.generate()
         var usedInputs = codegen.usedInputs()
         let usedTextureIds = codegen.usedTextureIds()
@@ -309,7 +323,9 @@ public class MetalBackend: Backend {
             crossDomainSlotCount: codegen.crossDomainSlotCount,
             crossDomainSlotMap: codegen.crossDomainSlotMap,
             intermediatePipelines: intermediatePipelines,
-            intermediateCount: codegen.intermediateTextureCount
+            intermediateCount: codegen.intermediateTextureCount,
+            scopeTextureCount: codegen.scopeTextureCount,
+            scopedBundleNames: codegen.scopedBundleNames
         )
     }
 
@@ -504,11 +520,26 @@ public class MetalBackend: Backend {
             computeEncoder.setTexture(tex, index: MetalCodeGen.intermediateTextureBaseIndex + i)
         }
 
+        // Bind scope textures for layout preview writes
+        if metalUnit.scopeTextureCount > 0 {
+            ensureScopeTextures(count: metalUnit.scopeTextureCount, width: texture.width, height: texture.height)
+            for (i, tex) in scopeTextures.prefix(metalUnit.scopeTextureCount).enumerated() {
+                computeEncoder.setTexture(tex, index: MetalCodeGen.scopeTextureBaseIndex + i)
+            }
+        }
+
         computeEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
         computeEncoder.endEncoding()
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        lastCommandBuffer = commandBuffer
+    }
+
+    /// Wait for the most recent render to complete (call before CPU readback of scope textures)
+    public func waitForLastRender() {
+        lastCommandBuffer?.waitUntilCompleted()
+        lastCommandBuffer = nil
     }
 
     // MARK: - Shared Resource Binding
@@ -621,5 +652,40 @@ public class MetalBackend: Backend {
             textures.append(tex)
         }
         intermediateTextures = textures
+    }
+
+    // MARK: - Scope Texture Management
+
+    /// Ensure scope textures exist with the correct count and dimensions.
+    /// Uses .shared storage mode for CPU readback.
+    private func ensureScopeTextures(count: Int, width: Int, height: Int) {
+        let needsRealloc = scopeTextures.count != count
+            || (count > 0 && (scopeTextures[0].width != width || scopeTextures[0].height != height))
+
+        guard needsRealloc else { return }
+
+        var textures: [MTLTexture] = []
+        for _ in 0..<count {
+            let desc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm,
+                width: width,
+                height: height,
+                mipmapped: false
+            )
+            desc.usage = [.shaderWrite, .shaderRead]
+            desc.storageMode = .shared
+            guard let tex = device.makeTexture(descriptor: desc) else {
+                print("Warning: Failed to allocate scope texture")
+                scopeTextures = []
+                return
+            }
+            textures.append(tex)
+        }
+        scopeTextures = textures
+    }
+
+    /// Get current scope textures (for CPU readback by Coordinator)
+    public func getScopeTextures() -> [MTLTexture] {
+        return scopeTextures
     }
 }

@@ -87,6 +87,36 @@ public class AudioCodeGen {
         return (scopeFn, strandNames)
     }
 
+    /// Generate scope functions for layout preview bundles.
+    /// Returns [(bundleName, function, strandNames)] for each layout bundle in the audio swatch.
+    public func generateLayoutScopeFunctions(bundles: [String]) throws -> [(String, ScopeRenderFunction, [String])] {
+        var results: [(String, ScopeRenderFunction, [String])] = []
+
+        for bundleName in bundles {
+            guard swatch.bundles.contains(bundleName),
+                  let bundle = program.bundles[bundleName] else { continue }
+
+            let sortedStrands = bundle.strands.sorted(by: { $0.index < $1.index })
+            let strandNames = sortedStrands.map { $0.name }
+            let evaluators = try sortedStrands.map { strand in
+                try buildEvaluator(for: strand.expr)
+            }
+
+            let fn: ScopeRenderFunction = { (sampleIndex: Int, time: Double, sampleRate: Double) -> [Float] in
+                let context = AudioContext(
+                    sampleIndex: sampleIndex,
+                    time: time,
+                    sampleRate: sampleRate
+                )
+                return evaluators.map { $0(context) }
+            }
+
+            results.append((bundleName, fn, strandNames))
+        }
+
+        return results
+    }
+
     /// Generate evaluators for bundles that need cross-domain output.
     /// Returns [(bundleName, [(strandName, evaluator)])]
     public func generateOutputEvaluators(outputBundles: Set<String>) throws
