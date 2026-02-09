@@ -37,6 +37,12 @@ public class Coordinator: CameraCaptureDelegate {
     // Scope buffer for oscilloscope data
     public private(set) var scopeBuffer: ScopeBuffer?
 
+    // Layout preview bundles (intermediate bundles whose values are rendered for preview)
+    public var layoutBundles: Set<String> = []
+
+    // Per-bundle scope buffers for audio layout previews (waveform display)
+    public private(set) var layoutScopeBuffers: [String: ScopeBuffer] = [:]
+
     // Compiled units
     private var compiledUnits: [UUID: CompiledUnit] = [:]
 
@@ -143,6 +149,9 @@ public class Coordinator: CameraCaptureDelegate {
         let graph = DependencyGraph()
         graph.build(from: program)
         self.dependencyGraph = graph
+
+        // Prune layout bundles that no longer exist in this program
+        layoutBundles = layoutBundles.filter { program.bundles[$0] != nil }
 
         // Run annotation pass (merges both visual and audio specs)
         let allCoordinateSpecs = MetalBackend.coordinateSpecs
@@ -300,12 +309,13 @@ public class Coordinator: CameraCaptureDelegate {
                     }
                 }
 
-                // Pass cache descriptors and cross-domain inputs to codegen via backend
+                // Pass cache descriptors, cross-domain inputs, and scoped bundles to codegen via backend
                 let unit = try metalBackend!.compile(
                     swatch: swatch,
                     ir: program,
                     cacheDescriptors: cacheManager.getDescriptors(),
-                    crossDomainInputs: crossDomainInputs
+                    crossDomainInputs: crossDomainInputs,
+                    scopedBundles: swatch.isSink ? orderedLayoutBundles() : []
                 )
                 compiledUnits[swatch.id] = unit
 
@@ -381,11 +391,13 @@ public class Coordinator: CameraCaptureDelegate {
                 }
                 audioBackend?.crossDomainOutputBuffers = crossDomainOutputs
 
-                // Pass cache manager to audio backend for shared buffer access
+                // Pass cache manager and layout bundles to audio backend
+                let audioLayoutSet = audioLayoutBundles()
                 let unit = try audioBackend!.compile(
                     swatch: swatch,
                     ir: program,
-                    cacheManager: cacheManager
+                    cacheManager: cacheManager,
+                    layoutBundles: audioLayoutSet
                 )
                 compiledUnits[swatch.id] = unit
 
@@ -394,6 +406,17 @@ public class Coordinator: CameraCaptureDelegate {
                     let buffer = ScopeBuffer(strandNames: audioUnit.scopeStrandNames)
                     self.scopeBuffer = buffer
                     audioBackend?.scopeBuffer = buffer
+                }
+
+                // Set up per-bundle scope buffers for audio layout previews
+                if let audioUnit = unit as? AudioCompiledUnit {
+                    var newLayoutBuffers: [String: ScopeBuffer] = [:]
+                    for (bundleName, strandNames) in audioUnit.layoutScopeInfo {
+                        let buffer = ScopeBuffer(strandNames: strandNames)
+                        newLayoutBuffers[bundleName] = buffer
+                    }
+                    self.layoutScopeBuffers = newLayoutBuffers
+                    audioBackend?.layoutScopeBuffers = newLayoutBuffers
                 }
             }
             // Unknown backend - skip (pure swatches or future backends)
@@ -555,6 +578,134 @@ public class Coordinator: CameraCaptureDelegate {
         stopAudio()
         stopCamera()
         stopMicrophone()
+    }
+
+    // MARK: - Layout Previews
+
+    /// Set layout bundles and recompile if changed
+    public func setLayoutBundles(_ bundles: Set<String>) throws {
+        // Filter to valid non-sink bundles in any swatch
+        let sinks: Set<String> = ["display", "play", "scope"]
+        let validBundles = bundles.filter { name in
+            guard !sinks.contains(name), let _ = program?.bundles[name] else { return false }
+            return swatchGraph?.swatches.contains { $0.bundles.contains(name) } ?? false
+        }
+
+        guard validBundles != layoutBundles else { return }
+        layoutBundles = validBundles
+        try compile()
+    }
+
+    /// Get visual layout bundles in topological order (bundles in visual swatches)
+    public func orderedLayoutBundles() -> [String] {
+        guard !layoutBundles.isEmpty else { return [] }
+        let visualBundleNames = Set(swatchGraph?.swatches
+            .filter { $0.backend == MetalBackend.identifier }
+            .flatMap { $0.bundles } ?? [])
+        let visualLayout = layoutBundles.filter { visualBundleNames.contains($0) }
+        guard !visualLayout.isEmpty else { return [] }
+        guard let topoOrder = dependencyGraph?.topologicalSort() else {
+            return visualLayout.sorted()
+        }
+        return topoOrder.filter { visualLayout.contains($0) }
+    }
+
+    /// Get audio-only layout bundles (bundles in audio swatches but NOT in visual swatches)
+    public func audioLayoutBundles() -> [String] {
+        guard !layoutBundles.isEmpty else { return [] }
+        let visualBundleNames = Set(swatchGraph?.swatches
+            .filter { $0.backend == MetalBackend.identifier }
+            .flatMap { $0.bundles } ?? [])
+        return layoutBundles.filter { !visualBundleNames.contains($0) }.sorted()
+    }
+
+    /// Convert a Metal texture to a CGImage (for layout preview thumbnails)
+    public func textureToImage(_ texture: MTLTexture) -> CGImage? {
+        let width = texture.width
+        let height = texture.height
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var pixelData = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        texture.getBytes(
+            &pixelData,
+            bytesPerRow: bytesPerRow,
+            from: MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0),
+                           size: MTLSize(width: width, height: height, depth: 1)),
+            mipmapLevel: 0
+        )
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: &pixelData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+
+        return context.makeImage()
+    }
+
+    /// Read layout preview images from scope textures (skips 1-strand bundles, use readLayoutWaveforms for those)
+    public func readLayoutImages() -> [(bundleName: String, image: CGImage)] {
+        guard let metalBackend = metalBackend else { return [] }
+
+        // Find the visual sink compiled unit to get scope info
+        guard let swatches = swatchGraph?.swatches else { return [] }
+        guard let sinkSwatch = swatches.first(where: { $0.backend == MetalBackend.identifier && $0.isSink }),
+              let metalUnit = compiledUnits[sinkSwatch.id] as? MetalCompiledUnit else { return [] }
+
+        // Wait for GPU to finish writing scope textures before CPU readback
+        metalBackend.waitForLastRender()
+
+        let scopeTextures = metalBackend.getScopeTextures()
+        var results: [(String, CGImage)] = []
+
+        for (i, bundleName) in metalUnit.scopedBundleNames.enumerated() {
+            guard i < scopeTextures.count else { break }
+            // Skip 1-strand bundles — they're shown as waveforms instead
+            if let bundle = program?.bundles[bundleName], bundle.strands.count <= 1 { continue }
+            if let image = textureToImage(scopeTextures[i]) {
+                results.append((bundleName, image))
+            }
+        }
+
+        return results
+    }
+
+    /// Read center-pixel scalar values from 1-strand scope textures (for temporal waveforms)
+    public func readLayoutScalarValues() -> [(bundleName: String, value: Float)] {
+        guard let metalBackend = metalBackend else { return [] }
+        guard let swatches = swatchGraph?.swatches else { return [] }
+        guard let sinkSwatch = swatches.first(where: { $0.backend == MetalBackend.identifier && $0.isSink }),
+              let metalUnit = compiledUnits[sinkSwatch.id] as? MetalCompiledUnit else { return [] }
+
+        let scopeTextures = metalBackend.getScopeTextures()
+        var results: [(String, Float)] = []
+
+        for (i, bundleName) in metalUnit.scopedBundleNames.enumerated() {
+            guard i < scopeTextures.count else { break }
+            // Only 1-strand bundles
+            guard let bundle = program?.bundles[bundleName], bundle.strands.count <= 1 else { continue }
+            let tex = scopeTextures[i]
+            let midX = tex.width / 2
+            let midY = tex.height / 2
+            var pixel = [UInt8](repeating: 0, count: 4)
+            tex.getBytes(
+                &pixel,
+                bytesPerRow: 4,
+                from: MTLRegion(origin: MTLOrigin(x: midX, y: midY, z: 0),
+                               size: MTLSize(width: 1, height: 1, depth: 1)),
+                mipmapLevel: 0
+            )
+            // R channel as float [0, 1]
+            results.append((bundleName, Float(pixel[0]) / 255.0))
+        }
+
+        return results
     }
 
     // MARK: - Dev Mode Accessors

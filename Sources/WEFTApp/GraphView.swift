@@ -29,6 +29,8 @@ struct GraphEdge: Identifiable {
 
 struct GraphView: View {
     let coordinator: Coordinator
+    var layoutBundles: Set<String> = []
+    var onToggleLayout: ((String) -> Void)? = nil
     @State private var hoveredNode: String? = nil
     @State private var selectedNode: String? = nil
     @State private var nodePositions: [String: CGPoint] = [:]
@@ -75,8 +77,15 @@ struct GraphView: View {
 
                 // Popover for selected node
                 if let nodeName = selectedNode, let node = graphNodes[nodeName], let pos = nodePositions[nodeName] {
-                    NodePopover(node: node, onDismiss: { selectedNode = nil })
-                        .position(x: pos.x, y: pos.y - layoutParams.nodeHeight / 2 - 60)
+                    NodePopover(
+                        node: node,
+                        onDismiss: { selectedNode = nil },
+                        isInLayout: layoutBundles.contains(nodeName),
+                        onToggleLayout: onToggleLayout.map { toggle in
+                            { toggle(nodeName) }
+                        }
+                    )
+                    .position(x: pos.x, y: pos.y - layoutParams.nodeHeight / 2 - 60)
                 }
             }
         }
@@ -363,6 +372,15 @@ struct GraphView: View {
             context.fill(Circle().path(in: CGRect(x: indicatorX - indicatorSize/2, y: indicatorY - indicatorSize/2, width: indicatorSize, height: indicatorSize)),
                         with: .color(Color.orange.opacity(opacity * 0.8)))
         }
+
+        // Layout indicator (small square, bottom-left)
+        if layoutBundles.contains(node.name) {
+            let indicatorSize: CGFloat = 5
+            let indicatorX = rect.minX + 4
+            let indicatorY = rect.maxY - 4
+            context.fill(Path(CGRect(x: indicatorX - indicatorSize/2, y: indicatorY - indicatorSize/2, width: indicatorSize, height: indicatorSize)),
+                        with: .color(Color.cyan.opacity(opacity * 0.8)))
+        }
     }
 }
 
@@ -371,6 +389,8 @@ struct GraphView: View {
 struct NodePopover: View {
     let node: GraphNode
     let onDismiss: () -> Void
+    var isInLayout: Bool = false
+    var onToggleLayout: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -385,6 +405,23 @@ struct NodePopover: View {
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
+            }
+
+            // Layout toggle button (any non-sink bundle: visual, audio, or pure)
+            if let toggle = onToggleLayout, !node.isSink, node.name != "scope" {
+                Button {
+                    toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isInLayout ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                            .font(.system(size: 9))
+                        Text(isInLayout ? "Remove from Layout" : "Add to Layout")
+                            .font(.system(size: 10))
+                    }
+                    .foregroundStyle(isInLayout ? .primary : .secondary)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
             Divider()

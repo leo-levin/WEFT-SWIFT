@@ -20,6 +20,21 @@ public class MetalCodeGen {
     /// Base texture index for text textures (text textures start at 100)
     public static let textTextureBaseIndex = 100
 
+    /// Base texture index for scope textures (layout previews)
+    public static let scopeTextureBaseIndex = 50
+
+    /// Scoped bundles to render as layout previews (topologically ordered)
+    private let scopedBundles: [String]
+
+    /// Pre-computed variable names for scoped bundles (CSE): bundleName -> [Metal var names per strand]
+    private var precomputedVars: [String: [String]] = [:]
+
+    /// Number of scope textures needed (exposed for MetalBackend)
+    public private(set) var scopeTextureCount: Int = 0
+
+    /// Bundle names corresponding to each scope texture (exposed for MetalBackend)
+    public private(set) var scopedBundleNames: [String] = []
+
     /// Cross-domain inputs: bundleName -> ordered list of strand names
     private let crossDomainInputs: [String: [String]]
 
@@ -41,10 +56,11 @@ public class MetalCodeGen {
     /// Number of intermediate textures needed (exposed for MetalBackend)
     public var intermediateTextureCount: Int { intermediateTextures.count }
 
-    public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = [], crossDomainInputs: [String: [String]] = [:]) {
+    public init(program: IRProgram, swatch: Swatch, cacheDescriptors: [CacheNodeDescriptor] = [], crossDomainInputs: [String: [String]] = [:], scopedBundles: [String] = []) {
         self.program = program
         self.swatch = swatch
         self.crossDomainInputs = crossDomainInputs
+        self.scopedBundles = scopedBundles
         // Filter to only visual domain caches
         self.cacheDescriptors = cacheDescriptors.filter { $0.domain == .visual }
 
@@ -374,18 +390,6 @@ public class MetalCodeGen {
             throw BackendError.missingResource("\(bundleName) bundle not found")
         }
 
-        // Collect expressions for each strand (r, g, b)
-        var colorExprs: [String] = []
-        for strand in displayBundle.strands.sorted(by: { $0.index < $1.index }) {
-            let expr = try generateExpression(strand.expr)
-            colorExprs.append(expr)
-        }
-
-        // Pad to 3 channels if needed
-        while colorExprs.count < 3 {
-            colorExprs.append("0.0")
-        }
-
         // Build shader params from used input bindings
         let usedInputNames = usedInputs()
         let usedTextures = usedTextureIds()
@@ -433,6 +437,15 @@ public class MetalCodeGen {
             extraParams += "\n    texture2d<float, access::sample> intermediateTex\(i) [[texture(\(texIndex))]],"
             needsSampler = true
         }
+
+        // Add scope texture parameters for layout previews
+        let validScopedBundles = scopedBundles.filter { $0 != bundleName && swatch.bundles.contains($0) && program.bundles[$0] != nil }
+        for (i, _) in validScopedBundles.enumerated() {
+            let texIndex = MetalCodeGen.scopeTextureBaseIndex + i
+            extraParams += "\n    texture2d<float, access::write> scopeTex\(i) [[texture(\(texIndex))]],"
+        }
+        scopeTextureCount = validScopedBundles.count
+        scopedBundleNames = validScopedBundles
 
         if needsSampler {
             extraParams += "\n    sampler textureSampler [[sampler(0)]],"
@@ -497,6 +510,53 @@ public class MetalCodeGen {
             }
         }
 
+        // Generate scope preamble: pre-compute scoped bundle values and write to scope textures
+        var scopePreamble = ""
+        for (scopeIdx, scopeBundleName) in validScopedBundles.enumerated() {
+            guard let scopeBundle = program.bundles[scopeBundleName] else { continue }
+            let safeName = sanitizeName(scopeBundleName)
+            var varNames: [String] = []
+
+            scopePreamble += "\n            // Scope: \(scopeBundleName)\n"
+            for strand in scopeBundle.strands.sorted(by: { $0.index < $1.index }) {
+                let varName = "scope_\(safeName)_\(sanitizeName(strand.name))"
+                let exprCode = try generateExpression(strand.expr)
+                scopePreamble += "            float \(varName) = \(exprCode);\n"
+                varNames.append(varName)
+            }
+
+            // Register for CSE before generating further expressions
+            precomputedVars[scopeBundleName] = varNames
+
+            // Write to scope texture (pack up to 4 strands into rgba)
+            let channels = ["r", "g", "b", "a"]
+            var components: [String] = []
+            for (i, varName) in varNames.prefix(4).enumerated() {
+                _ = channels[i]
+                components.append(varName)
+            }
+            // Pad missing color channels with 0.0, alpha with 1.0 (opaque)
+            while components.count < 3 {
+                components.append("0.0")
+            }
+            if components.count < 4 {
+                components.append("1.0")
+            }
+            scopePreamble += "            scopeTex\(scopeIdx).write(float4(\(components.joined(separator: ", "))), gid);\n"
+        }
+
+        // NOW generate color expressions (after scope preamble populates precomputedVars for CSE)
+        var colorExprs: [String] = []
+        for strand in displayBundle.strands.sorted(by: { $0.index < $1.index }) {
+            let expr = try generateExpression(strand.expr)
+            colorExprs.append(expr)
+        }
+
+        // Pad to 3 channels if needed
+        while colorExprs.count < 3 {
+            colorExprs.append("0.0")
+        }
+
         return """
         kernel void displayKernel(
             texture2d<float, access::write> output [[texture(0)]],\(extraParams)
@@ -508,7 +568,7 @@ public class MetalCodeGen {
             float t = uniforms.time;
             float w = uniforms.width;
             float h = uniforms.height;
-            \(textHelpers)\(cacheHelpers)
+            \(textHelpers)\(cacheHelpers)\(scopePreamble)
             float r = \(colorExprs[0]);
             float g = \(colorExprs[1]);
             float b = \(colorExprs.count > 2 ? colorExprs[2] : "0.0");
@@ -535,6 +595,23 @@ public class MetalCodeGen {
                     return field
                 }
                 throw BackendError.unsupportedExpression("Dynamic me index")
+            }
+
+            // CSE: if this bundle has pre-computed scope variables, return the variable name
+            if let varNames = precomputedVars[bundle] {
+                let strandIdx: Int?
+                if case .num(let idx) = indexExpr {
+                    strandIdx = Int(idx)
+                } else if case .param(let field) = indexExpr,
+                          let targetBundle = program.bundles[bundle],
+                          let strand = targetBundle.strands.first(where: { $0.name == field }) {
+                    strandIdx = strand.index
+                } else {
+                    strandIdx = nil
+                }
+                if let idx = strandIdx, idx < varNames.count {
+                    return varNames[idx]
+                }
             }
 
             // Check if this index refers to a cache location - return precomputed result
@@ -955,5 +1032,22 @@ public class MetalCodeGen {
             return "\(Int(value)).0"
         }
         return String(format: "%.6f", value)
+    }
+
+    /// Sanitize a bundle name for use as a Metal variable name
+    private func sanitizeName(_ name: String) -> String {
+        var result = ""
+        for ch in name {
+            if ch.isLetter || ch.isNumber || ch == "_" {
+                result.append(ch)
+            } else {
+                result.append("_")
+            }
+        }
+        // Ensure it starts with a letter or underscore
+        if let first = result.first, first.isNumber {
+            result = "_" + result
+        }
+        return result
     }
 }

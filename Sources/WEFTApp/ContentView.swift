@@ -5,19 +5,14 @@ import AppKit
 import UniformTypeIdentifiers
 import WEFTLib
 
-enum CanvasTab: String, CaseIterable {
-    case visual = "Visual"
-    case scope = "Scope"
-}
-
 struct ContentView: View {
     @StateObject private var viewModel = WeftViewModel()
     @State private var showGraph = true
     @State private var showErrors = true
     @State private var showStats = true
     @State private var showDevMode = false
+    @State private var showLayout = false
     @State private var devModeTab: DevModeTab = .ir
-    @State private var canvasTab: CanvasTab = .visual
     @AppStorage("preferredFPS") private var preferredFPS: Int = 60
     @AppStorage("renderScale") private var renderScale: Double = 2.0
 
@@ -103,6 +98,13 @@ struct ContentView: View {
                         showGraph.toggle()
                     }
                 }
+
+                ToolbarIconButton("rectangle.split.2x1", label: "Layout", isActive: showLayout && hasLayoutContent) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        showLayout.toggle()
+                    }
+                }
+                .opacity(hasLayoutContent ? 1 : 0.4)
 
                 Divider()
                     .frame(height: 12)
@@ -294,10 +296,32 @@ struct ContentView: View {
 
     @ObservedObject private var renderStats = RenderStats.shared
 
+    /// Whether the layout panel has content to show
+    private var hasLayoutContent: Bool {
+        !viewModel.layoutImages.isEmpty || !viewModel.layoutWaveforms.isEmpty || viewModel.hasScope || !viewModel.coordinator.layoutScopeBuffers.isEmpty || !viewModel.coordinator.layoutBundles.isEmpty
+    }
+
     private var canvasSection: some View {
         VStack(spacing: 0) {
             // Canvas
             canvasContent
+
+            // Layout panel (collapsible, shows visual thumbnails + audio waveforms)
+            if showLayout && hasLayoutContent {
+                SubtleDivider(.horizontal)
+                LayoutPanelView(
+                    layoutImages: viewModel.layoutImages,
+                    layoutWaveforms: viewModel.layoutWaveforms,
+                    scopeBuffer: viewModel.coordinator.scopeBuffer,
+                    layoutScopeBuffers: viewModel.coordinator.layoutScopeBuffers,
+                    expanded: !showGraph,
+                    layoutOrder: $viewModel.layoutOrder,
+                    onRemoveBundle: { bundleName in
+                        viewModel.toggleLayoutBundle(bundleName)
+                    }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
 
             // Graph (or collapsed header)
             SubtleDivider(.horizontal)
@@ -313,79 +337,38 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: showGraph)
-    }
-
-    /// Resolve which tab to actually show
-    private var activeCanvasTab: CanvasTab {
-        if viewModel.hasScope && !viewModel.hasVisual { return .scope }
-        if viewModel.hasVisual && !viewModel.hasScope { return .visual }
-        return canvasTab
+        .animation(.easeInOut(duration: 0.15), value: showLayout)
     }
 
     private var canvasContent: some View {
-        VStack(spacing: 0) {
-            // Tab bar -- only when multiple outputs available
-            if viewModel.hasVisual && viewModel.hasScope {
-                canvasTabBar
-                SubtleDivider(.horizontal)
-            }
+        GeometryReader { geo in
+            let aspectRatio: CGFloat = 16.0 / 10.0
+            let availableWidth = geo.size.width
+            let availableHeight = geo.size.height
+            let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
+            let fittedHeight = fittedWidth / aspectRatio
 
-            // Content
-            GeometryReader { geo in
-                let aspectRatio: CGFloat = 16.0 / 10.0
-                let availableWidth = geo.size.width
-                let availableHeight = geo.size.height
-                let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
-                let fittedHeight = fittedWidth / aspectRatio
+            ZStack {
+                Color.canvasBackground
 
-                ZStack {
-                    Color.canvasBackground
+                if viewModel.hasVisual {
+                    ZStack(alignment: .topTrailing) {
+                        WeftMetalView(coordinator: viewModel.coordinator, preferredFPS: preferredFPS, renderScale: renderScale)
 
-                    if activeCanvasTab == .scope, let scopeBuffer = viewModel.coordinator.scopeBuffer {
-                        ScopeView(scopeBuffer: scopeBuffer)
-                    } else if viewModel.hasVisual {
-                        ZStack(alignment: .topTrailing) {
-                            WeftMetalView(coordinator: viewModel.coordinator, preferredFPS: preferredFPS, renderScale: renderScale)
-
-                            if showStats {
-                                StatsBadge(fps: renderStats.fps, frameTime: renderStats.frameTime)
-                                    .padding(Spacing.sm)
-                                    .transition(.opacity)
-                            }
+                        if showStats {
+                            StatsBadge(fps: renderStats.fps, frameTime: renderStats.frameTime)
+                                .padding(Spacing.sm)
+                                .transition(.opacity)
                         }
-                        .frame(width: fittedWidth, height: fittedHeight)
-                    } else if viewModel.hasScope, let scopeBuffer = viewModel.coordinator.scopeBuffer {
-                        ScopeView(scopeBuffer: scopeBuffer)
-                    } else {
-                        EmptyStateView("play.circle", message: "Press \u{2318}Return to run")
                     }
+                    .frame(width: fittedWidth, height: fittedHeight)
+                } else if viewModel.hasScope, let scopeBuffer = viewModel.coordinator.scopeBuffer {
+                    ScopeView(scopeBuffer: scopeBuffer)
+                } else {
+                    EmptyStateView("play.circle", message: "Press \u{2318}Return to run")
                 }
             }
         }
-    }
-
-    private var canvasTabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(CanvasTab.allCases, id: \.self) { tab in
-                let isAvailable = (tab == .visual && viewModel.hasVisual) || (tab == .scope && viewModel.hasScope)
-                if isAvailable {
-                    Button {
-                        canvasTab = tab
-                    } label: {
-                        Text(tab.rawValue)
-                            .font(.system(size: 10, weight: activeCanvasTab == tab ? .semibold : .regular))
-                            .foregroundStyle(activeCanvasTab == tab ? .primary : .secondary)
-                            .padding(.horizontal, Spacing.sm)
-                            .padding(.vertical, Spacing.xxs)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            Spacer()
-        }
-        .padding(.horizontal, Spacing.xs)
-        .padding(.vertical, Spacing.xxs)
-        .background(Color.panelHeaderBackground)
     }
 
     private var collapsedGraphHeader: some View {
@@ -423,7 +406,14 @@ struct ContentView: View {
 
             SubtleDivider(.horizontal)
 
-            GraphView(coordinator: viewModel.coordinator)
+            GraphView(
+                coordinator: viewModel.coordinator,
+                layoutBundles: viewModel.coordinator.layoutBundles,
+                onToggleLayout: { bundleName in
+                    viewModel.toggleLayoutBundle(bundleName)
+                    showLayout = true
+                }
+            )
         }
     }
 }
@@ -536,6 +526,12 @@ class WeftViewModel: ObservableObject {
     @Published var hasError = false
     @Published var isRunning = false
     @Published var resourceWarning: String? = nil
+
+    // Layout preview state
+    @Published var layoutImages: [(bundleName: String, image: CGImage)] = []
+    @Published var layoutWaveforms: [String: [Float]] = [:]  // Temporal value history per 1D bundle
+    @Published var layoutOrder: [String] = []  // User-controlled drag order
+    private var layoutTimer: Timer?
 
     // Dev mode state - increments on each compile to trigger view refresh
     @Published var compilationVersion = 0
@@ -662,6 +658,7 @@ class WeftViewModel: ObservableObject {
         hasScope = false
         isRunning = false
         statusText = "Stopped"
+        stopLayoutTimer()
         RenderStats.shared.reset()
     }
 
@@ -694,6 +691,7 @@ class WeftViewModel: ObservableObject {
             isRunning = true
             statusText = resourceWarning != nil ? "Running (with warnings)" : "Running"
             compilationVersion += 1  // Trigger dev mode refresh
+            startLayoutTimer()
 
             if hasAudio && !isAudioPlaying {
                 try coordinator.startAudio()
@@ -727,6 +725,67 @@ class WeftViewModel: ObservableObject {
                 errorMessage = "Audio error: \(error.localizedDescription)"
             }
         }
+    }
+
+    func toggleLayoutBundle(_ bundleName: String) {
+        var bundles = coordinator.layoutBundles
+        if bundles.contains(bundleName) {
+            bundles.remove(bundleName)
+            layoutOrder.removeAll { $0 == bundleName }
+        } else {
+            bundles.insert(bundleName)
+            if !layoutOrder.contains(bundleName) {
+                layoutOrder.append(bundleName)
+            }
+        }
+        do {
+            try coordinator.setLayoutBundles(bundles)
+            compilationVersion += 1
+            startLayoutTimer()
+        } catch {
+            print("Layout recompile error: \(error)")
+        }
+    }
+
+    private static let temporalHistoryLength = 60  // ~2 seconds at 30fps
+
+    private func updateLayoutImages() {
+        layoutImages = coordinator.readLayoutImages()
+        // Accumulate 1D scalar values into temporal rolling buffers
+        for (bundleName, value) in coordinator.readLayoutScalarValues() {
+            var history = layoutWaveforms[bundleName, default: []]
+            history.append(value)
+            if history.count > Self.temporalHistoryLength {
+                history.removeFirst(history.count - Self.temporalHistoryLength)
+            }
+            layoutWaveforms[bundleName] = history
+        }
+        // Prune waveforms for removed bundles
+        let activeScalars = Set(coordinator.readLayoutScalarValues().map(\.bundleName))
+        for key in layoutWaveforms.keys where !activeScalars.contains(key) {
+            layoutWaveforms.removeValue(forKey: key)
+        }
+    }
+
+    private func startLayoutTimer() {
+        layoutTimer?.invalidate()
+        guard !coordinator.layoutBundles.isEmpty else {
+            layoutImages = []
+            return
+        }
+        layoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateLayoutImages()
+            }
+        }
+    }
+
+    private func stopLayoutTimer() {
+        layoutTimer?.invalidate()
+        layoutTimer = nil
+        layoutImages = []
+        layoutWaveforms = [:]
+        layoutOrder = []
     }
 
     func browseForMissingResource() {
