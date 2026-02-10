@@ -17,6 +17,13 @@ public class AudioCodeGen {
     /// Loaded audio samples by resource ID
     public var loadedSamples: [Int: AudioSampleBuffer] = [:]
 
+    /// Tracks bundles currently being inlined to detect circular references
+    private var inliningBundles: Set<String> = []
+
+    /// Recursion depth counter to guard against stack overflow
+    private var expressionDepth: Int = 0
+    private static let maxExpressionDepth = 512
+
     public init(program: IRProgram, swatch: Swatch, cacheManager: CacheManager? = nil) {
         self.program = program
         self.swatch = swatch
@@ -135,6 +142,14 @@ public class AudioCodeGen {
 
     /// Build an evaluator closure for an expression
     private func buildEvaluator(for expr: IRExpr) throws -> (AudioContext) -> Float {
+        expressionDepth += 1
+        defer { expressionDepth -= 1 }
+
+        guard expressionDepth <= Self.maxExpressionDepth else {
+            throw BackendError.unsupportedExpression(
+                "Expression nested too deeply (\(expressionDepth) levels) — possible circular bundle reference")
+        }
+
         switch expr {
         case .num(let value):
             let v = Float(value)
@@ -199,6 +214,14 @@ public class AudioCodeGen {
 
             // Access another bundle
             if let targetBundle = program.bundles[bundle] {
+                // Detect circular bundle references before inlining
+                guard !inliningBundles.contains(bundle) else {
+                    throw BackendError.unsupportedExpression(
+                        "Circular reference: bundle '\(bundle)' is already being inlined")
+                }
+                inliningBundles.insert(bundle)
+                defer { inliningBundles.remove(bundle) }
+
                 if case .num(let idx) = indexExpr {
                     let strandIdx = Int(idx)
                     if strandIdx < targetBundle.strands.count {

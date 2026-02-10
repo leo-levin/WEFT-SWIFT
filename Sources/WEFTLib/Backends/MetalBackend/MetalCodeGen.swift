@@ -50,6 +50,13 @@ public class MetalCodeGen {
     private var intermediateTextures: [(id: String, baseExpr: IRExpr)] = []
     private var currentlyGeneratingIntermediateIndex: Int? = nil
 
+    /// Tracks bundles currently being inlined to detect circular references
+    private var inliningBundles: Set<String> = []
+
+    /// Recursion depth counter to guard against stack overflow
+    private var expressionDepth: Int = 0
+    private static let maxExpressionDepth = 512
+
     /// Base texture index for intermediate textures (must be <= 127 for Metal)
     public static let intermediateTextureBaseIndex = 115
 
@@ -580,6 +587,14 @@ public class MetalCodeGen {
 
     /// Generate Metal expression from IR expression
     public func generateExpression(_ expr: IRExpr) throws -> String {
+        expressionDepth += 1
+        defer { expressionDepth -= 1 }
+
+        guard expressionDepth <= Self.maxExpressionDepth else {
+            throw BackendError.unsupportedExpression(
+                "Expression nested too deeply (\(expressionDepth) levels) — possible circular bundle reference")
+        }
+
         switch expr {
         case .num(let value):
             return formatNumber(value)
@@ -673,6 +688,14 @@ public class MetalCodeGen {
                         "Cannot use bundle '\(bundle)' in display — no cross-domain buffer available"
                     )
                 }
+
+                // Detect circular bundle references before inlining
+                guard !inliningBundles.contains(bundle) else {
+                    throw BackendError.unsupportedExpression(
+                        "Circular reference: bundle '\(bundle)' is already being inlined")
+                }
+                inliningBundles.insert(bundle)
+                defer { inliningBundles.remove(bundle) }
 
                 if case .num(let idx) = indexExpr {
                     let strandIdx = Int(idx)
