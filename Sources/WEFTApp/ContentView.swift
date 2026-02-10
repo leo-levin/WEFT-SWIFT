@@ -547,6 +547,7 @@ class WeftViewModel: ObservableObject {
     }
 
     private let compiler = WeftCompiler()
+    private var compileTask: Task<Void, Never>?
 
     init() {
         // Native Swift compiler - no initialization needed
@@ -663,6 +664,8 @@ class WeftViewModel: ObservableObject {
     }
 
     func compileAndRun() {
+        compileTask?.cancel()
+
         errorMessage = ""
         hasError = false
         resourceWarning = nil
@@ -674,18 +677,20 @@ class WeftViewModel: ObservableObject {
         let compiler = self.compiler
         let coordinator = self.coordinator
 
-        Task.detached(priority: .userInitiated) {
+        compileTask = Task.detached(priority: .userInitiated) {
             let tTotal = CFAbsoluteTimeGetCurrent()
 
             do {
                 // Frontend: preprocess/tokenize/parse/lower
                 let program = try compiler.compile(source)
+                guard !Task.isCancelled else { return }
 
                 // Set source file URL for relative resource resolution
                 coordinator.sourceFileURL = fileURL
 
                 // Backend: analysis + codegen + Metal compile
                 try coordinator.load(program: program)
+                guard !Task.isCancelled else { return }
 
                 let elapsed = (CFAbsoluteTimeGetCurrent() - tTotal) * 1000
 
@@ -721,6 +726,7 @@ class WeftViewModel: ObservableObject {
                 }
 
             } catch let error as WeftCompileError {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self.hasError = true
                     self.isRunning = false
@@ -729,6 +735,7 @@ class WeftViewModel: ObservableObject {
                     self.statusText = "Error"
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self.hasError = true
                     self.isRunning = false
