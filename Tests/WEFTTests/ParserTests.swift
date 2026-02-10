@@ -1482,6 +1482,52 @@ final class ParserTests: XCTestCase {
         }
     }
 
+    func testNamedStrandsSurviveNestedChainInFullBody() throws {
+        // A full-body pattern with a nested chain inside should not
+        // clobber the outer pattern's strand names
+        let source = """
+        colors[r,g,b] = [0.2, 0.5, 0.8]
+        nums[a,b] = [1, 2]
+        display[r,g,b] = colors -> {
+            scaled[a,b] = nums -> {.a * 2, .b * 2}
+            return = [.r + scaled.a, .g, .b + scaled.b]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // Strand 0: .r + scaled.a — should be a binaryOp with colors.0 on the left
+        if case .binaryOp(let op, let left, _) = display.strands[0].expr {
+            XCTAssertEqual(op, "+")
+            if case .index(let bundle, let idx) = left {
+                XCTAssertEqual(bundle, "colors")
+                if case .num(0) = idx {} else {
+                    XCTFail("Expected index 0 for .r, got \(idx)")
+                }
+            } else {
+                XCTFail("Expected index into colors for .r, got \(left)")
+            }
+        } else {
+            XCTFail("Expected binaryOp for strand 0, got \(display.strands[0].expr)")
+        }
+
+        // Strand 1: .g — should be colors.1
+        if case .index(let bundle, let idx) = display.strands[1].expr {
+            XCTAssertEqual(bundle, "colors")
+            if case .num(1) = idx {} else {
+                XCTFail("Expected index 1 for .g, got \(idx)")
+            }
+        } else {
+            XCTFail("Expected index into colors for .g, got \(display.strands[1].expr)")
+        }
+    }
+
     func testNamedBareStrandUnknownNameErrors() throws {
         // .z on a bundle with no z strand should error
         let source = """

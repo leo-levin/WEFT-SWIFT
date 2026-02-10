@@ -575,6 +575,8 @@ public class WeftLowering {
     }
 
     private func lowerChainExpr(_ chain: ChainExpr, expectedWidth: Int) throws -> [IRExpr] {
+        let savedPatternStrandNames = patternStrandNames
+
         var exprs = try lowerToStrands(chain.base, width: try inferWidth(chain.base), subs: nil)
         var strandNames = inferStrandNames(chain.base)
 
@@ -594,7 +596,7 @@ public class WeftLowering {
             strandNames = nil
         }
 
-        patternStrandNames = nil
+        patternStrandNames = savedPatternStrandNames
 
         if exprs.count != expectedWidth {
             throw LoweringError.widthMismatch(expected: expectedWidth, got: exprs.count, context: "chain expression")
@@ -649,6 +651,7 @@ public class WeftLowering {
         // Save current state
         let savedScope = scope
         let savedPatternLocals = patternLocals
+        let savedPatternStrandNames = patternStrandNames
 
         // Create a scope for the pattern block with pattern locals
         var localScope = Scope(params: savedScope?.params ?? [], locals: savedScope?.locals ?? [:])
@@ -721,6 +724,7 @@ public class WeftLowering {
         // Restore state
         scope = savedScope
         patternLocals = savedPatternLocals
+        patternStrandNames = savedPatternStrandNames
 
         return result
     }
