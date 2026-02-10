@@ -62,6 +62,7 @@ public struct SpindleDef: Equatable {
 public enum BodyStatement: Equatable {
     case bundleDecl(BundleDecl)
     case returnAssign(ReturnAssign)
+    case returnList([Expr])            // return = [expr, expr, ...]
 }
 
 public struct ReturnAssign: Equatable {
@@ -260,10 +261,18 @@ public struct ChainExpr: Equatable {
 }
 
 public struct PatternBlock: Equatable {
-    public let outputs: [PatternOutput]
+    public enum Content: Equatable {
+        case inline([PatternOutput])
+        case fullBody([BodyStatement])
+    }
+    public let content: Content
 
     public init(outputs: [PatternOutput]) {
-        self.outputs = outputs
+        self.content = .inline(outputs)
+    }
+
+    public init(body: [BodyStatement]) {
+        self.content = .fullBody(body)
     }
 }
 
@@ -315,8 +324,24 @@ extension Expr: CustomStringConvertible {
             return "\(remap.base)(\(args))"
         case .chainExpr(let chain):
             let patterns = chain.patterns.map { pattern in
-                let outputs = pattern.outputs.map { $0.value.description }.joined(separator: ", ")
-                return "-> {\(outputs)}"
+                switch pattern.content {
+                case .inline(let outputs):
+                    let out = outputs.map { $0.value.description }.joined(separator: ", ")
+                    return "-> {\(out)}"
+                case .fullBody(let body):
+                    let stmts = body.map { stmt -> String in
+                        switch stmt {
+                        case .bundleDecl(let decl):
+                            let outs = decl.outputs.map { $0.stringValue }.joined(separator: ", ")
+                            return "\(decl.name)[\(outs)] = \(decl.expr)"
+                        case .returnAssign(let ret):
+                            return "return.\(ret.index) = \(ret.expr)"
+                        case .returnList(let exprs):
+                            return "return = [\(exprs.map { $0.description }.joined(separator: ", "))]"
+                        }
+                    }.joined(separator: "; ")
+                    return "-> { \(stmts) }"
+                }
             }.joined(separator: " ")
             return "\(chain.base) \(patterns)"
         case .rangeExpr(let range):

@@ -51,12 +51,20 @@ public class WeftDesugar {
         case .bundleDecl(let decl):
             collectTagsFromExpr(decl.expr, into: &tagDefs)
         case .spindleDef(let def):
-            for bodyStmt in def.body {
-                switch bodyStmt {
-                case .bundleDecl(let decl):
-                    collectTagsFromExpr(decl.expr, into: &tagDefs)
-                case .returnAssign(let ret):
-                    collectTagsFromExpr(ret.expr, into: &tagDefs)
+            collectTagsFromBody(def.body, into: &tagDefs)
+        }
+    }
+
+    private func collectTagsFromBody(_ body: [BodyStatement], into tagDefs: inout [String: Expr]) {
+        for bodyStmt in body {
+            switch bodyStmt {
+            case .bundleDecl(let decl):
+                collectTagsFromExpr(decl.expr, into: &tagDefs)
+            case .returnAssign(let ret):
+                collectTagsFromExpr(ret.expr, into: &tagDefs)
+            case .returnList(let exprs):
+                for e in exprs {
+                    collectTagsFromExpr(e, into: &tagDefs)
                 }
             }
         }
@@ -101,8 +109,13 @@ public class WeftDesugar {
         case .chainExpr(let chain):
             collectTagsFromExpr(chain.base, into: &tagDefs)
             for pattern in chain.patterns {
-                for output in pattern.outputs {
-                    collectTagsFromExpr(output.value, into: &tagDefs)
+                switch pattern.content {
+                case .inline(let outputs):
+                    for output in outputs {
+                        collectTagsFromExpr(output.value, into: &tagDefs)
+                    }
+                case .fullBody(let body):
+                    collectTagsFromBody(body, into: &tagDefs)
                 }
             }
 
@@ -132,22 +145,28 @@ public class WeftDesugar {
                 expr: rewriteExpr(decl.expr, tags: tags)
             ))
         case .spindleDef(let def):
-            let newBody = def.body.map { bodyStmt -> BodyStatement in
-                switch bodyStmt {
-                case .bundleDecl(let decl):
-                    return .bundleDecl(BundleDecl(
-                        name: decl.name,
-                        outputs: decl.outputs,
-                        expr: rewriteExpr(decl.expr, tags: tags)
-                    ))
-                case .returnAssign(let ret):
-                    return .returnAssign(ReturnAssign(
-                        index: ret.index,
-                        expr: rewriteExpr(ret.expr, tags: tags)
-                    ))
-                }
-            }
+            let newBody = rewriteBody(def.body, tags: tags)
             return .spindleDef(SpindleDef(name: def.name, params: def.params, body: newBody))
+        }
+    }
+
+    private func rewriteBody(_ body: [BodyStatement], tags: [String: Expr]) -> [BodyStatement] {
+        body.map { bodyStmt -> BodyStatement in
+            switch bodyStmt {
+            case .bundleDecl(let decl):
+                return .bundleDecl(BundleDecl(
+                    name: decl.name,
+                    outputs: decl.outputs,
+                    expr: rewriteExpr(decl.expr, tags: tags)
+                ))
+            case .returnAssign(let ret):
+                return .returnAssign(ReturnAssign(
+                    index: ret.index,
+                    expr: rewriteExpr(ret.expr, tags: tags)
+                ))
+            case .returnList(let exprs):
+                return .returnList(exprs.map { rewriteExpr($0, tags: tags) })
+            }
         }
     }
 
@@ -201,9 +220,14 @@ public class WeftDesugar {
             return .chainExpr(ChainExpr(
                 base: rewriteExpr(chain.base, tags: tags),
                 patterns: chain.patterns.map { pattern in
-                    PatternBlock(outputs: pattern.outputs.map { output in
-                        PatternOutput(value: rewriteExpr(output.value, tags: tags))
-                    })
+                    switch pattern.content {
+                    case .inline(let outputs):
+                        return PatternBlock(outputs: outputs.map { output in
+                            PatternOutput(value: rewriteExpr(output.value, tags: tags))
+                        })
+                    case .fullBody(let body):
+                        return PatternBlock(body: rewriteBody(body, tags: tags))
+                    }
                 }
             ))
 

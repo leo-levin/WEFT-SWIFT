@@ -109,6 +109,9 @@ public class WeftLowering {
     // Current scope for spindle body lowering
     private var scope: Scope?
 
+    // Lowered expressions for pattern-block-scoped locals (inline substitution)
+    private var patternLocals: [String: [IRExpr]]?
+
     struct BundleInfo {
         var width: Int
         var strandIndex: [String: Int]
@@ -151,6 +154,7 @@ public class WeftLowering {
         textResources = []
         textResourceIndex = [:]
         scope = nil
+        patternLocals = nil
 
         // First pass: register all bundles and spindles
         for stmt in program.statements {
@@ -206,11 +210,21 @@ public class WeftLowering {
 
         var maxIndex = -1
         var indices = Set<Int>()
+        var returnListWidth: Int?
 
         for stmt in def.body {
-            if case .returnAssign(let ret) = stmt {
+            switch stmt {
+            case .returnAssign(let ret):
                 indices.insert(ret.index)
                 maxIndex = max(maxIndex, ret.index)
+            case .returnList(let exprs):
+                returnListWidth = exprs.count
+                for i in 0..<exprs.count {
+                    indices.insert(i)
+                    maxIndex = max(maxIndex, i)
+                }
+            case .bundleDecl:
+                break
             }
         }
 
@@ -223,7 +237,7 @@ public class WeftLowering {
 
         spindleInfo[def.name] = SpindleInfo(
             params: Set(def.params),
-            width: maxIndex + 1
+            width: returnListWidth ?? (maxIndex + 1)
         )
     }
 
@@ -347,6 +361,11 @@ public class WeftLowering {
                     throw LoweringError.widthMismatch(expected: 1, got: width, context: "return.\(ret.index)")
                 }
                 returns[ret.index] = try lowerExpr(ret.expr, subs: nil)
+
+            case .returnList(let exprs):
+                for (i, expr) in exprs.enumerated() {
+                    returns[i] = try lowerExpr(expr, subs: nil)
+                }
             }
         }
 
@@ -502,6 +521,21 @@ public class WeftLowering {
                 return (0..<width).map { .index(bundle: "me", indexExpr: .num(Double($0))) }
             }
 
+            // Check pattern-scoped locals first (inline substitution)
+            if let locals = patternLocals, let strandExprs = locals[name] {
+                if strandExprs.count != width {
+                    throw LoweringError.widthMismatch(expected: width, got: strandExprs.count, context: "pattern local '\(name)'")
+                }
+                return strandExprs
+            }
+
+            // Guard against forward references to not-yet-lowered pattern locals
+            if patternLocals != nil,
+               let localScope = scope, localScope.locals[name] != nil,
+               patternLocals?[name] == nil, bundleInfo[name] == nil {
+                throw LoweringError.invalidExpression("Pattern local '\(name)' must be defined before use")
+            }
+
             guard let info = bundleInfo[name] else {
                 if let scope = scope, let local = scope.locals[name] {
                     if local.width != width {
@@ -530,42 +564,13 @@ public class WeftLowering {
 
         for pattern in chain.patterns {
             let prev = exprs
-            exprs = []
 
-            for output in pattern.outputs {
-                let ranges = findRanges(output.value)
+            switch pattern.content {
+            case .inline(let outputs):
+                exprs = try lowerInlinePatternOutputs(outputs, prev: prev)
 
-                if ranges.isEmpty {
-                    // No ranges - process normally
-                    let w = try inferWidth(output.value)
-                    if w == 1 {
-                        exprs.append(try lowerExpr(output.value, subs: prev))
-                    } else {
-                        exprs.append(contentsOf: try lowerToStrands(output.value, width: w, subs: prev))
-                    }
-                } else {
-                    // Has ranges - expand the expression
-                    let sizes = ranges.map { computeRangeSize($0, defaultWidth: prev.count) }
-
-                    // Verify all ranges have the same size
-                    let firstSize = sizes[0]
-                    for size in sizes {
-                        if size != firstSize {
-                            throw LoweringError.invalidExpression("Range size mismatch: found ranges of size \(firstSize) and \(size)")
-                        }
-                    }
-
-                    // Expand for each iteration
-                    for iterNum in 0..<firstSize {
-                        let expanded = expandRangeExpr(output.value, iterNum: iterNum, defaultWidth: prev.count)
-                        let w = try inferWidth(expanded)
-                        if w == 1 {
-                            exprs.append(try lowerExpr(expanded, subs: prev))
-                        } else {
-                            exprs.append(contentsOf: try lowerToStrands(expanded, width: w, subs: prev))
-                        }
-                    }
-                }
+            case .fullBody(let body):
+                exprs = try lowerFullBodyPattern(body, prev: prev)
             }
         }
 
@@ -574,6 +579,128 @@ public class WeftLowering {
         }
 
         return exprs
+    }
+
+    private func lowerInlinePatternOutputs(_ outputs: [PatternOutput], prev: [IRExpr]) throws -> [IRExpr] {
+        var exprs: [IRExpr] = []
+
+        for output in outputs {
+            let ranges = findRanges(output.value)
+
+            if ranges.isEmpty {
+                // No ranges - process normally
+                let w = try inferWidth(output.value)
+                if w == 1 {
+                    exprs.append(try lowerExpr(output.value, subs: prev))
+                } else {
+                    exprs.append(contentsOf: try lowerToStrands(output.value, width: w, subs: prev))
+                }
+            } else {
+                // Has ranges - expand the expression
+                let sizes = ranges.map { computeRangeSize($0, defaultWidth: prev.count) }
+
+                // Verify all ranges have the same size
+                let firstSize = sizes[0]
+                for size in sizes {
+                    if size != firstSize {
+                        throw LoweringError.invalidExpression("Range size mismatch: found ranges of size \(firstSize) and \(size)")
+                    }
+                }
+
+                // Expand for each iteration
+                for iterNum in 0..<firstSize {
+                    let expanded = expandRangeExpr(output.value, iterNum: iterNum, defaultWidth: prev.count)
+                    let w = try inferWidth(expanded)
+                    if w == 1 {
+                        exprs.append(try lowerExpr(expanded, subs: prev))
+                    } else {
+                        exprs.append(contentsOf: try lowerToStrands(expanded, width: w, subs: prev))
+                    }
+                }
+            }
+        }
+
+        return exprs
+    }
+
+    private func lowerFullBodyPattern(_ body: [BodyStatement], prev: [IRExpr]) throws -> [IRExpr] {
+        // Save current state
+        let savedScope = scope
+        let savedPatternLocals = patternLocals
+
+        // Create a scope for the pattern block with pattern locals
+        var localScope = Scope(params: savedScope?.params ?? [], locals: savedScope?.locals ?? [:])
+        patternLocals = [:]
+
+        // First pass: register all locals in scope (for forward references in cache, etc.)
+        for stmt in body {
+            if case .bundleDecl(let decl) = stmt {
+                var strandIndex: [String: Int] = [:]
+                if decl.outputs.isEmpty {
+                    let w = try inferWidth(decl.expr)
+                    for i in 0..<w {
+                        strandIndex[String(i)] = i
+                    }
+                    localScope.locals[decl.name] = BundleInfo(width: w, strandIndex: strandIndex)
+                } else {
+                    for (i, output) in decl.outputs.enumerated() {
+                        strandIndex[output.stringValue] = i
+                    }
+                    localScope.locals[decl.name] = BundleInfo(width: decl.outputs.count, strandIndex: strandIndex)
+                }
+            }
+        }
+
+        scope = localScope
+
+        // Second pass: lower each local's expression with subs = prev
+        for stmt in body {
+            if case .bundleDecl(let decl) = stmt {
+                let localInfo = localScope.locals[decl.name]!
+                let loweredStrands = try lowerToStrands(decl.expr, width: localInfo.width, subs: prev)
+                patternLocals?[decl.name] = loweredStrands
+            }
+        }
+
+        // Collect return outputs
+        var returnOutputs: [PatternOutput]?
+        var returnsByIndex: [Int: IRExpr] = [:]
+
+        for stmt in body {
+            switch stmt {
+            case .returnList(let exprs):
+                returnOutputs = exprs.map { PatternOutput(value: $0) }
+            case .returnAssign(let ret):
+                returnsByIndex[ret.index] = try lowerExpr(ret.expr, subs: prev)
+            case .bundleDecl:
+                break
+            }
+        }
+
+        var result: [IRExpr]
+
+        if let outputs = returnOutputs {
+            // return = [expr, expr, ...] — process like inline pattern outputs
+            result = try lowerInlinePatternOutputs(outputs, prev: prev)
+        } else if !returnsByIndex.isEmpty {
+            // return.0, return.1, ... — collect by index
+            let maxIdx = returnsByIndex.keys.max()!
+            result = []
+            for i in 0...maxIdx {
+                guard let expr = returnsByIndex[i] else {
+                    throw LoweringError.missingReturnIndex("pattern block", i)
+                }
+                result.append(expr)
+            }
+        } else {
+            throw LoweringError.invalidExpression("Full-body pattern block must have at least one return statement")
+        }
+
+        // Restore state
+        scope = savedScope
+        patternLocals = savedPatternLocals
+
+        return result
     }
 
     private func lowerBareStrandAccess(_ accessor: StrandAccessor, subs: [IRExpr]) throws -> IRExpr {
@@ -619,6 +746,34 @@ public class WeftLowering {
         case .named(let bundleName):
             if bundleName == "me" {
                 return try lowerMeAccess(access.accessor, subs: subs)
+            }
+
+            // Check pattern-scoped locals first (inline substitution)
+            if let locals = patternLocals, let strandExprs = locals[bundleName] {
+                switch access.accessor {
+                case .index(let idx):
+                    let resolved = idx < 0 ? strandExprs.count + idx : idx
+                    if resolved < 0 || resolved >= strandExprs.count {
+                        throw LoweringError.rangeOutOfBounds(idx, strandExprs.count)
+                    }
+                    return strandExprs[resolved]
+                case .name(let name):
+                    // Look up name in scope's local info
+                    if let localInfo = scope?.locals[bundleName], let idx = localInfo.strandIndex[name] {
+                        return strandExprs[idx]
+                    }
+                    throw LoweringError.unknownStrand(bundleName, name)
+                case .expr(let indexExpr):
+                    let irIndex = try lowerExpr(indexExpr, subs: subs)
+                    return buildSelector(strandExprs, index: irIndex)
+                }
+            }
+
+            // Guard against forward references to not-yet-lowered pattern locals
+            if patternLocals != nil,
+               let localScope = scope, localScope.locals[bundleName] != nil,
+               patternLocals?[bundleName] == nil, bundleInfo[bundleName] == nil {
+                throw LoweringError.invalidExpression("Pattern local '\(bundleName)' must be defined before use")
             }
 
             let info = try getBundleInfo(bundleName)
@@ -846,7 +1001,7 @@ public class WeftLowering {
             if chain.patterns.isEmpty {
                 return try inferWidth(chain.base)
             }
-            return chain.patterns.last!.outputs.count
+            return try inferPatternWidth(chain.patterns.last!)
 
         case .identifier(let name):
             if name == "me" {
@@ -886,6 +1041,36 @@ public class WeftLowering {
 
         default:
             return 1
+        }
+    }
+
+    private func inferPatternWidth(_ pattern: PatternBlock) throws -> Int {
+        switch pattern.content {
+        case .inline(let outputs):
+            return outputs.count
+        case .fullBody(let body):
+            for stmt in body {
+                switch stmt {
+                case .returnList(let exprs):
+                    return exprs.count
+                case .returnAssign(let ret):
+                    // Continue scanning to find max index
+                    break
+                case .bundleDecl:
+                    break
+                }
+            }
+            // Count from returnAssign indices
+            var maxIndex = -1
+            for stmt in body {
+                if case .returnAssign(let ret) = stmt {
+                    maxIndex = max(maxIndex, ret.index)
+                }
+            }
+            if maxIndex >= 0 {
+                return maxIndex + 1
+            }
+            throw LoweringError.invalidExpression("Full-body pattern block must have at least one return statement")
         }
     }
 
