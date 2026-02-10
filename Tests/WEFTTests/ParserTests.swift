@@ -1394,6 +1394,110 @@ final class ParserTests: XCTestCase {
         }
     }
 
+    // MARK: - Named Bare Strand Access Tests
+
+    func testLowerNamedBareStrandAccess() throws {
+        // Swap channels by name: img -> {.b, .g, .r}
+        let source = """
+        img[r,g,b] = [1, 2, 3]
+        display[r,g,b] = img -> {.b, .g, .r}
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // .b maps to index 2, .g to index 1, .r to index 0 — all referencing img bundle
+        if case .index(let bundle, let indexExpr) = display.strands[0].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(2) = indexExpr {} else {
+                XCTFail("Expected index 2 for .b, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .b, got \(display.strands[0].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[1].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(1) = indexExpr {} else {
+                XCTFail("Expected index 1 for .g, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .g, got \(display.strands[1].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[2].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(0) = indexExpr {} else {
+                XCTFail("Expected index 0 for .r, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .r, got \(display.strands[2].expr)")
+        }
+    }
+
+    func testLowerNamedBareStrandInFullBody() throws {
+        // Named access inside a full-body pattern block
+        let source = """
+        img[r,g,b] = [1, 2, 3]
+        display[r,g,b] = img -> {
+            return = [.g, .r, .b]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // .g = index 1, .r = index 0, .b = index 2 — all referencing img bundle
+        if case .index(let bundle, let indexExpr) = display.strands[0].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(1) = indexExpr {} else {
+                XCTFail("Expected index 1 for .g, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .g, got \(display.strands[0].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[1].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(0) = indexExpr {} else {
+                XCTFail("Expected index 0 for .r, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .r, got \(display.strands[1].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[2].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(2) = indexExpr {} else {
+                XCTFail("Expected index 2 for .b, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .b, got \(display.strands[2].expr)")
+        }
+    }
+
+    func testNamedBareStrandUnknownNameErrors() throws {
+        // .z on a bundle with no z strand should error
+        let source = """
+        img[r,g,b] = [1, 2, 3]
+        display[r,g,b] = img -> {.z, .r, .b}
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        XCTAssertThrowsError(try lowering.lower(program)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(".z"),
+                          "Expected error about unknown strand '.z', got: \(error)")
+        }
+    }
+
     func testLowerReturnListInSpindleEndToEnd() throws {
         // Full end-to-end: spindle with return = [...], called from a bundle
         let source = """

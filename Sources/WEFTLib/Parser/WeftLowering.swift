@@ -112,6 +112,9 @@ public class WeftLowering {
     // Lowered expressions for pattern-block-scoped locals (inline substitution)
     private var patternLocals: [String: [IRExpr]]?
 
+    // Strand name-to-index mapping for the current pattern step's input
+    private var patternStrandNames: [String: Int]?
+
     struct BundleInfo {
         var width: Int
         var strandIndex: [String: Int]
@@ -155,6 +158,7 @@ public class WeftLowering {
         textResourceIndex = [:]
         scope = nil
         patternLocals = nil
+        patternStrandNames = nil
 
         // First pass: register all bundles and spindles
         for stmt in program.statements {
@@ -559,11 +563,24 @@ public class WeftLowering {
         }
     }
 
+    private func inferStrandNames(_ expr: Expr) -> [String: Int]? {
+        switch expr {
+        case .identifier(let name):
+            if let info = bundleInfo[name] { return info.strandIndex }
+            if let scope = scope, let local = scope.locals[name] { return local.strandIndex }
+            return nil
+        default:
+            return nil
+        }
+    }
+
     private func lowerChainExpr(_ chain: ChainExpr, expectedWidth: Int) throws -> [IRExpr] {
         var exprs = try lowerToStrands(chain.base, width: try inferWidth(chain.base), subs: nil)
+        var strandNames = inferStrandNames(chain.base)
 
         for pattern in chain.patterns {
             let prev = exprs
+            patternStrandNames = strandNames
 
             switch pattern.content {
             case .inline(let outputs):
@@ -572,7 +589,12 @@ public class WeftLowering {
             case .fullBody(let body):
                 exprs = try lowerFullBodyPattern(body, prev: prev)
             }
+
+            // Pattern outputs are positional — no named strands
+            strandNames = nil
         }
+
+        patternStrandNames = nil
 
         if exprs.count != expectedWidth {
             throw LoweringError.widthMismatch(expected: expectedWidth, got: exprs.count, context: "chain expression")
@@ -713,7 +735,13 @@ public class WeftLowering {
             return subs[resolved]
 
         case .name(let name):
-            throw LoweringError.invalidExpression("Bare named strand access .\(name) not supported")
+            if let nameMap = patternStrandNames, let idx = nameMap[name] {
+                if idx < 0 || idx >= subs.count {
+                    throw LoweringError.rangeOutOfBounds(idx, subs.count)
+                }
+                return subs[idx]
+            }
+            throw LoweringError.invalidExpression("Unknown strand name '.\(name)' — input has no named strands")
 
         case .expr(let indexExpr):
             let irIndex = try lowerExpr(indexExpr, subs: subs)
