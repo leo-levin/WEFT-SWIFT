@@ -425,6 +425,57 @@ public enum IRTransformations {
         return result
     }
 
+    // MARK: - Spindle Classification
+
+    /// Check whether a spindle contains any cache builtins in its locals or returns.
+    /// Spindles with cache nodes need IR-level inlining for target substitution.
+    /// Pure spindles (no cache) can be kept as .call nodes and emitted as Metal functions.
+    public static func spindleContainsCache(_ spindle: IRSpindle) -> Bool {
+        func exprContainsCache(_ expr: IRExpr) -> Bool {
+            if case .builtin(let name, _) = expr, name == "cache" { return true }
+            var found = false
+            expr.forEachChild { if exprContainsCache($0) { found = true } }
+            return found
+        }
+        for local in spindle.locals {
+            for strand in local.strands {
+                if exprContainsCache(strand.expr) { return true }
+            }
+        }
+        for ret in spindle.returns {
+            if exprContainsCache(ret) { return true }
+        }
+        return false
+    }
+
+    /// Resource builtins that require kernel-scope texture arguments.
+    /// Spindles using these cannot be emitted as standalone Metal functions.
+    private static let resourceBuiltins: Set<String> = ["camera", "texture", "microphone", "text", "mouse", "key"]
+
+    /// Check whether a spindle uses resource builtins (camera, texture, etc.)
+    /// that require kernel-scope parameters and can't be emitted as Metal functions.
+    public static func spindleUsesResources(_ spindle: IRSpindle) -> Bool {
+        func exprUsesResources(_ expr: IRExpr) -> Bool {
+            let builtins = expr.allBuiltins()
+            return !builtins.isDisjoint(with: resourceBuiltins)
+        }
+        for local in spindle.locals {
+            for strand in local.strands {
+                if exprUsesResources(strand.expr) { return true }
+            }
+        }
+        for ret in spindle.returns {
+            if exprUsesResources(ret) { return true }
+        }
+        return false
+    }
+
+    /// Check whether a spindle is eligible to be emitted as a Metal function.
+    /// Returns true if the spindle is pure (no cache, no resources).
+    public static func spindleCanBeFunction(_ spindle: IRSpindle) -> Bool {
+        return !spindleContainsCache(spindle) && !spindleUsesResources(spindle)
+    }
+
     /// Recursively inline spindle calls in expression with given target
     private static func inlineExprWithTarget(
         expr: IRExpr,
@@ -444,6 +495,11 @@ public enum IRTransformations {
                   !spindleDef.returns.isEmpty else {
                 return .call(spindle: spindle, args: inlinedArgs)
             }
+            // Pure spindles (no cache, no resources) stay as .call nodes —
+            // they'll be emitted as Metal functions instead of inlined.
+            if spindleCanBeFunction(spindleDef) {
+                return .call(spindle: spindle, args: inlinedArgs)
+            }
             let inlined = inlineSpindleCallWithTarget(
                 spindleDef: spindleDef, args: inlinedArgs,
                 targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, returnIndex: 0
@@ -457,6 +513,10 @@ public enum IRTransformations {
                 return .extract(call: recurse(callExpr), index: index)
             }
             let inlinedArgs = args.map(recurse)
+            // Pure spindles stay as .extract nodes — emitted as Metal function calls.
+            if spindleCanBeFunction(spindleDef) {
+                return .extract(call: .call(spindle: spindle, args: inlinedArgs), index: index)
+            }
             let inlined = inlineSpindleCallWithTarget(
                 spindleDef: spindleDef, args: inlinedArgs,
                 targetBundle: targetBundle, targetStrandIndex: targetStrandIndex, returnIndex: index
