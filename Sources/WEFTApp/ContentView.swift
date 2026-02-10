@@ -547,6 +547,7 @@ class WeftViewModel: ObservableObject {
     }
 
     private let compiler = WeftCompiler()
+    private var compileTask: Task<Void, Never>?
 
     init() {
         // Native Swift compiler - no initialization needed
@@ -663,53 +664,86 @@ class WeftViewModel: ObservableObject {
     }
 
     func compileAndRun() {
+        compileTask?.cancel()
+
         errorMessage = ""
         hasError = false
         resourceWarning = nil
         statusText = "Compiling..."
         RenderStats.shared.reset()
 
-        do {
-            // Use native Swift compiler
-            let program = try compiler.compile(sourceCode)
+        let source = sourceCode
+        let fileURL = currentFileURL
+        let compiler = self.compiler
+        let coordinator = self.coordinator
 
-            // Set source file URL for relative resource resolution
-            coordinator.sourceFileURL = currentFileURL
+        compileTask = Task.detached(priority: .userInitiated) {
+            let tTotal = CFAbsoluteTimeGetCurrent()
 
-            try coordinator.load(program: program)
+            do {
+                // Frontend: preprocess/tokenize/parse/lower
+                let program = try compiler.compile(source)
+                guard !Task.isCancelled else { return }
 
-            // Check for resource loading errors
-            if let resourceErrors = coordinator.getResourceErrorMessage() {
-                resourceWarning = resourceErrors
-                print("Resource warnings:\n\(resourceErrors)")
+                // Set source file URL for relative resource resolution
+                coordinator.sourceFileURL = fileURL
+
+                // Backend: analysis + codegen + Metal compile
+                try coordinator.load(program: program)
+                guard !Task.isCancelled else { return }
+
+                let elapsed = (CFAbsoluteTimeGetCurrent() - tTotal) * 1000
+
+                await MainActor.run {
+                    // Check for resource loading errors
+                    if let resourceErrors = coordinator.getResourceErrorMessage() {
+                        self.resourceWarning = resourceErrors
+                        print("Resource warnings:\n\(resourceErrors)")
+                    }
+
+                    self.hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "visual" } ?? false
+                    self.hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "audio" } ?? false
+                    self.hasScope = coordinator.scopeBuffer != nil
+
+                    self.isRunning = true
+                    let timeStr = String(format: "%.0f", elapsed)
+                    self.statusText = self.resourceWarning != nil
+                        ? "Running (with warnings) [\(timeStr)ms]"
+                        : "Running [\(timeStr)ms]"
+                    self.compilationVersion += 1
+                    self.startLayoutTimer()
+
+                    print("=== Total compileAndRun: \(timeStr)ms ===")
+
+                    if self.hasAudio && !self.isAudioPlaying {
+                        do {
+                            try coordinator.startAudio()
+                            self.isAudioPlaying = true
+                        } catch {
+                            self.errorMessage = "Audio error: \(error.localizedDescription)"
+                        }
+                    }
+                }
+
+            } catch let error as WeftCompileError {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.hasError = true
+                    self.isRunning = false
+                    self.errorMessage = error.errorDescription ?? "Unknown compile error"
+                    self.compilationError = CompilationError.parse(from: self.errorMessage, source: source)
+                    self.statusText = "Error"
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.hasError = true
+                    self.isRunning = false
+                    self.errorMessage = error.localizedDescription
+                    self.compilationError = CompilationError.parse(from: self.errorMessage, source: source)
+                    self.statusText = "Error"
+                }
             }
-
-            hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "visual" } ?? false
-            hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "audio" } ?? false
-            hasScope = coordinator.scopeBuffer != nil
-
-            isRunning = true
-            statusText = resourceWarning != nil ? "Running (with warnings)" : "Running"
-            compilationVersion += 1  // Trigger dev mode refresh
-            startLayoutTimer()
-
-            if hasAudio && !isAudioPlaying {
-                try coordinator.startAudio()
-                isAudioPlaying = true
-            }
-
-        } catch let error as WeftCompileError {
-            hasError = true
-            isRunning = false
-            errorMessage = error.errorDescription ?? "Unknown compile error"
-            compilationError = CompilationError.parse(from: errorMessage, source: sourceCode)
-            statusText = "Error"
-        } catch {
-            hasError = true
-            isRunning = false
-            errorMessage = error.localizedDescription
-            compilationError = CompilationError.parse(from: errorMessage, source: sourceCode)
-            statusText = "Error"
         }
     }
 

@@ -143,12 +143,16 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Load and compile an IR program
     public func load(program: IRProgram) throws {
+        let tLoad = CFAbsoluteTimeGetCurrent()
+
         self.program = program
 
         // Build dependency graph
+        let t0 = CFAbsoluteTimeGetCurrent()
         let graph = DependencyGraph()
         graph.build(from: program)
         self.dependencyGraph = graph
+        let t1 = CFAbsoluteTimeGetCurrent()
 
         // Prune layout bundles that no longer exist in this program
         layoutBundles = layoutBundles.filter { program.bundles[$0] != nil }
@@ -166,6 +170,7 @@ public class Coordinator: CameraCaptureDelegate {
         )
         let annotations = annotationPass.annotate()
         self.annotatedProgram = annotations
+        let t2 = CFAbsoluteTimeGetCurrent()
 
         // Partition into swatches
         let partitioner = Partitioner(
@@ -176,6 +181,7 @@ public class Coordinator: CameraCaptureDelegate {
         )
         let swatches = partitioner.partition()
         self.swatchGraph = swatches
+        let t3 = CFAbsoluteTimeGetCurrent()
 
         // Convert temporal remaps in spindle locals to cache builtins
         // Must happen before inlineSpindleCacheCalls so cache nodes exist for cycle-breaking
@@ -196,6 +202,7 @@ public class Coordinator: CameraCaptureDelegate {
         )
 
         self.program = mutableProgramForInlining
+        let t4 = CFAbsoluteTimeGetCurrent()
 
         // Analyze cache nodes (now sees correct target references after spindle inlining)
         cacheManager.analyze(program: mutableProgramForInlining, annotations: annotations)
@@ -205,6 +212,7 @@ public class Coordinator: CameraCaptureDelegate {
             cacheManager.transformProgramForCaches(program: &mutableProgram)
             self.program = mutableProgram
         }
+        let t5 = CFAbsoluteTimeGetCurrent()
 
         // Print analysis
         print("=== WEFT IR Loaded ===")
@@ -216,6 +224,17 @@ public class Coordinator: CameraCaptureDelegate {
 
         // Compile swatches
         try compile()
+
+        let tEnd = CFAbsoluteTimeGetCurrent()
+
+        print("=== Coordinator.load Timing ===")
+        print("  dep graph:     \(String(format: "%.1f", (t1 - t0) * 1000))ms")
+        print("  annotation:    \(String(format: "%.1f", (t2 - t1) * 1000))ms")
+        print("  partition:     \(String(format: "%.1f", (t3 - t2) * 1000))ms")
+        print("  IR transforms: \(String(format: "%.1f", (t4 - t3) * 1000))ms")
+        print("  cache analysis:\(String(format: "%.1f", (t5 - t4) * 1000))ms")
+        print("  compile:       \(String(format: "%.1f", (tEnd - t5) * 1000))ms")
+        print("  TOTAL:         \(String(format: "%.1f", (tEnd - tLoad) * 1000))ms")
     }
 
     /// Load IR from JSON file

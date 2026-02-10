@@ -215,14 +215,25 @@ public class WeftParser {
 
     private func parseBodyStatement() throws -> BodyStatement {
         if check(.return) {
-            return .returnAssign(try parseReturnAssign())
+            return try parseReturnStatement()
         }
         return .bundleDecl(try parseBundleDecl())
     }
 
-    private func parseReturnAssign() throws -> ReturnAssign {
-        // "return" "." integer "=" Expr
+    private func parseReturnStatement() throws -> BodyStatement {
+        // "return" "." integer "=" Expr      → .returnAssign
+        // "return" "=" "[" ExprList "]"       → .returnList
         try consume(.return, "return")
+
+        if match(.equal) {
+            // return = [expr, expr, ...]
+            try consume(.leftBracket, "[")
+            let exprs = try parseExprList()
+            try consume(.rightBracket, "]")
+            return .returnList(exprs)
+        }
+
+        // return.N = expr
         try consume(.dot, ".")
 
         let indexToken = try consume(.number(0), "return index")
@@ -233,7 +244,7 @@ public class WeftParser {
         try consume(.equal, "=")
         let expr = try parseExpr()
 
-        return ReturnAssign(index: Int(n), expr: expr)
+        return .returnAssign(ReturnAssign(index: Int(n), expr: expr))
     }
 
     // MARK: - Expression Parsing
@@ -669,9 +680,21 @@ public class WeftParser {
     }
 
     private func parsePatternBlock() throws -> PatternBlock {
-        // "{" PatternOutputList "}"
+        // "{" (InlineOutputList | FullBody) "}"
         try consume(.leftBrace, "{")
 
+        if isFullBodyPattern() {
+            // Full-body pattern block with local decls and return statements
+            var body: [BodyStatement] = []
+            while !check(.rightBrace) && !isAtEnd {
+                let stmt = try parseBodyStatement()
+                body.append(stmt)
+            }
+            try consume(.rightBrace, "}")
+            return PatternBlock(body: body)
+        }
+
+        // Inline pattern block: {expr, expr, ...}
         var outputs: [PatternOutput] = []
         if !check(.rightBrace) {
             repeat {
@@ -683,5 +706,42 @@ public class WeftParser {
         try consume(.rightBrace, "}")
 
         return PatternBlock(outputs: outputs)
+    }
+
+    /// Lookahead to determine if the current pattern block is full-body.
+    /// Called after consuming `{`.
+    private func isFullBodyPattern() -> Bool {
+        // `return` keyword → full-body
+        if check(.return) {
+            return true
+        }
+
+        guard case .identifier(_) = peek().token else {
+            return false
+        }
+
+        // identifier `[` → bundle decl with explicit outputs
+        if case .leftBracket = peek(offset: 1).token {
+            return true
+        }
+
+        // identifier `=` → inferred-width bundle decl
+        if case .equal = peek(offset: 1).token {
+            return true
+        }
+
+        // identifier `.` (identifier|number) `=` → shorthand bundle decl (name.strand = expr)
+        if case .dot = peek(offset: 1).token {
+            if case .identifier(_) = peek(offset: 2).token,
+               case .equal = peek(offset: 3).token {
+                return true
+            }
+            if case .number(_) = peek(offset: 2).token,
+               case .equal = peek(offset: 3).token {
+                return true
+            }
+        }
+
+        return false
     }
 }

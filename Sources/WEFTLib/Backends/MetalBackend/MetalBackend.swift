@@ -190,6 +190,12 @@ public class MetalBackend: Backend {
     /// Last command buffer — used to sync before CPU readback of scope textures
     private var lastCommandBuffer: MTLCommandBuffer?
 
+    /// Shader source cache — skip Metal compilation when shader hasn't changed
+    private var cachedShaderHash: Int = 0
+    private var cachedLibrary: MTLLibrary?
+    private var cachedPipelineState: MTLComputePipelineState?
+    private var cachedIntermediatePipelines: [MTLComputePipelineState] = []
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw BackendError.deviceNotAvailable("Metal device not available")
@@ -260,6 +266,8 @@ public class MetalBackend: Backend {
 
     /// Compile swatch to Metal pipeline with cache descriptors, cross-domain inputs, and scope bundles
     public func compile(swatch: Swatch, ir: IRProgram, cacheDescriptors: [CacheNodeDescriptor], crossDomainInputs: [String: [String]] = [:], scopedBundles: [String] = []) throws -> CompiledUnit {
+        let tCompile = CFAbsoluteTimeGetCurrent()
+
         let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors, crossDomainInputs: crossDomainInputs, scopedBundles: scopedBundles)
         let shaderSource = try codegen.generate()
         var usedInputs = codegen.usedInputs()
@@ -281,37 +289,67 @@ public class MetalBackend: Backend {
             usedInputs.insert("text")
         }
 
-        // Debug: print generated shader
-        print("Generated Metal shader:")
-        print(shaderSource)
+        let tCodegen = CFAbsoluteTimeGetCurrent()
 
-        // Compile shader
+        // Check shader cache — skip Metal compilation if shader source hasn't changed
+        let shaderHash = shaderSource.hashValue
+        let cacheHit = shaderHash == cachedShaderHash
+            && cachedLibrary != nil
+            && cachedPipelineState != nil
+
         let library: MTLLibrary
-        do {
-            library = try device.makeLibrary(source: shaderSource, options: nil)
-        } catch {
-            throw BackendError.compilationFailed("Metal compilation error: \(error.localizedDescription)")
-        }
-
-        guard let kernelFunction = library.makeFunction(name: "displayKernel") else {
-            throw BackendError.compilationFailed("Could not find displayKernel function")
-        }
-
         let pipelineState: MTLComputePipelineState
-        do {
-            pipelineState = try device.makeComputePipelineState(function: kernelFunction)
-        } catch {
-            throw BackendError.compilationFailed("Could not create pipeline state: \(error.localizedDescription)")
+        var intermediatePipelines: [MTLComputePipelineState]
+
+        if cacheHit {
+            library = cachedLibrary!
+            pipelineState = cachedPipelineState!
+            intermediatePipelines = cachedIntermediatePipelines
+            print("=== MetalBackend: shader cache HIT (skipping Metal compile) ===")
+        } else {
+            // Debug: print generated shader
+            print("Generated Metal shader:")
+            print(shaderSource)
+
+            // Compile shader
+            do {
+                library = try device.makeLibrary(source: shaderSource, options: nil)
+            } catch {
+                throw BackendError.compilationFailed("Metal compilation error: \(error.localizedDescription)")
+            }
+
+            guard let kernelFunction = library.makeFunction(name: "displayKernel") else {
+                throw BackendError.compilationFailed("Could not find displayKernel function")
+            }
+
+            do {
+                pipelineState = try device.makeComputePipelineState(function: kernelFunction)
+            } catch {
+                throw BackendError.compilationFailed("Could not create pipeline state: \(error.localizedDescription)")
+            }
+
+            // Build intermediate pipelines for heavy remap textures
+            intermediatePipelines = []
+            for i in 0..<codegen.intermediateTextureCount {
+                guard let fn = library.makeFunction(name: "intermediateKernel\(i)") else {
+                    throw BackendError.compilationFailed("Could not find intermediateKernel\(i)")
+                }
+                intermediatePipelines.append(try device.makeComputePipelineState(function: fn))
+            }
+
+            // Update cache
+            cachedShaderHash = shaderHash
+            cachedLibrary = library
+            cachedPipelineState = pipelineState
+            cachedIntermediatePipelines = intermediatePipelines
         }
 
-        // Build intermediate pipelines for heavy remap textures
-        var intermediatePipelines: [MTLComputePipelineState] = []
-        for i in 0..<codegen.intermediateTextureCount {
-            guard let fn = library.makeFunction(name: "intermediateKernel\(i)") else {
-                throw BackendError.compilationFailed("Could not find intermediateKernel\(i)")
-            }
-            intermediatePipelines.append(try device.makeComputePipelineState(function: fn))
-        }
+        let tEnd = CFAbsoluteTimeGetCurrent()
+
+        print("=== MetalBackend.compile Timing ===")
+        print("  codegen:        \(String(format: "%.1f", (tCodegen - tCompile) * 1000))ms")
+        print("  Metal compile:  \(String(format: "%.1f", (tEnd - tCodegen) * 1000))ms\(cacheHit ? " (cached)" : "")")
+        print("  TOTAL:          \(String(format: "%.1f", (tEnd - tCompile) * 1000))ms")
 
         return MetalCompiledUnit(
             swatchId: swatch.id,

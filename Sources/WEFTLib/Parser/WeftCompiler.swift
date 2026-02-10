@@ -65,6 +65,8 @@ public class WeftCompiler {
     ///   - path: Optional source file path for #include resolution (default: "<string>")
     public func compile(_ source: String, path: String = "<string>") throws -> IRProgram {
         do {
+            let t0 = CFAbsoluteTimeGetCurrent()
+
             // Update preprocessor search paths
             preprocessor.searchPaths = includePaths
 
@@ -80,6 +82,8 @@ public class WeftCompiler {
                 preprocessResult = try preprocessor.preprocess(source, path: path)
             }
 
+            let t1 = CFAbsoluteTimeGetCurrent()
+
             // Store source map for error reporting
             self.lastSourceMap = preprocessResult.sourceMap
 
@@ -87,17 +91,35 @@ public class WeftCompiler {
             let tokenizer = WeftTokenizer(source: preprocessResult.source)
             let tokens = try tokenizer.tokenize()
 
+            let t2 = CFAbsoluteTimeGetCurrent()
+
             // Parse
             let parser = WeftParser(tokens: tokens)
             let ast = try parser.parse()
+
+            let t3 = CFAbsoluteTimeGetCurrent()
 
             // Desugar tag expressions into synthetic bundles
             let desugar = WeftDesugar()
             let desugaredAST = desugar.desugar(ast)
 
+            let t4 = CFAbsoluteTimeGetCurrent()
+
             // Lower to IR
             let lowering = WeftLowering()
-            return try lowering.lower(desugaredAST)
+            let ir = try lowering.lower(desugaredAST)
+
+            let t5 = CFAbsoluteTimeGetCurrent()
+
+            print("=== WeftCompiler Timing ===")
+            print("  preprocess: \(String(format: "%.1f", (t1 - t0) * 1000))ms")
+            print("  tokenize:   \(String(format: "%.1f", (t2 - t1) * 1000))ms")
+            print("  parse:      \(String(format: "%.1f", (t3 - t2) * 1000))ms")
+            print("  desugar:    \(String(format: "%.1f", (t4 - t3) * 1000))ms")
+            print("  lower:      \(String(format: "%.1f", (t5 - t4) * 1000))ms")
+            print("  TOTAL:      \(String(format: "%.1f", (t5 - t0) * 1000))ms")
+
+            return ir
 
         } catch let error as PreprocessorError {
             throw WeftCompileError.preprocessorFailed(error)

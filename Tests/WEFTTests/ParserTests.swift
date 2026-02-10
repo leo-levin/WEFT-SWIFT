@@ -208,7 +208,10 @@ final class ParserTests: XCTestCase {
         }
 
         XCTAssertEqual(chain.patterns.count, 1)
-        XCTAssertEqual(chain.patterns[0].outputs.count, 3)
+        guard case .inline(let outputs) = chain.patterns[0].content else {
+            XCTFail("Expected inline pattern"); return
+        }
+        XCTAssertEqual(outputs.count, 3)
     }
 
     func testParseRangeExpr() throws {
@@ -227,7 +230,10 @@ final class ParserTests: XCTestCase {
         }
 
         // The pattern output should contain a binary op with a range
-        let output = chain.patterns[0].outputs[0]
+        guard case .inline(let patternOutputs) = chain.patterns[0].content else {
+            XCTFail("Expected inline pattern"); return
+        }
+        let output = patternOutputs[0]
         guard case .binaryOp(let op) = output.value else {
             XCTFail("Expected binary op in pattern")
             return
@@ -351,7 +357,10 @@ final class ParserTests: XCTestCase {
         }
 
         // First output should be .0 (bare strand access)
-        guard case .strandAccess(let access) = chain.patterns[0].outputs[0].value else {
+        guard case .inline(let bareOutputs) = chain.patterns[0].content else {
+            XCTFail("Expected inline pattern"); return
+        }
+        guard case .strandAccess(let access) = bareOutputs[0].value else {
             XCTFail("Expected strand access")
             return
         }
@@ -1088,6 +1097,480 @@ final class ParserTests: XCTestCase {
             XCTAssertNotNil(subs["me.x"])
         } else {
             XCTFail("Expected remap expression, got \(local.strands[0].expr)")
+        }
+    }
+
+    // MARK: - Full-Body Pattern Block Tests
+
+    func testParseFullBodyPattern() throws {
+        let source = """
+        display[r,g,b] = [1,2,3] -> {
+            lum[val] = (.0 + .1 + .2) / 3
+            return = [lum.val, lum.val, lum.val]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .bundleDecl(let decl) = program.statements[0] else {
+            XCTFail("Expected bundle declaration"); return
+        }
+
+        guard case .chainExpr(let chain) = decl.expr else {
+            XCTFail("Expected chain expression"); return
+        }
+
+        XCTAssertEqual(chain.patterns.count, 1)
+
+        guard case .fullBody(let body) = chain.patterns[0].content else {
+            XCTFail("Expected full-body pattern"); return
+        }
+
+        // Should have 2 statements: bundleDecl + returnList
+        XCTAssertEqual(body.count, 2)
+
+        guard case .bundleDecl(let lumDecl) = body[0] else {
+            XCTFail("Expected bundle decl for lum"); return
+        }
+        XCTAssertEqual(lumDecl.name, "lum")
+
+        guard case .returnList(let exprs) = body[1] else {
+            XCTFail("Expected returnList"); return
+        }
+        XCTAssertEqual(exprs.count, 3)
+    }
+
+    func testParseReturnListInSpindle() throws {
+        let source = """
+        spindle foo(a, b) {
+            return = [a + b, a - b]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .spindleDef(let def) = program.statements[0] else {
+            XCTFail("Expected spindle definition"); return
+        }
+
+        XCTAssertEqual(def.body.count, 1)
+        guard case .returnList(let exprs) = def.body[0] else {
+            XCTFail("Expected returnList"); return
+        }
+        XCTAssertEqual(exprs.count, 2)
+    }
+
+    func testParseMixedChain() throws {
+        // inline -> full-body -> inline
+        let source = """
+        a[r,g,b] = [1,2,3] -> {.1, .0, .2} -> {
+            avg[v] = (.0 + .1 + .2) / 3
+            return = [avg.v, avg.v, avg.v]
+        } -> {.0 * 2, .1 * 2, .2 * 2}
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        guard case .bundleDecl(let decl) = program.statements[0] else {
+            XCTFail("Expected bundle declaration"); return
+        }
+
+        guard case .chainExpr(let chain) = decl.expr else {
+            XCTFail("Expected chain expression"); return
+        }
+
+        XCTAssertEqual(chain.patterns.count, 3)
+
+        // First pattern: inline
+        guard case .inline(let p1) = chain.patterns[0].content else {
+            XCTFail("Expected inline pattern 1"); return
+        }
+        XCTAssertEqual(p1.count, 3)
+
+        // Second pattern: full-body
+        guard case .fullBody(let p2) = chain.patterns[1].content else {
+            XCTFail("Expected full-body pattern 2"); return
+        }
+        XCTAssertEqual(p2.count, 2) // bundleDecl + returnList
+
+        // Third pattern: inline
+        guard case .inline(let p3) = chain.patterns[2].content else {
+            XCTFail("Expected inline pattern 3"); return
+        }
+        XCTAssertEqual(p3.count, 3)
+    }
+
+    // MARK: - Full-Body Pattern Lowering Tests
+
+    func testLowerFullBodyPattern() throws {
+        let source = """
+        display[r,g,b] = [1, 2, 3] -> {
+            lum[val] = (.0 + .1 + .2) / 3
+            return = [lum.val, lum.val, lum.val]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // All three strands should produce the same expression (the average)
+        // They should be identical since they all reference lum.val
+        let r = display.strands[0].expr
+        let g = display.strands[1].expr
+        let b = display.strands[2].expr
+        XCTAssertEqual(r, g)
+        XCTAssertEqual(g, b)
+
+        // The expression should be (1 + 2 + 3) / 3 = division by 3
+        if case .binaryOp(let op, _, let right) = r {
+            XCTAssertEqual(op, "/")
+            if case .num(3) = right {} else {
+                XCTFail("Expected divisor 3, got \(right)")
+            }
+        } else {
+            XCTFail("Expected binary op (division), got \(r)")
+        }
+    }
+
+    func testLowerReturnListInSpindle() throws {
+        let source = """
+        spindle swap(a, b) {
+            return = [b, a]
+        }
+        result[x,y] = swap(1, 2)
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let spindle = ir.spindles["swap"]!
+        XCTAssertEqual(spindle.returns.count, 2)
+
+        // return.0 should be b, return.1 should be a
+        if case .param("b") = spindle.returns[0] {} else {
+            XCTFail("Expected param 'b' at index 0, got \(spindle.returns[0])")
+        }
+        if case .param("a") = spindle.returns[1] {} else {
+            XCTFail("Expected param 'a' at index 1, got \(spindle.returns[1])")
+        }
+    }
+
+    func testLowerFullBodyPatternWithRangeReturn() throws {
+        // return = [.. * factor.val] should expand like inline range
+        let source = """
+        factor[val] = 0.5
+        display[r,g,b] = [1, 2, 3] -> {
+            return = [.. * factor.val]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // Each strand should be input * factor.val
+        for strand in display.strands {
+            if case .binaryOp(let op, _, let right) = strand.expr {
+                XCTAssertEqual(op, "*")
+                if case .index(let bundle, _) = right {
+                    XCTAssertEqual(bundle, "factor")
+                } else {
+                    XCTFail("Expected index for factor.val, got \(right)")
+                }
+            } else {
+                XCTFail("Expected binary op, got \(strand.expr)")
+            }
+        }
+    }
+
+    func testLowerChainedFullBodyPatterns() throws {
+        // full-body then inline
+        let source = """
+        display[r,g,b] = [1, 2, 3] -> {
+            avg[v] = (.0 + .1 + .2) / 3
+            return = [avg.v, avg.v, avg.v]
+        } -> {.0 * 2, .1 * 2, .2 * 2}
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // Each strand should be (avg * 2) — the inline pattern doubles the full-body result
+        for strand in display.strands {
+            if case .binaryOp(let op, _, let right) = strand.expr {
+                XCTAssertEqual(op, "*")
+                if case .num(2) = right {} else {
+                    XCTFail("Expected multiplier 2, got \(right)")
+                }
+            } else {
+                XCTFail("Expected binary op, got \(strand.expr)")
+            }
+        }
+    }
+
+    func testLowerFullBodyPatternNoReturnError() throws {
+        let source = """
+        display[r,g,b] = [1, 2, 3] -> {
+            lum[val] = (.0 + .1 + .2) / 3
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        XCTAssertThrowsError(try lowering.lower(program)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("return"),
+                          "Expected error about missing return, got: \(error)")
+        }
+    }
+
+    func testLowerFullBodyPatternWithReturnAssign() throws {
+        // Use return.N = expr style in full-body pattern
+        let source = """
+        display[r,g,b] = [1, 2, 3] -> {
+            lum[val] = (.0 + .1 + .2) / 3
+            return.0 = lum.val
+            return.1 = lum.val
+            return.2 = lum.val
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // All three should be the same expression
+        XCTAssertEqual(display.strands[0].expr, display.strands[1].expr)
+        XCTAssertEqual(display.strands[1].expr, display.strands[2].expr)
+    }
+
+    func testLowerFullBodyPatternInferredWidthLocal() throws {
+        // Pattern-local with inferred width
+        let source = """
+        display[r,g,b] = [1, 2, 3] -> {
+            half = [.0 / 2, .1 / 2, .2 / 2]
+            return = [half.0, half.1, half.2]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // Each strand should be input / 2
+        for strand in display.strands {
+            if case .binaryOp(let op, _, let right) = strand.expr {
+                XCTAssertEqual(op, "/")
+                if case .num(2) = right {} else {
+                    XCTFail("Expected divisor 2, got \(right)")
+                }
+            } else {
+                XCTFail("Expected binary op, got \(strand.expr)")
+            }
+        }
+    }
+
+    // MARK: - Named Bare Strand Access Tests
+
+    func testLowerNamedBareStrandAccess() throws {
+        // Swap channels by name: img -> {.b, .g, .r}
+        let source = """
+        img[r,g,b] = [1, 2, 3]
+        display[r,g,b] = img -> {.b, .g, .r}
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // .b maps to index 2, .g to index 1, .r to index 0 — all referencing img bundle
+        if case .index(let bundle, let indexExpr) = display.strands[0].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(2) = indexExpr {} else {
+                XCTFail("Expected index 2 for .b, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .b, got \(display.strands[0].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[1].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(1) = indexExpr {} else {
+                XCTFail("Expected index 1 for .g, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .g, got \(display.strands[1].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[2].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(0) = indexExpr {} else {
+                XCTFail("Expected index 0 for .r, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .r, got \(display.strands[2].expr)")
+        }
+    }
+
+    func testLowerNamedBareStrandInFullBody() throws {
+        // Named access inside a full-body pattern block
+        let source = """
+        img[r,g,b] = [1, 2, 3]
+        display[r,g,b] = img -> {
+            return = [.g, .r, .b]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // .g = index 1, .r = index 0, .b = index 2 — all referencing img bundle
+        if case .index(let bundle, let indexExpr) = display.strands[0].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(1) = indexExpr {} else {
+                XCTFail("Expected index 1 for .g, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .g, got \(display.strands[0].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[1].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(0) = indexExpr {} else {
+                XCTFail("Expected index 0 for .r, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .r, got \(display.strands[1].expr)")
+        }
+        if case .index(let bundle, let indexExpr) = display.strands[2].expr {
+            XCTAssertEqual(bundle, "img")
+            if case .num(2) = indexExpr {} else {
+                XCTFail("Expected index 2 for .b, got \(indexExpr)")
+            }
+        } else {
+            XCTFail("Expected index expression for .b, got \(display.strands[2].expr)")
+        }
+    }
+
+    func testNamedStrandsSurviveNestedChainInFullBody() throws {
+        // A full-body pattern with a nested chain inside should not
+        // clobber the outer pattern's strand names
+        let source = """
+        colors[r,g,b] = [0.2, 0.5, 0.8]
+        nums[a,b] = [1, 2]
+        display[r,g,b] = colors -> {
+            scaled[a,b] = nums -> {.a * 2, .b * 2}
+            return = [.r + scaled.a, .g, .b + scaled.b]
+        }
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let display = ir.bundles["display"]!
+        XCTAssertEqual(display.strands.count, 3)
+
+        // Strand 0: .r + scaled.a — should be a binaryOp with colors.0 on the left
+        if case .binaryOp(let op, let left, _) = display.strands[0].expr {
+            XCTAssertEqual(op, "+")
+            if case .index(let bundle, let idx) = left {
+                XCTAssertEqual(bundle, "colors")
+                if case .num(0) = idx {} else {
+                    XCTFail("Expected index 0 for .r, got \(idx)")
+                }
+            } else {
+                XCTFail("Expected index into colors for .r, got \(left)")
+            }
+        } else {
+            XCTFail("Expected binaryOp for strand 0, got \(display.strands[0].expr)")
+        }
+
+        // Strand 1: .g — should be colors.1
+        if case .index(let bundle, let idx) = display.strands[1].expr {
+            XCTAssertEqual(bundle, "colors")
+            if case .num(1) = idx {} else {
+                XCTFail("Expected index 1 for .g, got \(idx)")
+            }
+        } else {
+            XCTFail("Expected index into colors for .g, got \(display.strands[1].expr)")
+        }
+    }
+
+    func testNamedBareStrandUnknownNameErrors() throws {
+        // .z on a bundle with no z strand should error
+        let source = """
+        img[r,g,b] = [1, 2, 3]
+        display[r,g,b] = img -> {.z, .r, .b}
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        XCTAssertThrowsError(try lowering.lower(program)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(".z"),
+                          "Expected error about unknown strand '.z', got: \(error)")
+        }
+    }
+
+    func testLowerReturnListInSpindleEndToEnd() throws {
+        // Full end-to-end: spindle with return = [...], called from a bundle
+        let source = """
+        spindle addSub(a, b) {
+            return = [a + b, a - b]
+        }
+        result[x,y] = addSub(10, 3)
+        """
+        let parser = try WeftParser(source: source)
+        let program = try parser.parse()
+
+        let lowering = WeftLowering()
+        let ir = try lowering.lower(program)
+
+        let result = ir.bundles["result"]!
+        XCTAssertEqual(result.strands.count, 2)
+
+        // result.x should be extract(addSub(10, 3), 0)
+        if case .extract(let call, let idx) = result.strands[0].expr {
+            XCTAssertEqual(idx, 0)
+            if case .call(let name, _) = call {
+                XCTAssertEqual(name, "addSub")
+            } else {
+                XCTFail("Expected call to addSub")
+            }
+        } else {
+            XCTFail("Expected extract, got \(result.strands[0].expr)")
         }
     }
 }

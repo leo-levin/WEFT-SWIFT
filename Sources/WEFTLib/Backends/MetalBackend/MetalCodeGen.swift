@@ -57,6 +57,11 @@ public class MetalCodeGen {
     private var expressionDepth: Int = 0
     private static let maxExpressionDepth = 512
 
+    /// When generating expressions inside a spindle function body, maps
+    /// "localName.strandIndex" and "localName.strandName" to Metal variable names.
+    /// nil when generating normal kernel expressions.
+    private var spindleLocalVars: [String: String]?
+
     /// Base texture index for intermediate textures (must be <= 127 for Metal)
     public static let intermediateTextureBaseIndex = 115
 
@@ -130,6 +135,159 @@ public class MetalCodeGen {
         expr.forEachChild { collectTextIds(from: $0, into: &textIds) }
     }
 
+    // MARK: - Spindle Function Generation
+
+    /// Standard visual coordinate names appended to spindle function signatures.
+    private static let coordNames = ["x", "y", "t", "w", "h"]
+
+    /// Return the coordinate param names for a spindle function, filtering out
+    /// any that collide with the spindle's own parameter names.
+    /// E.g. perlin3(x, y, z) -> ["t", "w", "h"] (x and y already covered by spindle params)
+    private func coordinateArgs(for spindle: IRSpindle) -> [String] {
+        let paramNames = Set(spindle.params.map { sanitizeName($0) })
+        return Self.coordNames.filter { !paramNames.contains($0) }
+    }
+
+    /// Collect all spindles referenced by .call/.extract nodes in this swatch's bundles,
+    /// including transitive spindle-to-spindle calls and bundle references.
+    /// Returns topologically sorted (callees before callers) so Metal sees declarations before uses.
+    private func collectUsedSpindles() -> [IRSpindle] {
+        var seenSpindles = Set<String>()
+        var seenBundles = Set<String>()
+        var ordered: [IRSpindle] = []
+
+        func collectFromExpr(_ expr: IRExpr) {
+            switch expr {
+            case .call(let spindle, let args):
+                args.forEach(collectFromExpr)
+                visitSpindle(spindle)
+            case .extract(let callExpr, _):
+                if case .call(let spindle, let args) = callExpr {
+                    args.forEach(collectFromExpr)
+                    visitSpindle(spindle)
+                } else {
+                    callExpr.forEachChild(collectFromExpr)
+                }
+            case .index(let bundle, let indexExpr):
+                collectFromExpr(indexExpr)
+                // Follow bundle references to find spindle calls in dependencies
+                if bundle != "me", !seenBundles.contains(bundle),
+                   swatch.bundles.contains(bundle),
+                   let targetBundle = program.bundles[bundle] {
+                    seenBundles.insert(bundle)
+                    for strand in targetBundle.strands {
+                        collectFromExpr(strand.expr)
+                    }
+                }
+            default:
+                expr.forEachChild(collectFromExpr)
+            }
+        }
+
+        func visitSpindle(_ name: String) {
+            guard !seenSpindles.contains(name),
+                  let spindle = program.spindles[name],
+                  IRTransformations.spindleCanBeFunction(spindle) else { return }
+            seenSpindles.insert(name)
+            // Visit callees first (topological order)
+            for local in spindle.locals {
+                for strand in local.strands {
+                    collectFromExpr(strand.expr)
+                }
+            }
+            for ret in spindle.returns {
+                collectFromExpr(ret)
+            }
+            ordered.append(spindle)
+        }
+
+        // Walk all bundle expressions in the swatch
+        for bundleName in swatch.bundles {
+            guard !seenBundles.contains(bundleName) else { continue }
+            seenBundles.insert(bundleName)
+            guard let bundle = program.bundles[bundleName] else { continue }
+            for strand in bundle.strands {
+                collectFromExpr(strand.expr)
+            }
+        }
+
+        return ordered
+    }
+
+    /// Generate a Metal function for a single pure spindle.
+    /// Single-return spindles return `float`, multi-return spindles return a struct.
+    private func generateSpindleFunction(_ spindle: IRSpindle) throws -> String {
+        let safeName = sanitizeName(spindle.name)
+        let isMultiReturn = spindle.returns.count > 1
+
+        var code = ""
+
+        // For multi-return spindles, emit result struct
+        if isMultiReturn {
+            code += "struct weft_\(safeName)_result {\n"
+            for i in 0..<spindle.returns.count {
+                code += "    float _\(i);\n"
+            }
+            code += "};\n\n"
+        }
+
+        // Function signature — only append coordinate params that don't collide
+        // with spindle params (e.g. perlin3(x,y,z) already has x and y)
+        let returnType = isMultiReturn ? "weft_\(safeName)_result" : "float"
+        var params: [String] = spindle.params.map { "float \(sanitizeName($0))" }
+        params += coordinateArgs(for: spindle).map { "float \($0)" }
+
+        code += "\(returnType) weft_\(safeName)(\(params.joined(separator: ", "))) {\n"
+
+        // Build local variable mapping incrementally.
+        // Strands are processed in order; each expression sees the mappings from
+        // prior strands. This handles sequential assignment (e.g. t0.v = max(0, d0.v)
+        // followed by t0.v = t0.v^4) — the second expression resolves t0.v to the
+        // first strand's variable, then we update the mapping to the new variable.
+        var localVars: [String: String] = [:]
+        spindleLocalVars = localVars
+
+        // Emit local variable assignments in order.
+        // Use a global counter for variable names because sequential assignments
+        // can produce multiple strands with the same name AND index (e.g. t0.v = max(0,d);
+        // t0.v = t0.v^4 — both have index 0).
+        var varCounter = 0
+        for local in spindle.locals {
+            for strand in local.strands {
+                // Generate expression FIRST using current mappings
+                let exprCode = try generateExpression(strand.expr)
+
+                let varName = "lv\(varCounter)"
+                varCounter += 1
+                code += "    float \(varName) = \(exprCode);\n"
+
+                // Update mappings AFTER generating — subsequent strands see this value
+                localVars["\(local.name).\(strand.index)"] = varName
+                localVars["\(local.name).\(strand.name)"] = varName
+                spindleLocalVars = localVars
+            }
+        }
+
+        // Emit return
+        if isMultiReturn {
+            var returnExprs: [String] = []
+            for ret in spindle.returns {
+                returnExprs.append(try generateExpression(ret))
+            }
+            code += "    return {\(returnExprs.joined(separator: ", "))};\n"
+        } else if let ret = spindle.returns.first {
+            let retCode = try generateExpression(ret)
+            code += "    return \(retCode);\n"
+        }
+
+        code += "}\n\n"
+
+        // Clear context
+        spindleLocalVars = nil
+
+        return code
+    }
+
     /// Generate complete Metal shader source
     public func generate() throws -> String {
         var code = """
@@ -148,6 +306,12 @@ public class MetalCodeGen {
         };
 
         """
+
+        // Generate Metal functions for pure spindles (no cache, no resources)
+        let usedSpindles = collectUsedSpindles()
+        for spindle in usedSpindles {
+            code += try generateSpindleFunction(spindle)
+        }
 
         // Get output bundle name from bindings
         let outputBundleName = MetalBackend.bindings.compactMap { binding -> String? in
@@ -612,6 +776,21 @@ public class MetalCodeGen {
                 throw BackendError.unsupportedExpression("Dynamic me index")
             }
 
+            // Spindle function body: resolve local bundle references to local variables
+            if let locals = spindleLocalVars {
+                let key: String
+                if case .param(let field) = indexExpr {
+                    key = "\(bundle).\(field)"
+                } else if case .num(let idx) = indexExpr {
+                    key = "\(bundle).\(Int(idx))"
+                } else {
+                    key = ""
+                }
+                if !key.isEmpty, let varName = locals[key] {
+                    return varName
+                }
+            }
+
             // CSE: if this bundle has pre-computed scope variables, return the variable name
             if let varNames = precomputedVars[bundle] {
                 let strandIdx: Int?
@@ -722,14 +901,24 @@ public class MetalCodeGen {
             return try generateUnaryOp(op: op, operand: operandCode)
 
         case .call(let spindle, let args):
-            // Inline spindle call - substitute args for params and return first value
             guard let spindleDef = program.spindles[spindle] else {
                 throw BackendError.unsupportedExpression("Unknown spindle: \(spindle)")
             }
             guard !spindleDef.returns.isEmpty else {
                 throw BackendError.unsupportedExpression("Spindle \(spindle) has no returns")
             }
-            // Build substitutions (params + locals) and inline the return expression
+            // Pure spindles: emit as Metal function call
+            if IRTransformations.spindleCanBeFunction(spindleDef) {
+                let argExprs = try args.map { try generateExpression($0) }
+                let allArgs = argExprs + coordinateArgs(for: spindleDef)
+                let call = "weft_\(sanitizeName(spindle))(\(allArgs.joined(separator: ", ")))"
+                // Multi-return spindle accessed via bare .call returns first field
+                if spindleDef.returns.count > 1 {
+                    return "\(call)._0"
+                }
+                return call
+            }
+            // Cache/resource spindles: inline as before
             let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
             var inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
             inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
@@ -739,7 +928,6 @@ public class MetalCodeGen {
             return try generateBuiltin(name: name, args: args)
 
         case .extract(let callExpr, let index):
-            // Extract specific return value from spindle call
             guard case .call(let spindle, let args) = callExpr else {
                 throw BackendError.unsupportedExpression("Extract requires a call expression")
             }
@@ -749,7 +937,18 @@ public class MetalCodeGen {
             guard index < spindleDef.returns.count else {
                 throw BackendError.unsupportedExpression("Extract index \(index) out of bounds for spindle \(spindle)")
             }
-            // Build substitutions (params + locals) and inline the return expression
+            // Pure spindles: emit as Metal function call
+            if IRTransformations.spindleCanBeFunction(spindleDef) {
+                let argExprs = try args.map { try generateExpression($0) }
+                let allArgs = argExprs + coordinateArgs(for: spindleDef)
+                let call = "weft_\(sanitizeName(spindle))(\(allArgs.joined(separator: ", ")))"
+                // Only use struct field access for multi-return spindles
+                if spindleDef.returns.count > 1 {
+                    return "\(call)._\(index)"
+                }
+                return call
+            }
+            // Cache/resource spindles: inline as before
             let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
             var inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
             inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
