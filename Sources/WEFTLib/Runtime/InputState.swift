@@ -19,6 +19,9 @@ public class InputState {
     /// Mouse button state (1.0 if pressed, 0.0 otherwise)
     public private(set) var mouseDown: Float = 0.0
 
+    /// Whether the mouse is currently over the canvas view (for probe activation)
+    public private(set) var mouseOverCanvas: Bool = false
+
     // MARK: - Keyboard State
 
     /// Key states indexed by virtual key code (0-255)
@@ -49,6 +52,13 @@ public class InputState {
         lock.lock()
         defer { lock.unlock() }
         mouseDown = isDown ? 1.0 : 0.0
+    }
+
+    /// Update whether the mouse is over the canvas view
+    public func updateMouseOverCanvas(_ over: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        mouseOverCanvas = over
     }
 
     // MARK: - Keyboard Updates
@@ -100,6 +110,7 @@ public class InputState {
         mouseX = 0.5
         mouseY = 0.5
         mouseDown = 0.0
+        mouseOverCanvas = false
         for i in 0..<256 {
             keyStates[i] = 0.0
         }

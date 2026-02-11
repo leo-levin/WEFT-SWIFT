@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showErrors = true
     @State private var showStats = true
     @State private var showDevMode = false
+    @State private var showSignalTint = true
     @State private var showLayout = false
     @State private var devModeTab: DevModeTab = .ir
     @AppStorage("preferredFPS") private var preferredFPS: Int = 60
@@ -106,6 +107,13 @@ struct ContentView: View {
                 }
                 .opacity(hasLayoutContent ? 1 : 0.4)
 
+                ToolbarIconButton("waveform.path", label: "Signal Tint", isActive: showSignalTint && viewModel.isRunning) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        showSignalTint.toggle()
+                    }
+                }
+                .opacity(viewModel.isRunning ? 1 : 0.4)
+
                 Divider()
                     .frame(height: 12)
 
@@ -182,7 +190,7 @@ struct ContentView: View {
 
     private var editorSection: some View {
         VStack(spacing: 0) {
-            CodeEditor(text: $viewModel.sourceCode, irProgram: viewModel.coordinator.program)
+            CodeEditor(text: $viewModel.sourceCode, irProgram: viewModel.coordinator.program, probeValues: showSignalTint ? viewModel.probeValues : nil)
                 .id(viewModel.editorID)
                 .onChange(of: viewModel.sourceCode) { _, _ in
                     viewModel.hasError = false
@@ -533,6 +541,10 @@ class WeftViewModel: ObservableObject {
     @Published var layoutOrder: [String] = []  // User-controlled drag order
     private var layoutTimer: Timer?
 
+    // Signal tinting state (probe values for editor decoration)
+    @Published var probeValues: [String: Float]?
+    private var probeTimer: Timer?
+
     // Dev mode state - increments on each compile to trigger view refresh
     @Published var compilationVersion = 0
 
@@ -660,6 +672,7 @@ class WeftViewModel: ObservableObject {
         isRunning = false
         statusText = "Stopped"
         stopLayoutTimer()
+        stopProbeTimer()
         RenderStats.shared.reset()
     }
 
@@ -712,6 +725,7 @@ class WeftViewModel: ObservableObject {
                         : "Running [\(timeStr)ms]"
                     self.compilationVersion += 1
                     self.startLayoutTimer()
+                    self.startProbeTimer()
 
                     print("=== Total compileAndRun: \(timeStr)ms ===")
 
@@ -822,6 +836,35 @@ class WeftViewModel: ObservableObject {
         layoutOrder = []
     }
 
+    // MARK: - Probe Timer (Signal Tinting)
+
+    private func startProbeTimer() {
+        probeTimer?.invalidate()
+        probeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 10.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateProbeValues()
+            }
+        }
+    }
+
+    private func stopProbeTimer() {
+        probeTimer?.invalidate()
+        probeTimer = nil
+        probeValues = nil
+    }
+
+    private func updateProbeValues() {
+        guard let raw = coordinator.readProbeValues() else {
+            if probeValues != nil { probeValues = nil }
+            return
+        }
+        // Quantize to 64 opacity levels (~1.5% steps) to avoid redundant redraws
+        let quantized = raw.mapValues { roundf($0 * 64) / 64 }
+        if quantized != probeValues {
+            probeValues = quantized
+        }
+    }
+
     func browseForMissingResource() {
         // Get the first missing resource to help determine file types
         let hasImageErrors = coordinator.getTextureLoadErrors()?.isEmpty == false
@@ -905,6 +948,7 @@ class WeftViewModel: ObservableObject {
 struct CodeEditor: NSViewRepresentable {
     @Binding var text: String
     var irProgram: IRProgram?
+    var probeValues: [String: Float]?
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = FocusableTextView()
@@ -968,6 +1012,8 @@ struct CodeEditor: NSViewRepresentable {
             // Apply syntax highlighting after text update
             context.coordinator.applyHighlighting(to: textView)
         }
+        // Apply or clear signal tinting
+        context.coordinator.applyTinting(to: textView, probeValues: probeValues)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -978,6 +1024,13 @@ struct CodeEditor: NSViewRepresentable {
         var parent: CodeEditor
         var isEditing = false
         private let highlighter = WeftSyntaxHighlighter()
+        private let tintMapper = SignalTintMapper()
+
+        /// Track last applied probe values to avoid redundant attribute updates
+        private var lastProbeValues: [String: Float]?
+
+        /// Amber tint color for signal values
+        private static let tintColor = NSColor(red: 180/255.0, green: 180/255.0, blue: 190/255.0, alpha: 1.0)
 
         init(_ parent: CodeEditor) {
             self.parent = parent
@@ -1003,7 +1056,44 @@ struct CodeEditor: NSViewRepresentable {
             let selectedRanges = textView.selectedRanges
             // Apply highlighting
             highlighter.highlight(textStorage)
+            // Rebuild tint map (piggybacks on highlight pass)
+            tintMapper.rebuild(from: textStorage.string)
             // Restore selection
+            textView.selectedRanges = selectedRanges
+        }
+
+        func applyTinting(to textView: NSTextView, probeValues: [String: Float]?) {
+            guard let textStorage = textView.textStorage else { return }
+
+            // Skip redundant updates
+            if lastProbeValues == nil && probeValues == nil { return }
+            if let last = lastProbeValues, let current = probeValues, last == current { return }
+            lastProbeValues = probeValues
+
+            let selectedRanges = textView.selectedRanges
+            textStorage.beginEditing()
+
+            // Clear all existing background tints
+            let fullRange = NSRange(location: 0, length: textStorage.length)
+            textStorage.removeAttribute(.backgroundColor, range: fullRange)
+
+            // Apply new tints if probe is active
+            if let values = probeValues {
+                for (strandName, ranges) in tintMapper.strandRanges {
+                    if let value = values[strandName] {
+                        let v = Double(abs(value))
+                        let opacity = v <= 1.0 ? sqrt(v) * 0.9 : 0.9 + 0.1 * (1.0 - 1.0 / v)
+                        guard opacity > 0.01 else { continue }
+                        let tintColor = Self.tintColor.withAlphaComponent(CGFloat(opacity) * 0.5)
+                        for range in ranges {
+                            guard range.location + range.length <= textStorage.length else { continue }
+                            textStorage.addAttribute(.backgroundColor, value: tintColor, range: range)
+                        }
+                    }
+                }
+            }
+
+            textStorage.endEditing()
             textView.selectedRanges = selectedRanges
         }
     }

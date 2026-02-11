@@ -43,6 +43,10 @@ public class Coordinator: CameraCaptureDelegate {
     // Per-bundle scope buffers for audio layout previews (waveform display)
     public private(set) var layoutScopeBuffers: [String: ScopeBuffer] = [:]
 
+    // Probe state for signal tinting
+    /// Latest probe values read from the GPU: "bundle.strand" -> value
+    public private(set) var latestProbeResult: [String: Float]?
+
     // Compiled units
     private var compiledUnits: [UUID: CompiledUnit] = [:]
 
@@ -528,6 +532,7 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Render visual output to drawable
     public func renderVisual(to drawable: CAMetalDrawable, time: Double) {
+        self.time = time
         guard let swatches = swatchGraph?.swatches else { return }
 
         // Update audio texture each frame
@@ -725,6 +730,27 @@ public class Coordinator: CameraCaptureDelegate {
         }
 
         return results
+    }
+
+    // MARK: - Probe Readback
+
+    /// Read probe values from the Metal backend's probe buffer.
+    /// Includes me.x, me.y, me.t coordinate values at the probe point.
+    /// Returns nil if mouse is not over canvas or no probe data is available.
+    public func readProbeValues() -> [String: Float]? {
+        guard InputState.shared.mouseOverCanvas else {
+            latestProbeResult = nil
+            return nil
+        }
+        // Start with probe buffer values (may be empty if no intermediate bundles)
+        var result = metalBackend?.readProbeValues() ?? [:]
+        // Add coordinate values at probe point — these are always available
+        let mouseState = InputState.shared.getMouseState()
+        result["me.x"] = mouseState.x
+        result["me.y"] = mouseState.y
+        result["me.t"] = Float(fmod(time, 4.0) / 4.0)
+        latestProbeResult = result
+        return result
     }
 
     // MARK: - Dev Mode Accessors

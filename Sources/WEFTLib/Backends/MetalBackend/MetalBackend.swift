@@ -28,7 +28,13 @@ public class MetalCompiledUnit: CompiledUnit {
     /// Bundle names corresponding to each scope texture
     public let scopedBundleNames: [String]
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:], intermediatePipelines: [MTLComputePipelineState] = [], intermediateCount: Int = 0, scopeTextureCount: Int = 0, scopedBundleNames: [String] = []) {
+    /// Probe buffer: maps "bundle.strand" to index in probe float buffer
+    public let probeSlotMap: [String: Int]
+
+    /// Total number of probe float slots
+    public let probeSlotCount: Int
+
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:], intermediatePipelines: [MTLComputePipelineState] = [], intermediateCount: Int = 0, scopeTextureCount: Int = 0, scopedBundleNames: [String] = [], probeSlotMap: [String: Int] = [:], probeSlotCount: Int = 0) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
@@ -41,6 +47,8 @@ public class MetalCompiledUnit: CompiledUnit {
         self.intermediateCount = intermediateCount
         self.scopeTextureCount = scopeTextureCount
         self.scopedBundleNames = scopedBundleNames
+        self.probeSlotMap = probeSlotMap
+        self.probeSlotCount = probeSlotCount
     }
 }
 
@@ -53,7 +61,8 @@ public struct MetalUniforms {
     var mouseX: Float
     var mouseY: Float
     var mouseDown: Float
-    var _padding: Float = 0  // Padding for alignment
+    var probeX: Float = 0
+    var probeY: Float = 0
 }
 
 // MARK: - Metal Backend
@@ -186,6 +195,15 @@ public class MetalBackend: Backend {
 
     /// Scope textures for layout preview (rgba8Unorm, shared storage for CPU readback)
     private var scopeTextures: [MTLTexture] = []
+
+    /// Probe buffer for signal tinting (storageModeShared for CPU readback)
+    private var probeBuffer: MTLBuffer?
+
+    /// Current probe slot map from compiled unit
+    private var probeSlotMap: [String: Int] = [:]
+
+    /// Current probe slot count
+    private var probeSlotCount: Int = 0
 
     /// Last command buffer — used to sync before CPU readback of scope textures
     private var lastCommandBuffer: MTLCommandBuffer?
@@ -363,7 +381,9 @@ public class MetalBackend: Backend {
             intermediatePipelines: intermediatePipelines,
             intermediateCount: codegen.intermediateTextureCount,
             scopeTextureCount: codegen.scopeTextureCount,
-            scopedBundleNames: codegen.scopedBundleNames
+            scopedBundleNames: codegen.scopedBundleNames,
+            probeSlotMap: codegen.probeSlotMap,
+            probeSlotCount: codegen.probeSlotCount
         )
     }
 
@@ -490,16 +510,33 @@ public class MetalBackend: Backend {
         // Get current input state
         let mouseState = InputState.shared.getMouseState()
 
-        // Update uniforms including input state
+        // Use mouse position as probe coordinate when mouse is over the canvas
+        let probeActive = InputState.shared.mouseOverCanvas
+        let probeX: Float = probeActive ? mouseState.x : -1.0
+        let probeY: Float = probeActive ? mouseState.y : -1.0
+
+        // Update uniforms including input state and probe coordinates
         var uniforms = MetalUniforms(
             time: Float(time),
             width: Float(texture.width),
             height: Float(texture.height),
             mouseX: mouseState.x,
             mouseY: mouseState.y,
-            mouseDown: mouseState.down
+            mouseDown: mouseState.down,
+            probeX: probeX,
+            probeY: probeY
         )
         uniformBuffer?.contents().copyMemory(from: &uniforms, byteCount: MemoryLayout<MetalUniforms>.stride)
+
+        // Ensure probe buffer exists with correct size
+        if metalUnit.probeSlotCount > 0 {
+            let neededSize = metalUnit.probeSlotCount * MemoryLayout<Float>.stride
+            if probeBuffer == nil || probeBuffer!.length < neededSize {
+                probeBuffer = device.makeBuffer(length: neededSize, options: .storageModeShared)
+            }
+            probeSlotMap = metalUnit.probeSlotMap
+            probeSlotCount = metalUnit.probeSlotCount
+        }
 
         // Update key state buffer
         if let keyBuffer = keyStateBuffer {
@@ -661,6 +698,11 @@ public class MetalBackend: Backend {
                 encoder.setBuffer(buf, offset: 0, index: 30)
             }
         }
+
+        // Bind probe buffer if needed
+        if metalUnit.probeSlotCount > 0, let buf = probeBuffer {
+            encoder.setBuffer(buf, offset: 0, index: MetalCodeGen.probeBufferIndex)
+        }
     }
 
     // MARK: - Intermediate Texture Management
@@ -725,5 +767,19 @@ public class MetalBackend: Backend {
     /// Get current scope textures (for CPU readback by Coordinator)
     public func getScopeTextures() -> [MTLTexture] {
         return scopeTextures
+    }
+
+    // MARK: - Probe Buffer Readback
+
+    /// Read probe values from the shared probe buffer.
+    /// Returns strand values as [String: Float] using the probeSlotMap, or nil if no probe data.
+    public func readProbeValues() -> [String: Float]? {
+        guard probeSlotCount > 0, let buffer = probeBuffer else { return nil }
+        let ptr = buffer.contents().assumingMemoryBound(to: Float.self)
+        var result: [String: Float] = [:]
+        for (name, slot) in probeSlotMap {
+            result[name] = ptr[slot]
+        }
+        return result
     }
 }

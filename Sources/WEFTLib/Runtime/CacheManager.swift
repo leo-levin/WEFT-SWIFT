@@ -46,8 +46,9 @@ public struct CacheNodeDescriptor {
 
     // MARK: - Shader Buffer Index Calculation
 
-    /// Base buffer index for cache buffers in shader (after uniforms at index 0)
-    public static let shaderBufferStartIndex: Int = 1
+    /// Base buffer index for cache buffers in shader
+    /// (0 = uniforms, 1 = keyStates, 2 = probeBuffer, 3+ = cache buffers)
+    public static let shaderBufferStartIndex: Int = 3
 
     /// Calculate shader buffer index for history buffer given cache array position
     public static func shaderHistoryBufferIndex(cachePosition: Int) -> Int {

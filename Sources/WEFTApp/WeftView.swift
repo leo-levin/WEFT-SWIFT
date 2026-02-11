@@ -173,11 +173,13 @@ class InputAwareMTKView: MTKView {
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         updateMousePosition(with: event)
+        InputState.shared.updateMouseOverCanvas(true)
     }
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         // Don't update position when exiting - keep last known position
+        InputState.shared.updateMouseOverCanvas(false)
     }
 
     // MARK: - Keyboard Events

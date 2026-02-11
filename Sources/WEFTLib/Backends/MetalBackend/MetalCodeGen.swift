@@ -50,6 +50,12 @@ public class MetalCodeGen {
     private var intermediateTextures: [(id: String, baseExpr: IRExpr)] = []
     private var currentlyGeneratingIntermediateIndex: Int? = nil
 
+    /// Probe buffer: maps "bundle.strand" to index in probe float buffer
+    public private(set) var probeSlotMap: [String: Int] = [:]
+
+    /// Total number of probe float slots
+    public private(set) var probeSlotCount: Int = 0
+
     /// Tracks bundles currently being inlined to detect circular references
     private var inliningBundles: Set<String> = []
 
@@ -302,10 +308,14 @@ public class MetalCodeGen {
             float mouseX;
             float mouseY;
             float mouseDown;
-            float _padding;
+            float probeX;
+            float probeY;
         };
 
         """
+
+        // Build probe slot map before generating shader
+        buildProbeSlotMap()
 
         // Generate Metal functions for pure spindles (no cache, no resources)
         let usedSpindles = collectUsedSpindles()
@@ -640,6 +650,11 @@ public class MetalCodeGen {
             extraParams += "\n    device float* crossDomainData [[buffer(30)]],"
         }
 
+        // Add probe buffer parameter
+        if probeSlotCount > 0 {
+            extraParams += "\n    device float* probeBuffer [[buffer(\(MetalCodeGen.probeBufferIndex))]],"
+        }
+
         // Generate cache helper code if needed
         var cacheHelpers = ""
         if !cacheDescriptors.isEmpty {
@@ -716,6 +731,9 @@ public class MetalCodeGen {
             scopePreamble += "            scopeTex\(scopeIdx).write(float4(\(components.joined(separator: ", "))), gid);\n"
         }
 
+        // Generate probe block (capture strand values at probe pixel)
+        let probeBlock = try generateProbeBlock()
+
         // NOW generate color expressions (after scope preamble populates precomputedVars for CSE)
         var colorExprs: [String] = []
         for strand in displayBundle.strands.sorted(by: { $0.index < $1.index }) {
@@ -739,7 +757,7 @@ public class MetalCodeGen {
             float t = uniforms.time;
             float w = uniforms.width;
             float h = uniforms.height;
-            \(textHelpers)\(cacheHelpers)\(scopePreamble)
+            \(textHelpers)\(cacheHelpers)\(scopePreamble)\(probeBlock)
             float r = \(colorExprs[0]);
             float g = \(colorExprs[1]);
             float b = \(colorExprs.count > 2 ? colorExprs[2] : "0.0");
@@ -1254,6 +1272,105 @@ public class MetalCodeGen {
             return "\(Int(value)).0"
         }
         return String(format: "%.6f", value)
+    }
+
+    // MARK: - Probe Buffer Support
+
+    /// Buffer index for probe data
+    public static let probeBufferIndex = 2
+
+    /// Build probe slot map from spatially-varying strands in the swatch (excluding output bundles).
+    /// Skips bundles that don't depend on me.x or me.y (directly or transitively),
+    /// since those are constant across the canvas and tinting them adds noise.
+    private func buildProbeSlotMap() {
+        // Get output bundle names to skip
+        let outputBundleNames = Set(MetalBackend.bindings.compactMap { binding -> String? in
+            if case .output(let output) = binding { return output.bundleName }
+            return nil
+        })
+
+        let spatial = spatiallyVaryingBundles()
+
+        var slot = 0
+        // Walk in program order so slots follow topological ordering
+        for entry in program.order {
+            let bundleName = entry.bundle
+            guard swatch.bundles.contains(bundleName),
+                  !outputBundleNames.contains(bundleName),
+                  spatial.contains(bundleName),
+                  let bundle = program.bundles[bundleName] else { continue }
+            for strand in bundle.strands.sorted(by: { $0.index < $1.index }) {
+                probeSlotMap["\(bundleName).\(strand.name)"] = slot
+                slot += 1
+            }
+        }
+        probeSlotCount = slot
+    }
+
+    /// Determine which bundles are spatially varying (depend on me.x or me.y, transitively).
+    private func spatiallyVaryingBundles() -> Set<String> {
+        let spatialCoords: Set<String> = ["me.x", "me.y"]
+        var varying = Set<String>()
+        var changed = true
+
+        while changed {
+            changed = false
+            for bundleName in swatch.bundles {
+                guard !varying.contains(bundleName),
+                      let bundle = program.bundles[bundleName] else { continue }
+                for strand in bundle.strands {
+                    let vars = strand.expr.freeVars()
+                    if !vars.isDisjoint(with: spatialCoords) {
+                        varying.insert(bundleName)
+                        changed = true
+                        break
+                    }
+                    for v in vars {
+                        let refBundle = String(v.split(separator: ".").first ?? Substring(v))
+                        if varying.contains(refBundle) {
+                            varying.insert(bundleName)
+                            changed = true
+                            break
+                        }
+                    }
+                    if varying.contains(bundleName) { break }
+                }
+            }
+        }
+
+        return varying
+    }
+
+    /// Generate the probe block: conditional writes to probeBuffer at the probe pixel.
+    /// Must be called after scope preamble so precomputedVars are available for CSE.
+    private func generateProbeBlock() throws -> String {
+        guard probeSlotCount > 0 else { return "" }
+
+        var code = "\n            // Probe: capture strand values at probe pixel\n"
+        code += "            uint2 probeGid = uint2(uint(uniforms.probeX * uniforms.width), uint(uniforms.probeY * uniforms.height));\n"
+        code += "            if (gid.x == probeGid.x && gid.y == probeGid.y) {\n"
+
+        // Get output bundle names to skip
+        let outputBundleNames = Set(MetalBackend.bindings.compactMap { binding -> String? in
+            if case .output(let output) = binding { return output.bundleName }
+            return nil
+        })
+
+        for entry in program.order {
+            let bundleName = entry.bundle
+            guard swatch.bundles.contains(bundleName),
+                  !outputBundleNames.contains(bundleName),
+                  let bundle = program.bundles[bundleName] else { continue }
+            for strand in bundle.strands.sorted(by: { $0.index < $1.index }) {
+                let key = "\(bundleName).\(strand.name)"
+                guard let slot = probeSlotMap[key] else { continue }
+                let exprCode = try generateExpression(strand.expr)
+                code += "                probeBuffer[\(slot)] = \(exprCode);\n"
+            }
+        }
+
+        code += "            }\n"
+        return code
     }
 
     /// Sanitize a bundle name for use as a Metal variable name
