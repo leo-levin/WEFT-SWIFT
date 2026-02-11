@@ -207,4 +207,43 @@ extension WeftCompiler {
         }
         return sourceMap.formatError(processedLine: processedLine, message: message)
     }
+
+    /// Extract the original (pre-preprocessed) source location from a compile error.
+    /// Returns `(file, line, column)` for tokenizer/parser errors whose source map entry
+    /// points to user code (not `<stdlib>`). Returns nil for lowering, backend, preprocessor
+    /// errors, or when the error originated in stdlib.
+    public func mappedLocation(for error: WeftCompileError) -> (file: String, line: Int, column: Int)? {
+        let loc: SourceLocation?
+
+        switch error {
+        case .tokenizationFailed(let e):
+            switch e {
+            case .unexpectedCharacter(_, let l): loc = l
+            case .unterminatedString(let l):     loc = l
+            case .invalidNumber(_, let l):       loc = l
+            }
+        case .parseFailed(let e):
+            switch e {
+            case .unexpectedToken(_, _, let l):  loc = l
+            case .invalidSyntax(_, let l):       loc = l
+            case .unexpectedEndOfFile:           loc = nil
+            }
+        case .preprocessorFailed, .loweringFailed, .internalError:
+            loc = nil
+        }
+
+        guard let loc else { return nil }
+
+        // Map through source map to get original file:line
+        guard let sourceMap = lastSourceMap,
+              let entry = sourceMap.originalLocation(forProcessedLine: loc.line) else {
+            // No source map — return the raw location (single-file, no includes)
+            return (file: "<string>", line: loc.line, column: loc.column)
+        }
+
+        // Filter out stdlib errors — those aren't actionable for the user
+        if entry.file == "<stdlib>" { return nil }
+
+        return (file: entry.file, line: entry.line, column: loc.column)
+    }
 }

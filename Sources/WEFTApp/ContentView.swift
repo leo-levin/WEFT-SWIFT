@@ -190,10 +190,12 @@ struct ContentView: View {
 
     private var editorSection: some View {
         VStack(spacing: 0) {
-            CodeEditor(text: $viewModel.sourceCode, irProgram: viewModel.coordinator.program, probeValues: showSignalTint ? viewModel.probeValues : nil)
+            CodeEditor(text: $viewModel.sourceCode, irProgram: viewModel.coordinator.program, probeValues: showSignalTint ? viewModel.probeValues : nil, errorLine: viewModel.errorLine, errorColumn: viewModel.errorColumn, errorMessage: viewModel.hasError ? viewModel.compilationError.message : nil)
                 .id(viewModel.editorID)
                 .onChange(of: viewModel.sourceCode) { _, _ in
                     viewModel.hasError = false
+                    viewModel.errorLine = nil
+                    viewModel.errorColumn = nil
                 }
 
             // Resource warning panel
@@ -203,8 +205,8 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            // Error panel
-            if viewModel.hasError && showErrors {
+            // Error panel (only for non-inline errors — inline errors show as editor highlight)
+            if viewModel.hasError && showErrors && viewModel.errorLine == nil {
                 SubtleDivider(.horizontal)
                 errorPanel
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -526,12 +528,14 @@ class WeftViewModel: ObservableObject {
     }
     @Published var statusText = "Ready (Swift)"
     @Published var errorMessage = ""
-    @Published var compilationError = CompilationError(message: "", location: nil, codeContext: [])
+    @Published var compilationError = CompilationError(message: "", location: nil, codeContext: [], kind: .panelError)
     @Published var hasVisual = false
     @Published var hasAudio = false
     @Published var hasScope = false
     @Published var isAudioPlaying = false
     @Published var hasError = false
+    @Published var errorLine: Int? = nil
+    @Published var errorColumn: Int? = nil
     @Published var isRunning = false
     @Published var resourceWarning: String? = nil
 
@@ -670,6 +674,8 @@ class WeftViewModel: ObservableObject {
         hasAudio = false
         hasScope = false
         isRunning = false
+        errorLine = nil
+        errorColumn = nil
         statusText = "Stopped"
         stopLayoutTimer()
         stopProbeTimer()
@@ -681,6 +687,8 @@ class WeftViewModel: ObservableObject {
 
         errorMessage = ""
         hasError = false
+        errorLine = nil
+        errorColumn = nil
         resourceWarning = nil
         statusText = "Compiling..."
         RenderStats.shared.reset()
@@ -741,11 +749,19 @@ class WeftViewModel: ObservableObject {
 
             } catch let error as WeftCompileError {
                 guard !Task.isCancelled else { return }
+                let mapped = compiler.mappedLocation(for: error)
                 await MainActor.run {
                     self.hasError = true
                     self.isRunning = false
                     self.errorMessage = error.errorDescription ?? "Unknown compile error"
-                    self.compilationError = CompilationError.parse(from: self.errorMessage, source: source)
+                    self.compilationError = CompilationError.parse(from: self.errorMessage, source: source, mappedLocation: mapped)
+                    if case .inlineError(let line, let col) = self.compilationError.kind {
+                        self.errorLine = line
+                        self.errorColumn = col
+                    } else {
+                        self.errorLine = nil
+                        self.errorColumn = nil
+                    }
                     self.statusText = "Error"
                 }
             } catch {
@@ -753,6 +769,8 @@ class WeftViewModel: ObservableObject {
                 await MainActor.run {
                     self.hasError = true
                     self.isRunning = false
+                    self.errorLine = nil
+                    self.errorColumn = nil
                     self.errorMessage = error.localizedDescription
                     self.compilationError = CompilationError.parse(from: self.errorMessage, source: source)
                     self.statusText = "Error"
@@ -949,6 +967,9 @@ struct CodeEditor: NSViewRepresentable {
     @Binding var text: String
     var irProgram: IRProgram?
     var probeValues: [String: Float]?
+    var errorLine: Int?
+    var errorColumn: Int?
+    var errorMessage: String?
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = FocusableTextView()
@@ -1010,6 +1031,9 @@ struct CodeEditor: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? FocusableTextView else { return }
         textView.irProgram = irProgram
+        textView.errorLine = errorLine
+        textView.errorColumn = errorColumn
+        textView.errorMessage = errorMessage
         if textView.string != text && !context.coordinator.isEditing {
             let selectedRanges = textView.selectedRanges
             textView.string = text
@@ -1019,6 +1043,8 @@ struct CodeEditor: NSViewRepresentable {
         }
         // Apply or clear signal tinting
         context.coordinator.applyTinting(to: textView, probeValues: probeValues)
+        // Apply or clear error line highlight
+        context.coordinator.applyErrorHighlight(to: textView, errorLine: errorLine, errorColumn: errorColumn)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1067,6 +1093,51 @@ struct CodeEditor: NSViewRepresentable {
             textView.selectedRanges = selectedRanges
         }
 
+        /// Track last applied error state to avoid redundant attribute updates
+        private var lastErrorLine: Int?
+        private var lastErrorColumn: Int?
+
+        func applyErrorHighlight(to textView: NSTextView, errorLine: Int?, errorColumn: Int? = nil) {
+            // Skip redundant updates
+            if lastErrorLine == errorLine && lastErrorColumn == errorColumn { return }
+            lastErrorLine = errorLine
+            lastErrorColumn = errorColumn
+
+            guard let textStorage = textView.textStorage else { return }
+            let selectedRanges = textView.selectedRanges
+            textStorage.beginEditing()
+
+            let fullRange = NSRange(location: 0, length: textStorage.length)
+            textStorage.removeAttribute(.errorLineHighlight, range: fullRange)
+
+            if let errorLine, errorLine > 0 {
+                let nsString = textStorage.string as NSString
+                let lines = nsString.components(separatedBy: "\n")
+                let lineIndex = errorLine - 1
+                if lineIndex < lines.count {
+                    var lineStart = 0
+                    for i in 0..<lineIndex {
+                        lineStart += lines[i].count + 1
+                    }
+                    let lineContent = lines[lineIndex]
+                    let col = max(0, (errorColumn ?? 1) - 1) // 0-based
+
+                    // Highlight a few characters around the error column
+                    let pad = 3
+                    let startIdx = max(0, min(col, lineContent.count) - pad)
+                    let endIdx = min(lineContent.count, col + pad)
+
+                    let range = NSRange(location: lineStart + startIdx, length: endIdx - startIdx)
+                    if range.location + range.length <= textStorage.length {
+                        textStorage.addAttribute(.errorLineHighlight, value: true, range: range)
+                    }
+                }
+            }
+
+            textStorage.endEditing()
+            textView.selectedRanges = selectedRanges
+        }
+
         func applyTinting(to textView: NSTextView, probeValues: [String: Float]?) {
             guard let textStorage = textView.textStorage else { return }
 
@@ -1111,16 +1182,43 @@ struct CodeEditor: NSViewRepresentable {
 extension NSAttributedString.Key {
     static let signalFillLevel = NSAttributedString.Key("signalFillLevel")
     static let signalFillColor = NSAttributedString.Key("signalFillColor")
+    static let errorLineHighlight = NSAttributedString.Key("errorLineHighlight")
 }
 
-/// Custom layout manager that draws bottom-up filled rects for signal tinting.
+/// Custom layout manager that draws bottom-up filled rects for signal tinting
+/// and full-width red background for error lines.
 class SignalFillLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
 
-        guard let textStorage = textStorage else { return }
+        guard let textStorage = textStorage, let textContainer = textContainers.first else { return }
         let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
 
+        // Draw error highlights (red background + underline on the error token)
+        textStorage.enumerateAttribute(.errorLineHighlight, in: charRange) { value, range, _ in
+            guard value != nil else { return }
+
+            let glyphRange = self.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            self.enumerateLineFragments(forGlyphRange: glyphRange) { _, _, container, lineGlyphRange, _ in
+                let intersect = NSIntersectionRange(glyphRange, lineGlyphRange)
+                guard intersect.length > 0 else { return }
+
+                var rect = self.boundingRect(forGlyphRange: intersect, in: container)
+                rect.origin.x += origin.x
+                rect.origin.y += origin.y
+
+                // Subtle red background behind the token
+                NSColor.red.withAlphaComponent(0.2).setFill()
+                rect.fill()
+
+                // Red underline
+                let underlineRect = NSRect(x: rect.origin.x, y: rect.maxY - 1.5, width: rect.width, height: 1.5)
+                NSColor.red.withAlphaComponent(0.8).setFill()
+                underlineRect.fill()
+            }
+        }
+
+        // Draw signal fill levels
         textStorage.enumerateAttribute(.signalFillLevel, in: charRange) { value, range, _ in
             guard let fillLevel = value as? CGFloat, fillLevel > 0.01 else { return }
             let color = textStorage.attribute(.signalFillColor, at: range.location, effectiveRange: nil) as? NSColor ?? NSColor.gray
@@ -1157,18 +1255,31 @@ class FocusableTextView: NSTextView {
     // IR data for strand info popovers
     var irProgram: IRProgram?
 
+    // Error line state (set from CodeEditor.updateNSView)
+    var errorLine: Int?
+    var errorColumn: Int?
+    var errorMessage: String?
+
     // Documentation popover state
     private var docPopover: NSPopover?
+    private var errorPopover: NSPopover?
 
     override func becomeFirstResponder() -> Bool {
         super.becomeFirstResponder()
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Check for Option+Click to show documentation or strand info
-        if event.modifierFlags.contains(.option) {
-            let point = convert(event.locationInWindow, from: nil)
+        let point = convert(event.locationInWindow, from: nil)
 
+        // Check for Option+Click to show documentation, strand info, or error popover
+        if event.modifierFlags.contains(.option) {
+            // Error line popover (Option+Click on highlighted error line)
+            if let errorLine, let errorMessage, !errorMessage.isEmpty,
+               let clickedLine = lineNumberAtPoint(point),
+               clickedLine == errorLine {
+                showErrorPopover(message: errorMessage, line: errorLine, column: errorColumn, at: point)
+                return
+            }
             // Try spindle/builtin documentation first
             if let word = wordAtPoint(point), !word.isEmpty,
                SpindleDocManager.shared.documentation(for: word) != nil {
@@ -1186,17 +1297,20 @@ class FocusableTextView: NSTextView {
         super.mouseDown(with: event)
         window?.makeFirstResponder(self)
         dismissPopover()
+        dismissErrorPopover()
     }
 
     override func scrollWheel(with event: NSEvent) {
         super.scrollWheel(with: event)
         dismissPopover()
+        dismissErrorPopover()
     }
 
     override func keyDown(with event: NSEvent) {
-        // Escape dismisses popover
+        // Escape dismisses popovers
         if event.keyCode == 53 {  // Escape key
             dismissPopover()
+            dismissErrorPopover()
         }
         super.keyDown(with: event)
     }
@@ -1374,6 +1488,60 @@ class FocusableTextView: NSTextView {
     private func dismissPopover() {
         docPopover?.close()
         docPopover = nil
+    }
+
+    // MARK: - Error Popover
+
+    /// Returns the 1-based line number at the given point in the text view.
+    private func lineNumberAtPoint(_ point: NSPoint) -> Int? {
+        guard let layoutManager = layoutManager,
+              let textContainer = textContainer else { return nil }
+
+        let textContainerOffset = textContainerOrigin
+        let locationInTextContainer = NSPoint(
+            x: point.x - textContainerOffset.x,
+            y: point.y - textContainerOffset.y
+        )
+
+        var fraction: CGFloat = 0
+        let charIndex = layoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: &fraction
+        )
+
+        guard charIndex < string.count else { return nil }
+
+        // Count newlines before this index
+        let prefix = (string as NSString).substring(to: charIndex)
+        let lineNumber = prefix.components(separatedBy: "\n").count
+        return lineNumber
+    }
+
+    private func showErrorPopover(message: String, line: Int? = nil, column: Int? = nil, at point: NSPoint) {
+        dismissErrorPopover()
+
+        let contentView = ErrorPopoverView(message: message, line: line, column: column)
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 400, height: 60)
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = NSRect(origin: .zero, size: fittingSize)
+
+        let popover = NSPopover()
+        popover.contentViewController = NSViewController()
+        popover.contentViewController?.view = hostingView
+        popover.behavior = .transient
+        popover.animates = true
+        popover.appearance = NSAppearance(named: .darkAqua)
+
+        let cursorRect = NSRect(x: point.x, y: point.y, width: 1, height: 1)
+        popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
+        errorPopover = popover
+    }
+
+    private func dismissErrorPopover() {
+        errorPopover?.close()
+        errorPopover = nil
     }
 }
 

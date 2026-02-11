@@ -403,6 +403,13 @@ struct CompilationErrorView: View {
 // MARK: - Compilation Error Model
 
 struct CompilationError {
+    enum ErrorKind {
+        /// Error has a user-visible source line — show inline in editor
+        case inlineError(line: Int, column: Int)
+        /// No mappable source location — show in bottom panel
+        case panelError
+    }
+
     struct Location {
         let line: Int
         let column: Int
@@ -417,43 +424,58 @@ struct CompilationError {
     let message: String
     let location: Location?
     let codeContext: [CodeLine]
+    let kind: ErrorKind
 
-    /// Parse an Ohm.js error message into structured form
-    static func parse(from errorString: String, source: String) -> CompilationError {
-        // Ohm errors look like:
-        // "Line 2, col 42: expected..."
-        // or just raw error text
-
+    /// Parse an error message into structured form.
+    /// - Parameters:
+    ///   - errorString: The full error description
+    ///   - source: The user's original (un-preprocessed) source code
+    ///   - mappedLocation: Optional source-mapped location from `WeftCompiler.mappedLocation(for:)`
+    static func parse(from errorString: String, source: String, mappedLocation: (file: String, line: Int, column: Int)? = nil) -> CompilationError {
         let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
-        // Try to extract line/col from error
         var location: Location? = nil
+        var kind: ErrorKind = .panelError
         var message = errorString
 
-        if let lineColPattern = try? NSRegularExpression(pattern: "[Ll]ine\\s+(\\d+),?\\s*[Cc]ol(?:umn)?\\s+(\\d+)"),
-           let match = lineColPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)) {
-            if let lineRange = Range(match.range(at: 1), in: errorString),
-               let colRange = Range(match.range(at: 2), in: errorString),
-               let line = Int(errorString[lineRange]),
-               let col = Int(errorString[colRange]) {
-                location = Location(line: line, column: col)
-            }
-        }
+        // If we have a source-mapped location, use it directly
+        if let mapped = mappedLocation {
+            location = Location(line: mapped.line, column: mapped.column)
+            kind = .inlineError(line: mapped.line, column: mapped.column)
 
-        // Also check for "at position X" style
-        if location == nil,
-           let posPattern = try? NSRegularExpression(pattern: "at position (\\d+)"),
-           let match = posPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)),
-           let posRange = Range(match.range(at: 1), in: errorString),
-           let pos = Int(errorString[posRange]) {
-            // Convert position to line/col
-            var charCount = 0
-            for (i, line) in lines.enumerated() {
-                if charCount + line.count >= pos {
-                    location = Location(line: i + 1, column: pos - charCount + 1)
-                    break
+            // Strip raw preprocessed "at line X, column Y" from the message —
+            // the correct location is shown via the inline highlight
+            if let atRange = try? NSRegularExpression(pattern: "\\s+at\\s+line\\s+\\d+,?\\s*column\\s+\\d+\\s*$"),
+               let match = atRange.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
+               let swiftRange = Range(match.range, in: message) {
+                message = String(message[..<swiftRange.lowerBound])
+            }
+        } else {
+            // Regex fallback: try to extract line/col from error string
+            if let lineColPattern = try? NSRegularExpression(pattern: "[Ll]ine\\s+(\\d+),?\\s*[Cc]ol(?:umn)?\\s+(\\d+)"),
+               let match = lineColPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)) {
+                if let lineRange = Range(match.range(at: 1), in: errorString),
+                   let colRange = Range(match.range(at: 2), in: errorString),
+                   let line = Int(errorString[lineRange]),
+                   let col = Int(errorString[colRange]) {
+                    location = Location(line: line, column: col)
                 }
-                charCount += line.count + 1 // +1 for newline
+            }
+
+            // Also check for "at position X" style
+            if location == nil,
+               let posPattern = try? NSRegularExpression(pattern: "at position (\\d+)"),
+               let match = posPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)),
+               let posRange = Range(match.range(at: 1), in: errorString),
+               let pos = Int(errorString[posRange]) {
+                var charCount = 0
+                for (i, line) in lines.enumerated() {
+                    if charCount + line.count >= pos {
+                        location = Location(line: i + 1, column: pos - charCount + 1)
+                        break
+                    }
+                    charCount += line.count + 1
+                }
             }
         }
 
@@ -462,16 +484,15 @@ struct CompilationError {
             message = String(errorString[colonRange.upperBound...])
         }
 
-        // Build code context (1 line before, error line, 1 line after)
+        // Build code context from user source (1 line before, error line, 1 line after)
         var codeContext: [CodeLine] = []
         if let loc = location, !lines.isEmpty {
             let errorLineIndex = loc.line - 1
             let startIndex = max(0, errorLineIndex - 1)
             let endIndex = min(lines.count - 1, errorLineIndex + 1)
 
-            // Guard against invalid range (can happen with invalid line numbers)
             guard startIndex <= endIndex else {
-                return CompilationError(message: message, location: location, codeContext: codeContext)
+                return CompilationError(message: message, location: location, codeContext: codeContext, kind: kind)
             }
 
             for i in startIndex...endIndex {
@@ -485,6 +506,60 @@ struct CompilationError {
             }
         }
 
-        return CompilationError(message: message, location: location, codeContext: codeContext)
+        return CompilationError(message: message, location: location, codeContext: codeContext, kind: kind)
+    }
+}
+
+// MARK: - Error Popover View
+
+struct ErrorPopoverView: View {
+    let message: String
+    var line: Int?
+    var column: Int?
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            if let line {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                    Text("Line \(line)" + (column.map { ", column \($0)" } ?? ""))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(alignment: .top, spacing: Spacing.sm) {
+                if line == nil {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red)
+                }
+
+                Text(message)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(message, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        copied = false
+                    }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy error message")
+            }
+        }
+        .padding(Spacing.sm)
+        .frame(maxWidth: 400)
     }
 }
