@@ -513,7 +513,7 @@ public class MetalBackend: Backend {
         // Use mouse position as probe coordinate when mouse is over the canvas
         let probeActive = InputState.shared.mouseOverCanvas
         let probeX: Float = probeActive ? mouseState.x : -1.0
-        let probeY: Float = probeActive ? mouseState.y : -1.0
+        let probeY: Float = probeActive ? (1.0 - mouseState.y) : -1.0
 
         // Update uniforms including input state and probe coordinates
         var uniforms = MetalUniforms(

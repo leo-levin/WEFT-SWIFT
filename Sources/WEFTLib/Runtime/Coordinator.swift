@@ -747,7 +747,7 @@ public class Coordinator: CameraCaptureDelegate {
         // Add coordinate values at probe point — these are always available
         let mouseState = InputState.shared.getMouseState()
         result["me.x"] = mouseState.x
-        result["me.y"] = mouseState.y
+        result["me.y"] = 1.0 - mouseState.y
         result["me.t"] = Float(fmod(time, 4.0) / 4.0)
         latestProbeResult = result
         return result

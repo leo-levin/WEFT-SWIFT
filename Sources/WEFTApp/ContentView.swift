@@ -952,6 +952,11 @@ struct CodeEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = FocusableTextView()
+
+        // Use custom layout manager for bottom-up signal fill drawing
+        let layoutManager = SignalFillLayoutManager()
+        textView.textContainer!.replaceLayoutManager(layoutManager)
+
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
@@ -1073,21 +1078,23 @@ struct CodeEditor: NSViewRepresentable {
             let selectedRanges = textView.selectedRanges
             textStorage.beginEditing()
 
-            // Clear all existing background tints
+            // Clear all existing fill attributes
             let fullRange = NSRange(location: 0, length: textStorage.length)
-            textStorage.removeAttribute(.backgroundColor, range: fullRange)
+            textStorage.removeAttribute(.signalFillLevel, range: fullRange)
+            textStorage.removeAttribute(.signalFillColor, range: fullRange)
 
-            // Apply new tints if probe is active
+            // Apply new fills if probe is active
             if let values = probeValues {
                 for (strandName, ranges) in tintMapper.strandRanges {
                     if let value = values[strandName] {
                         let v = Double(abs(value))
-                        let opacity = v <= 1.0 ? sqrt(v) * 0.9 : 0.9 + 0.1 * (1.0 - 1.0 / v)
-                        guard opacity > 0.01 else { continue }
-                        let tintColor = Self.tintColor.withAlphaComponent(CGFloat(opacity) * 0.5)
+                        let fillLevel = v <= 1.0 ? sqrt(v) * 0.9 : 0.9 + 0.1 * (1.0 - 1.0 / v)
+                        guard fillLevel > 0.01 else { continue }
+                        let tintColor = Self.tintColor.withAlphaComponent(0.5)
                         for range in ranges {
                             guard range.location + range.length <= textStorage.length else { continue }
-                            textStorage.addAttribute(.backgroundColor, value: tintColor, range: range)
+                            textStorage.addAttribute(.signalFillLevel, value: CGFloat(fillLevel), range: range)
+                            textStorage.addAttribute(.signalFillColor, value: tintColor, range: range)
                         }
                     }
                 }
@@ -1095,6 +1102,51 @@ struct CodeEditor: NSViewRepresentable {
 
             textStorage.endEditing()
             textView.selectedRanges = selectedRanges
+        }
+    }
+}
+
+// MARK: - Signal Fill Layout Manager
+
+extension NSAttributedString.Key {
+    static let signalFillLevel = NSAttributedString.Key("signalFillLevel")
+    static let signalFillColor = NSAttributedString.Key("signalFillColor")
+}
+
+/// Custom layout manager that draws bottom-up filled rects for signal tinting.
+class SignalFillLayoutManager: NSLayoutManager {
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+
+        guard let textStorage = textStorage else { return }
+        let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+
+        textStorage.enumerateAttribute(.signalFillLevel, in: charRange) { value, range, _ in
+            guard let fillLevel = value as? CGFloat, fillLevel > 0.01 else { return }
+            let color = textStorage.attribute(.signalFillColor, at: range.location, effectiveRange: nil) as? NSColor ?? NSColor.gray
+
+            let glyphRange = self.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+
+            self.enumerateLineFragments(forGlyphRange: glyphRange) { _, _, container, lineGlyphRange, _ in
+                let intersect = NSIntersectionRange(glyphRange, lineGlyphRange)
+                guard intersect.length > 0 else { return }
+
+                var rect = self.boundingRect(forGlyphRange: intersect, in: container)
+                rect.origin.x += origin.x
+                rect.origin.y += origin.y
+
+                // Fill from bottom up
+                let fillHeight = rect.height * fillLevel
+                let fillRect = NSRect(
+                    x: rect.origin.x,
+                    y: rect.origin.y + rect.height - fillHeight,
+                    width: rect.width,
+                    height: fillHeight
+                )
+
+                color.setFill()
+                fillRect.fill()
+            }
         }
     }
 }

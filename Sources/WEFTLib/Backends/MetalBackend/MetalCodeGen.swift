@@ -1309,7 +1309,7 @@ public class MetalCodeGen {
 
     /// Determine which bundles are spatially varying (depend on me.x or me.y, transitively).
     private func spatiallyVaryingBundles() -> Set<String> {
-        let spatialCoords: Set<String> = ["me.x", "me.y"]
+        let spatialCoords: Set<String> = ["me.x", "me.y", "me.t"]
         var varying = Set<String>()
         var changed = true
 
