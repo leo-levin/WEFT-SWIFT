@@ -518,7 +518,9 @@ final class BackendParityTests: XCTestCase {
             // State & Control
             "cache", "select",
             // Visual-owned hardware
-            "camera", "texture", "microphone"
+            "camera", "texture", "microphone",
+            // Resource builtins (load lowers to texture calls before codegen)
+            "load", "text"
         ]
 
         let visualMissing = SharedBuiltins.validateBackend(
@@ -542,6 +544,8 @@ final class BackendParityTests: XCTestCase {
             "cache", "select",
             // Audio-owned hardware
             "microphone",
+            // Audio resource builtins
+            "sample",
             // Returns 0 for visual builtins (graceful fallback)
             "camera", "texture"
         ]

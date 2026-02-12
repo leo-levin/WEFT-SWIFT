@@ -131,12 +131,6 @@ class InputAwareMTKView: MTKView {
         addTrackingArea(trackingArea!)
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        // Become first responder to receive keyboard events
-        window?.makeFirstResponder(self)
-    }
-
     // MARK: - Mouse Events
 
     private func updateMousePosition(with event: NSEvent) {

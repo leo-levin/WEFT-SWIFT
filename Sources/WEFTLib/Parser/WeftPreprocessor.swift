@@ -51,6 +51,11 @@ public struct SourceMap {
         entries.append(Entry(file: file, line: line))
     }
 
+    /// Insert an entry at a specific index (used for synthetic lines like join newlines)
+    public mutating func insert(_ entry: Entry, at index: Int) {
+        entries.insert(entry, at: index)
+    }
+
     /// Get original location for a processed line number (1-based)
     public func originalLocation(forProcessedLine line: Int) -> Entry? {
         let index = line - 1
@@ -150,6 +155,9 @@ public class WeftPreprocessor {
             sourceMap: &sourceMap
         )
 
+        // Record where stdlib entries end — the synthetic newline goes here
+        let stdlibEntryCount = sourceMap.entries.count
+
         // Then process user source
         let processedUser = try processSource(
             source,
@@ -161,8 +169,8 @@ public class WeftPreprocessor {
 
         let combined = processedStdlib + "\n" + processedUser
 
-        // Add the newline to source map
-        sourceMap.addLine(file: "<stdlib>", line: 0) // synthetic line
+        // Insert the synthetic newline entry BETWEEN stdlib and user entries
+        sourceMap.insert(SourceMap.Entry(file: "<stdlib>", line: 0), at: stdlibEntryCount)
 
         return PreprocessorResult(
             source: combined,
@@ -177,7 +185,7 @@ public class WeftPreprocessor {
     /// Matches: #include "path" with optional leading whitespace and trailing comment
     /// Does NOT match if inside a comment (handled separately)
     private static let includePattern = try! NSRegularExpression(
-        pattern: #"^(\s*)#include\s+"([^"]+)"(\s*(//.*)?)?$"#,
+        pattern: #"^(\s*)#include\s+"([^"]*)"(\s*(//.*)?)?$"#,
         options: []
     )
 
@@ -250,8 +258,12 @@ public class WeftPreprocessor {
                     sourceMap: &sourceMap
                 )
 
-                // Add processed content
-                outputLines.append(processed)
+                // Add processed content — split into individual lines so
+                // outputLines.count stays in sync with sourceMap.entries.count.
+                // The recursive processSource call already added one sourceMap
+                // entry per line, so we must add one outputLines element per line.
+                let includedLines = processed.components(separatedBy: "\n")
+                outputLines.append(contentsOf: includedLines)
             } else {
                 // Regular line - add to output
                 outputLines.append(line)

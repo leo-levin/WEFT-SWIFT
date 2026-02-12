@@ -205,14 +205,6 @@ public struct BuiltinDocs {
             params: [("base", "Base value"), ("exp", "Exponent")],
             returns: "base^exp"
         ),
-        "log": SpindleDoc(
-            name: "log",
-            signature: "log(x)",
-            description: "Natural logarithm. Returns ln(x).",
-            params: [("x", "Positive input value")],
-            returns: "Natural log of x"
-        ),
-
         // Interpolation functions
         "lerp": SpindleDoc(
             name: "lerp",
@@ -279,21 +271,6 @@ public struct BuiltinDocs {
             params: [("x", "Dividend"), ("y", "Divisor")],
             returns: "Remainder of x/y"
         ),
-        "sign": SpindleDoc(
-            name: "sign",
-            signature: "sign(x)",
-            description: "Sign function. Returns -1, 0, or 1.",
-            params: [("x", "Input value")],
-            returns: "-1 if x < 0, 0 if x == 0, 1 if x > 0"
-        ),
-        "noise": SpindleDoc(
-            name: "noise",
-            signature: "noise(x, y)",
-            description: "Pseudo-random noise function. Returns consistent random value for given coordinates.",
-            params: [("x", "First coordinate"), ("y", "Second coordinate")],
-            returns: "Random value in [0, 1]"
-        ),
-
         // WEFT-specific
         "osc": SpindleDoc(
             name: "osc",

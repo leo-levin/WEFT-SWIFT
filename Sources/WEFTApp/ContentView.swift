@@ -569,6 +569,11 @@ class WeftViewModel: ObservableObject {
         // Native Swift compiler - no initialization needed
     }
 
+    deinit {
+        layoutTimer?.invalidate()
+        probeTimer?.invalidate()
+    }
+
     // MARK: - File Operations
 
     func newFile() {
@@ -696,17 +701,18 @@ class WeftViewModel: ObservableObject {
         let source = sourceCode
         let fileURL = currentFileURL
         let compiler = self.compiler
-        let coordinator = self.coordinator
 
-        compileTask = Task.detached(priority: .userInitiated) {
+        compileTask = Task {
             let tTotal = CFAbsoluteTimeGetCurrent()
 
             do {
-                // Frontend: preprocess/tokenize/parse/lower
-                let program = try compiler.compile(source)
+                // Frontend: preprocess/tokenize/parse/lower (heavy work off main)
+                let program = try await Task.detached(priority: .userInitiated) {
+                    try compiler.compile(source)
+                }.value
                 guard !Task.isCancelled else { return }
 
-                // Set source file URL for relative resource resolution
+                // Coordinator mutations on @MainActor (we're already on main)
                 coordinator.sourceFileURL = fileURL
 
                 // Backend: analysis + codegen + Metal compile
@@ -715,66 +721,60 @@ class WeftViewModel: ObservableObject {
 
                 let elapsed = (CFAbsoluteTimeGetCurrent() - tTotal) * 1000
 
-                await MainActor.run {
-                    // Check for resource loading errors
-                    if let resourceErrors = coordinator.getResourceErrorMessage() {
-                        self.resourceWarning = resourceErrors
-                        print("Resource warnings:\n\(resourceErrors)")
-                    }
+                // Check for resource loading errors
+                if let resourceErrors = coordinator.getResourceErrorMessage() {
+                    self.resourceWarning = resourceErrors
+                    print("Resource warnings:\n\(resourceErrors)")
+                }
 
-                    self.hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "visual" } ?? false
-                    self.hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "audio" } ?? false
-                    self.hasScope = coordinator.scopeBuffer != nil
+                self.hasVisual = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "visual" } ?? false
+                self.hasAudio = coordinator.swatchGraph?.swatches.contains { $0.isSink && $0.backend == "audio" } ?? false
+                self.hasScope = coordinator.scopeBuffer != nil
 
-                    self.isRunning = true
-                    let timeStr = String(format: "%.0f", elapsed)
-                    self.statusText = self.resourceWarning != nil
-                        ? "Running (with warnings) [\(timeStr)ms]"
-                        : "Running [\(timeStr)ms]"
-                    self.compilationVersion += 1
-                    self.startLayoutTimer()
-                    self.startProbeTimer()
+                self.isRunning = true
+                let timeStr = String(format: "%.0f", elapsed)
+                self.statusText = self.resourceWarning != nil
+                    ? "Running (with warnings) [\(timeStr)ms]"
+                    : "Running [\(timeStr)ms]"
+                self.compilationVersion += 1
+                self.startLayoutTimer()
+                self.startProbeTimer()
 
-                    print("=== Total compileAndRun: \(timeStr)ms ===")
+                print("=== Total compileAndRun: \(timeStr)ms ===")
 
-                    if self.hasAudio && !self.isAudioPlaying {
-                        do {
-                            try coordinator.startAudio()
-                            self.isAudioPlaying = true
-                        } catch {
-                            self.errorMessage = "Audio error: \(error.localizedDescription)"
-                        }
+                if self.hasAudio && !self.isAudioPlaying {
+                    do {
+                        try coordinator.startAudio()
+                        self.isAudioPlaying = true
+                    } catch {
+                        self.errorMessage = "Audio error: \(error.localizedDescription)"
                     }
                 }
 
             } catch let error as WeftCompileError {
                 guard !Task.isCancelled else { return }
                 let mapped = compiler.mappedLocation(for: error)
-                await MainActor.run {
-                    self.hasError = true
-                    self.isRunning = false
-                    self.errorMessage = error.errorDescription ?? "Unknown compile error"
-                    self.compilationError = CompilationError.parse(from: self.errorMessage, source: source, mappedLocation: mapped)
-                    if case .inlineError(let line, let col) = self.compilationError.kind {
-                        self.errorLine = line
-                        self.errorColumn = col
-                    } else {
-                        self.errorLine = nil
-                        self.errorColumn = nil
-                    }
-                    self.statusText = "Error"
-                }
-            } catch {
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    self.hasError = true
-                    self.isRunning = false
+                self.hasError = true
+                self.isRunning = false
+                self.errorMessage = error.errorDescription ?? "Unknown compile error"
+                self.compilationError = CompilationError.parse(from: self.errorMessage, source: source, mappedLocation: mapped)
+                if case .inlineError(let line, let col) = self.compilationError.kind {
+                    self.errorLine = line
+                    self.errorColumn = col
+                } else {
                     self.errorLine = nil
                     self.errorColumn = nil
-                    self.errorMessage = error.localizedDescription
-                    self.compilationError = CompilationError.parse(from: self.errorMessage, source: source)
-                    self.statusText = "Error"
                 }
+                self.statusText = "Error"
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.hasError = true
+                self.isRunning = false
+                self.errorLine = nil
+                self.errorColumn = nil
+                self.errorMessage = error.localizedDescription
+                self.compilationError = CompilationError.parse(from: self.errorMessage, source: source)
+                self.statusText = "Error"
             }
         }
     }

@@ -116,9 +116,9 @@ struct IRView: View {
                         VStack(alignment: .leading, spacing: Spacing.xs) {
                             ForEach(Array(program.bundles.keys.sorted()), id: \.self) { bundleName in
                                 if let bundle = program.bundles[bundleName] {
-                                    let backendId = backendIdForBundle(bundleName, annotations: coordinator.annotatedProgram)
-                                    let purityState = purityStateForBundle(bundleName, annotations: coordinator.annotatedProgram)
-                                    let bundleSignals = signalsForBundle(bundleName, annotations: coordinator.annotatedProgram)
+                                    let backendId = coordinator.annotatedProgram?.backendId(for: bundleName)
+                                    let purityState = coordinator.annotatedProgram?.purityState(for: bundleName)
+                                    let bundleSignals = coordinator.annotatedProgram?.signals(for: bundleName)
                                     BundleRow(
                                         bundle: bundle,
                                         isExpanded: expandedBundles.contains(bundleName),
@@ -618,10 +618,10 @@ struct AnalysisView: View {
                                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         .foregroundStyle(.primary)
                                     Spacer()
-                                    if let bid = backendIdForBundle(bundle, annotations: annotations) {
+                                    if let bid = annotations.backendId(for: bundle) {
                                         BackendBadge(backendId: bid)
                                     }
-                                    if let ps = purityStateForBundle(bundle, annotations: annotations) {
+                                    if let ps = annotations.purityState(for: bundle) {
                                         PurityBadge(purityState: ps)
                                     }
                                 }
@@ -974,42 +974,26 @@ struct PurityBadge: View {
     }
 }
 
-/// Helper to derive purity state from annotations
-func purityStateForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) -> PurityState? {
-    guard let annotations = annotations else { return nil }
-
-    // Look for any strand in the bundle
-    for (key, signal) in annotations.signals {
-        if key.hasPrefix("\(bundleName).") {
-            if signal.isExternal {
-                return .external
-            } else if signal.stateful {
-                return .stateful
-            } else {
-                return .pure
+extension IRAnnotatedProgram {
+    func purityState(for bundleName: String) -> PurityState? {
+        for (key, signal) in signals {
+            if key.hasPrefix("\(bundleName).") {
+                if signal.isExternal { return .external }
+                else if signal.stateful { return .stateful }
+                else { return .pure }
             }
         }
+        return nil
     }
-    return nil
-}
 
-/// Helper to get backend ID for a bundle based on its hardware requirements
-func backendIdForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) -> String? {
-    guard let annotations = annotations else { return nil }
-    let hardware = annotations.bundleHardware(bundleName)
-    return BackendRegistry.shared.backendFor(hardware: hardware)
-}
-
-/// Helper to get all signals for a bundle
-func signalsForBundle(_ bundleName: String, annotations: IRAnnotatedProgram?) -> [String: IRSignal]? {
-    guard let annotations = annotations else { return nil }
-    var result: [String: IRSignal] = [:]
-    for (key, signal) in annotations.signals {
-        if key.hasPrefix("\(bundleName).") {
-            result[key] = signal
-        }
+    func backendId(for bundleName: String) -> String? {
+        BackendRegistry.shared.backendFor(hardware: bundleHardware(bundleName))
     }
-    return result.isEmpty ? nil : result
+
+    func signals(for bundleName: String) -> [String: IRSignal]? {
+        let result = signals.filter { $0.key.hasPrefix("\(bundleName).") }
+        return result.isEmpty ? nil : result
+    }
 }
 
 struct CacheDomainBadge: View {

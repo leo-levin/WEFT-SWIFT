@@ -203,11 +203,13 @@ extension IRAnnotatedProgram {
 
     /// Check if a bundle is pure (no hardware, not stateful)
     public func isPure(_ bundleName: String) -> Bool {
+        var foundAny = false
         for (key, signal) in signals {
             if key.hasPrefix("\(bundleName).") {
-                return signal.isPure
+                foundAny = true
+                if !signal.isPure { return false }
             }
         }
-        return true  // Unknown bundle is considered pure
+        return foundAny  // Unknown bundle is conservatively impure
     }
 }

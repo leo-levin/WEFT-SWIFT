@@ -228,7 +228,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
         }

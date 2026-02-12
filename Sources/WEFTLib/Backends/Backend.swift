@@ -2,6 +2,7 @@
 
 import Foundation
 import Metal
+import os
 
 // MARK: - Backend Bindings
 
@@ -249,17 +250,32 @@ public class AudioBuffer: Buffer {
 
 // MARK: - Cross-Domain Buffer
 
-/// Buffer for cross-domain data transfer
+/// Buffer for cross-domain data transfer (thread-safe for audio→Metal path)
 public class CrossDomainBuffer: Buffer {
     public let name: String
-    public var data: [Float]
     public let width: Int
     public let height: Int
+
+    private let _lock: OSAllocatedUnfairLock<[Float]>
 
     public init(name: String, width: Int, height: Int = 1) {
         self.name = name
         self.width = width
         self.height = height
-        self.data = [Float](repeating: 0, count: width * height)
+        self._lock = OSAllocatedUnfairLock(initialState: [Float](repeating: 0, count: width * height))
+    }
+
+    /// Thread-safe read — returns a snapshot of the current data
+    public var data: [Float] {
+        _lock.withLock { $0 }
+    }
+
+    /// Thread-safe write at a specific index (call from audio render callback)
+    public func write(index: Int, value: Float) {
+        _lock.withLock { data in
+            if index < data.count {
+                data[index] = value
+            }
+        }
     }
 }

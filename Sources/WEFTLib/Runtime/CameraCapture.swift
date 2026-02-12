@@ -55,13 +55,10 @@ public class CameraCapture: NSObject, VisualInputProvider {
     private func createTextureCache() {
         guard let device = device else { return }
 
-        // Create texture cache for efficient CVPixelBuffer -> MTLTexture conversion
         var cache: CVMetalTextureCache?
         let status = CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         if status == kCVReturnSuccess {
             self.textureCache = cache
-        } else {
-            print("CameraCapture: Failed to create texture cache: \(status)")
         }
     }
 
@@ -88,7 +85,6 @@ public class CameraCapture: NSObject, VisualInputProvider {
 
         // Find camera
         guard let camera = AVCaptureDevice.default(for: .video) else {
-            print("CameraCapture: No camera available")
             captureSession.commitConfiguration()
             return
         }
@@ -99,12 +95,10 @@ public class CameraCapture: NSObject, VisualInputProvider {
             if captureSession.canAddInput(input) {
                 captureSession.addInput(input)
             } else {
-                print("CameraCapture: Cannot add camera input")
                 captureSession.commitConfiguration()
                 return
             }
         } catch {
-            print("CameraCapture: Failed to create input: \(error)")
             captureSession.commitConfiguration()
             return
         }
@@ -119,7 +113,6 @@ public class CameraCapture: NSObject, VisualInputProvider {
         if captureSession.canAddOutput(videoOutput) {
             captureSession.addOutput(videoOutput)
         } else {
-            print("CameraCapture: Cannot add video output")
             captureSession.commitConfiguration()
             return
         }
@@ -127,8 +120,6 @@ public class CameraCapture: NSObject, VisualInputProvider {
         captureSession.commitConfiguration()
         captureSession.startRunning()
         isRunning = true
-
-        print("CameraCapture: Started")
     }
 
     private func createTexture(from pixelBuffer: CVPixelBuffer) -> MTLTexture? {
@@ -151,7 +142,6 @@ public class CameraCapture: NSObject, VisualInputProvider {
         )
 
         guard status == kCVReturnSuccess, let cvTex = cvTexture else {
-            print("CameraCapture: Failed to create texture: \(status)")
             return nil
         }
 

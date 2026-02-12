@@ -159,8 +159,6 @@ public class AudioBackend: Backend {
         // Generate cross-domain output evaluators if this swatch has output buffers
         let outputEvaluators = try codegen.generateOutputEvaluators(outputBundles: swatch.outputBuffers)
 
-        print("Audio backend compiled successfully")
-
         return AudioCompiledUnit(
             swatchId: swatch.id,
             renderFunction: renderFunction,
@@ -188,7 +186,9 @@ public class AudioBackend: Backend {
         }
     }
 
-    /// Fill audio buffer with samples
+    /// Fill audio buffer with samples from the render function.
+    /// Note: This is mono-only -- the right channel is intentionally discarded.
+    /// Cross-domain audio buffers (audio -> visual) only carry a single channel.
     private func fillBuffer(_ buffer: AudioBuffer, with render: AudioRenderFunction, time: Double) {
         for i in 0..<buffer.samples.count {
             let sampleTime = time + Double(i) / buffer.sampleRate
@@ -278,8 +278,8 @@ public class AudioBackend: Backend {
                 let outputBuffers = self.crossDomainOutputBuffers
                 for (bundleName, strandEvals) in unit.outputEvaluators {
                     if let buffer = outputBuffers[bundleName] {
-                        for (i, (_, eval)) in strandEvals.enumerated() where i < buffer.data.count {
-                            buffer.data[i] = eval(ctx)
+                        for (i, (_, eval)) in strandEvals.enumerated() {
+                            buffer.write(index: i, value: eval(ctx))
                         }
                     }
                 }
@@ -300,7 +300,6 @@ public class AudioBackend: Backend {
         // Start engine
         do {
             try engine.start()
-            print("Audio engine started at sample rate: \(sampleRate)")
         } catch {
             throw BackendError.executionFailed("Could not start audio engine: \(error.localizedDescription)")
         }

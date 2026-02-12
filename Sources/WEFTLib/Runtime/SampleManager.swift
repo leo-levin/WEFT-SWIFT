@@ -9,7 +9,6 @@ public enum SampleError: Error, LocalizedError {
     case fileNotFound(String)
     case loadFailed(String)
     case invalidFormat(String)
-    case pickerCancelled
     case conversionFailed(String)
 
     public var errorDescription: String? {
@@ -20,8 +19,6 @@ public enum SampleError: Error, LocalizedError {
             return "Failed to load audio: \(message)"
         case .invalidFormat(let format):
             return "Invalid audio format: \(format)"
-        case .pickerCancelled:
-            return "File picker was cancelled"
         case .conversionFailed(let message):
             return "Audio conversion failed: \(message)"
         }
@@ -86,9 +83,6 @@ public class SampleManager {
     /// Target sample rate for resampling (set from audio output)
     public var targetSampleRate: Double = 44100
 
-    /// Callback for when a file picker is needed (set by UI layer)
-    public var onPickerNeeded: ((_ forResourceId: Int, _ fileTypes: [String]) async -> URL?)?
-
     public init() {}
 
     /// Load all audio samples from program resources
@@ -114,14 +108,10 @@ public class SampleManager {
             do {
                 let sample = try loadSample(path: path, relativeTo: sourceFileURL)
                 samples[index] = sample
-                print("SampleManager: Loaded sample \(index) from '\(path)' (\(sample.frameCount) frames, \(sample.channels) channels)")
             } catch let error as SampleError {
-                print("SampleManager: Failed to load sample \(index) from '\(path)': \(error)")
                 loadErrors[index] = (path: path, error: error)
-                // Create a silent placeholder
                 samples[index] = createSilentSample()
             } catch {
-                print("SampleManager: Failed to load sample \(index) from '\(path)': \(error)")
                 loadErrors[index] = (path: path, error: .loadFailed(error.localizedDescription))
                 samples[index] = createSilentSample()
             }
@@ -131,18 +121,19 @@ public class SampleManager {
     }
 
     /// Load a single audio sample from a path
-    /// - Parameters:
-    ///   - path: File path (can be relative or absolute)
-    ///   - relativeTo: Base URL for relative path resolution
-    /// - Returns: Loaded audio sample buffer
     public func loadSample(path: String, relativeTo sourceFileURL: URL?) throws -> AudioSampleBuffer {
         // Check cache first
         if let cached = cache[path] {
             return cached
         }
 
-        // Resolve path
-        let url = try resolveSamplePath(path, relativeTo: sourceFileURL)
+        // Resolve path using shared resolver
+        let url: URL
+        do {
+            url = try ResourcePathResolver.resolve(path, relativeTo: sourceFileURL)
+        } catch {
+            throw SampleError.fileNotFound(path)
+        }
 
         // Load sample
         let sample = try loadSampleFromURL(url)
@@ -151,43 +142,6 @@ public class SampleManager {
         cache[path] = sample
 
         return sample
-    }
-
-    /// Resolve a sample path to a URL
-    private func resolveSamplePath(_ path: String, relativeTo sourceFileURL: URL?) throws -> URL {
-        // 1. Try as absolute path
-        if path.hasPrefix("/") || path.hasPrefix("~") {
-            let expandedPath = NSString(string: path).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-
-        // 2. Try relative to source file
-        if let sourceURL = sourceFileURL {
-            let sourceDir = sourceURL.deletingLastPathComponent()
-            let relativeURL = sourceDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: relativeURL.path) {
-                return relativeURL
-            }
-
-            // 3. Try in .weft-resources folder next to source file
-            let resourcesDir = sourceDir.appendingPathComponent(".weft-resources")
-            let resourceURL = resourcesDir.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: resourceURL.path) {
-                return resourceURL
-            }
-        }
-
-        // 4. Try relative to current working directory
-        let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(path)
-        if FileManager.default.fileExists(atPath: cwdURL.path) {
-            return cwdURL
-        }
-
-        throw SampleError.fileNotFound(path)
     }
 
     /// Load an audio sample from a URL
@@ -296,65 +250,5 @@ public class SampleManager {
             sampleRate: targetSampleRate,
             frameCount: 1
         )
-    }
-
-    /// Get a loaded sample by resource ID
-    public func getSample(at index: Int) -> AudioSampleBuffer? {
-        return samples[index]
-    }
-
-    /// Get all loaded samples
-    public func getAllSamples() -> [Int: AudioSampleBuffer] {
-        return samples
-    }
-
-    /// Get the count of loaded samples
-    public var sampleCount: Int {
-        return samples.count
-    }
-
-    /// Clear all cached samples
-    public func clearCache() {
-        cache.removeAll()
-        samples.removeAll()
-    }
-}
-
-// MARK: - Sample Manager Extension for Async Loading
-
-extension SampleManager {
-    /// Load sample with file picker fallback for missing files
-    public func loadSampleWithPicker(
-        path: String,
-        resourceId: Int,
-        sourceFileURL: URL?
-    ) async throws -> AudioSampleBuffer {
-        // If path is empty or just whitespace, trigger picker
-        if path.trimmingCharacters(in: .whitespaces).isEmpty {
-            return try await requestSampleFromPicker(resourceId: resourceId)
-        }
-
-        // Try to load from path
-        do {
-            return try loadSample(path: path, relativeTo: sourceFileURL)
-        } catch SampleError.fileNotFound {
-            // File not found - try picker if available
-            return try await requestSampleFromPicker(resourceId: resourceId)
-        }
-    }
-
-    /// Request a sample via file picker
-    private func requestSampleFromPicker(resourceId: Int) async throws -> AudioSampleBuffer {
-        guard let picker = onPickerNeeded else {
-            throw SampleError.fileNotFound("(no picker available)")
-        }
-
-        let fileTypes = ["wav", "aiff", "aif", "mp3", "m4a", "flac", "caf"]
-
-        guard let url = await picker(resourceId, fileTypes) else {
-            throw SampleError.pickerCancelled
-        }
-
-        return try loadSampleFromURL(url)
     }
 }

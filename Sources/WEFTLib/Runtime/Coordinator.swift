@@ -98,7 +98,6 @@ public class Coordinator: CameraCaptureDelegate {
             let capture = CameraCapture(device: device)
             capture.delegate = self
             return capture
-        // Future: "midi", "osc", "gamepad", etc.
         default:
             return nil
         }
@@ -147,16 +146,12 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Load and compile an IR program
     public func load(program: IRProgram) throws {
-        let tLoad = CFAbsoluteTimeGetCurrent()
-
         self.program = program
 
         // Build dependency graph
-        let t0 = CFAbsoluteTimeGetCurrent()
         let graph = DependencyGraph()
         graph.build(from: program)
         self.dependencyGraph = graph
-        let t1 = CFAbsoluteTimeGetCurrent()
 
         // Prune layout bundles that no longer exist in this program
         layoutBundles = layoutBundles.filter { program.bundles[$0] != nil }
@@ -174,7 +169,6 @@ public class Coordinator: CameraCaptureDelegate {
         )
         let annotations = annotationPass.annotate()
         self.annotatedProgram = annotations
-        let t2 = CFAbsoluteTimeGetCurrent()
 
         // Partition into swatches
         let partitioner = Partitioner(
@@ -185,7 +179,6 @@ public class Coordinator: CameraCaptureDelegate {
         )
         let swatches = partitioner.partition()
         self.swatchGraph = swatches
-        let t3 = CFAbsoluteTimeGetCurrent()
 
         // Convert temporal remaps in spindle locals to cache builtins
         // Must happen before inlineSpindleCacheCalls so cache nodes exist for cycle-breaking
@@ -196,7 +189,6 @@ public class Coordinator: CameraCaptureDelegate {
         )
 
         // Inline spindle calls with cache target substitution before cache analysis
-        // This transforms cache(localRef, ...) inside spindles to cache(targetBundle, ...)
         IRTransformations.inlineSpindleCacheCalls(program: &mutableProgramForInlining)
 
         // Convert temporal remaps to cache builtins where base is stateful or self-referential
@@ -206,7 +198,6 @@ public class Coordinator: CameraCaptureDelegate {
         )
 
         self.program = mutableProgramForInlining
-        let t4 = CFAbsoluteTimeGetCurrent()
 
         // Analyze cache nodes (now sees correct target references after spindle inlining)
         cacheManager.analyze(program: mutableProgramForInlining, annotations: annotations)
@@ -216,29 +207,9 @@ public class Coordinator: CameraCaptureDelegate {
             cacheManager.transformProgramForCaches(program: &mutableProgram)
             self.program = mutableProgram
         }
-        let t5 = CFAbsoluteTimeGetCurrent()
-
-        // Print analysis
-        print("=== WEFT IR Loaded ===")
-        print("Bundles: \(program.bundles.keys.sorted().joined(separator: ", "))")
-        print("Swatches: \(swatches.swatches.count)")
-        for swatch in swatches.swatches {
-            print("  \(swatch)")
-        }
 
         // Compile swatches
         try compile()
-
-        let tEnd = CFAbsoluteTimeGetCurrent()
-
-        print("=== Coordinator.load Timing ===")
-        print("  dep graph:     \(String(format: "%.1f", (t1 - t0) * 1000))ms")
-        print("  annotation:    \(String(format: "%.1f", (t2 - t1) * 1000))ms")
-        print("  partition:     \(String(format: "%.1f", (t3 - t2) * 1000))ms")
-        print("  IR transforms: \(String(format: "%.1f", (t4 - t3) * 1000))ms")
-        print("  cache analysis:\(String(format: "%.1f", (t5 - t4) * 1000))ms")
-        print("  compile:       \(String(format: "%.1f", (tEnd - t5) * 1000))ms")
-        print("  TOTAL:         \(String(format: "%.1f", (tEnd - tLoad) * 1000))ms")
     }
 
     /// Load IR from JSON file
@@ -288,9 +259,8 @@ public class Coordinator: CameraCaptureDelegate {
                             sourceFileURL: sourceFileURL
                         )
                         metalBackend?.loadedTextures = loadedTextures
-                        print("Coordinator: Loaded \(loadedTextures.count) textures")
                     } catch {
-                        print("Coordinator: Warning - texture loading failed: \(error)")
+                        // Texture loading errors are tracked in textureManager.loadErrors
                     }
                 }
 
@@ -299,14 +269,12 @@ public class Coordinator: CameraCaptureDelegate {
                     do {
                         let renderedTexts = try txtMgr.renderTexts(program.textResources)
                         metalBackend?.textTextures = renderedTexts
-                        print("Coordinator: Rendered \(renderedTexts.count) text textures")
                     } catch {
-                        print("Coordinator: Warning - text rendering failed: \(error)")
+                        // Text rendering failure is non-fatal
                     }
                 }
 
                 // Always (re)allocate cache buffers when we have cache descriptors
-                // This handles both initial load and recompiles with new cache nodes
                 if let device = metalBackend?.device, !cacheManager.getDescriptors().isEmpty {
                     cacheManager.allocateBuffers(
                         device: device,
@@ -346,14 +314,12 @@ public class Coordinator: CameraCaptureDelegate {
                 if let metalUnit = unit as? MetalCompiledUnit {
                     if metalUnit.usedInputs.contains("camera") {
                         needsCamera = true
-                        // Store camera provider reference for backward compatibility
                         if let camProvider = inputProviders["camera"] as? CameraCapture {
                             cameraCapture = camProvider
                         }
                     }
                     if metalUnit.usedInputs.contains("microphone") {
                         needsMicrophone = true
-                        // Store audio provider reference for backward compatibility
                         if let micProvider = inputProviders["microphone"] as? AudioCapture {
                             audioCapture = micProvider
                         }
@@ -364,8 +330,6 @@ public class Coordinator: CameraCaptureDelegate {
                 // Initialize Audio backend if needed
                 if audioBackend == nil {
                     audioBackend = AudioBackend()
-
-                    // Initialize sample manager
                     sampleManager = SampleManager()
                 }
 
@@ -380,7 +344,6 @@ public class Coordinator: CameraCaptureDelegate {
                 // Track if microphone is needed
                 if audioProviders["microphone"] != nil {
                     needsMicrophone = true
-                    // Store audio provider reference for backward compatibility
                     if let micProvider = inputProviders["microphone"] as? AudioCapture {
                         audioCapture = micProvider
                     }
@@ -394,11 +357,8 @@ public class Coordinator: CameraCaptureDelegate {
                             sourceFileURL: sourceFileURL
                         )
                         audioBackend?.loadedSamples = loadedSamples
-                        if !loadedSamples.isEmpty {
-                            print("Coordinator: Loaded \(loadedSamples.count) audio samples")
-                        }
                     } catch {
-                        print("Coordinator: Warning - sample loading failed: \(error)")
+                        // Sample loading errors are tracked in sampleManager.loadErrors
                     }
                 }
 
@@ -462,10 +422,7 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Start camera capture
     public func startCamera() throws {
-        guard let device = metalBackend?.device else {
-            print("Coordinator: Cannot start camera - no Metal device")
-            return
-        }
+        guard let device = metalBackend?.device else { return }
 
         if cameraCapture == nil {
             cameraCapture = CameraCapture(device: device)
@@ -473,7 +430,6 @@ public class Coordinator: CameraCaptureDelegate {
         }
 
         try cameraCapture?.start()
-        print("Coordinator: Camera started")
     }
 
     /// Stop camera capture
@@ -483,10 +439,7 @@ public class Coordinator: CameraCaptureDelegate {
 
     /// Start microphone capture
     public func startMicrophone() throws {
-        guard let device = metalBackend?.device else {
-            print("Coordinator: Cannot start microphone - no Metal device")
-            return
-        }
+        guard let device = metalBackend?.device else { return }
 
         if audioCapture == nil {
             audioCapture = AudioCapture()
@@ -494,7 +447,6 @@ public class Coordinator: CameraCaptureDelegate {
         }
 
         try audioCapture?.startCapture()
-        print("Coordinator: Microphone started")
     }
 
     /// Stop microphone capture
@@ -690,7 +642,7 @@ public class Coordinator: CameraCaptureDelegate {
 
         for (i, bundleName) in metalUnit.scopedBundleNames.enumerated() {
             guard i < scopeTextures.count else { break }
-            // Skip 1-strand bundles — they're shown as waveforms instead
+            // Skip 1-strand bundles -- they're shown as waveforms instead
             if let bundle = program?.bundles[bundleName], bundle.strands.count <= 1 { continue }
             if let image = textureToImage(scopeTextures[i]) {
                 results.append((bundleName, image))
@@ -744,7 +696,7 @@ public class Coordinator: CameraCaptureDelegate {
         }
         // Start with probe buffer values (may be empty if no intermediate bundles)
         var result = metalBackend?.readProbeValues() ?? [:]
-        // Add coordinate values at probe point — these are always available
+        // Add coordinate values at probe point -- these are always available
         let mouseState = InputState.shared.getMouseState()
         result["me.x"] = mouseState.x
         result["me.y"] = 1.0 - mouseState.y

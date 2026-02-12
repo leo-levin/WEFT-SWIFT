@@ -81,10 +81,6 @@ public class AudioCapture: NSObject, AudioInputProvider {
         self.inputNode = inputNode
 
         let format = inputNode.outputFormat(forBus: 0)
-        let sampleRate = format.sampleRate
-        let channelCount = format.channelCount
-
-        print("Audio capture: \(sampleRate) Hz, \(channelCount) channels")
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, time in
             self?.processAudioBuffer(buffer)

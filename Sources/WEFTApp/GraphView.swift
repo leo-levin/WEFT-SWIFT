@@ -117,8 +117,8 @@ struct GraphView: View {
         // Build nodes
         var nodes: [String: GraphNode] = [:]
         for (bundleName, bundle) in program.bundles {
-            let backend = backendIdForBundle(bundleName, annotations: annotations)
-            let purity = purityStateForBundle(bundleName, annotations: annotations)
+            let backend = annotations?.backendId(for: bundleName)
+            let purity = annotations?.purityState(for: bundleName)
             let hardware = annotations?.bundleHardware(bundleName) ?? []
             let isSink = bundleName == "display" || bundleName == "play"
 

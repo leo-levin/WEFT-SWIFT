@@ -9,6 +9,22 @@ import CoreGraphics
 import AppKit
 #endif
 
+// MARK: - Text Rendering Error
+
+public enum TextRenderError: Error, LocalizedError {
+    case contextCreationFailed
+    case textureCreationFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case .contextCreationFailed:
+            return "Could not create graphics context for text rendering"
+        case .textureCreationFailed:
+            return "Could not create Metal texture for text"
+        }
+    }
+}
+
 // MARK: - Text Manager
 
 /// Renders text strings to Metal textures for the text() builtin.
@@ -33,9 +49,6 @@ public class TextManager {
     }
 
     /// Set the font for text rendering
-    /// - Parameters:
-    ///   - name: Font name (e.g., "Helvetica", "Arial", "Menlo")
-    ///   - size: Font size in points
     public func setFont(name: String, size: CGFloat) {
         self.font = CTFontCreateWithName(name as CFString, size, nil)
     }
@@ -49,7 +62,6 @@ public class TextManager {
         for (index, text) in textResources.enumerated() {
             let texture = try renderText(text)
             textures[index] = texture
-            print("TextManager: Rendered text \(index): '\(text)' (\(texture.width)x\(texture.height))")
         }
 
         return textures
@@ -101,7 +113,7 @@ public class TextManager {
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.none.rawValue
         ) else {
-            throw TextureError.loadFailed("Could not create graphics context for text rendering")
+            throw TextRenderError.contextCreationFailed
         }
 
         // Clear to black (transparent in alpha mask)
@@ -127,7 +139,7 @@ public class TextManager {
         descriptor.storageMode = .shared
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {
-            throw TextureError.loadFailed("Could not create Metal texture for text")
+            throw TextRenderError.textureCreationFailed
         }
 
         // Copy bitmap data to texture
@@ -139,25 +151,5 @@ public class TextManager {
         )
 
         return texture
-    }
-
-    /// Get a rendered text texture by resource ID
-    public func getTexture(at index: Int) -> MTLTexture? {
-        return textures[index]
-    }
-
-    /// Get all rendered text textures
-    public func getAllTextures() -> [Int: MTLTexture] {
-        return textures
-    }
-
-    /// Get the count of rendered text textures
-    public var textureCount: Int {
-        return textures.count
-    }
-
-    /// Clear all rendered text textures
-    public func clearTextures() {
-        textures.removeAll()
     }
 }

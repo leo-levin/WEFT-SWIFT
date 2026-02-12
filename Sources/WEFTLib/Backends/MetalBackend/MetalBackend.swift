@@ -34,7 +34,10 @@ public class MetalCompiledUnit: CompiledUnit {
     /// Total number of probe float slots
     public let probeSlotCount: Int
 
-    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:], intermediatePipelines: [MTLComputePipelineState] = [], intermediateCount: Int = 0, scopeTextureCount: Int = 0, scopedBundleNames: [String] = [], probeSlotMap: [String: Int] = [:], probeSlotCount: Int = 0) {
+    /// Metal buffer index for cross-domain data (computed dynamically from cache count)
+    public let crossDomainBufferIndex: Int
+
+    public init(swatchId: UUID, pipelineState: MTLComputePipelineState, shaderSource: String, usedInputs: Set<String> = [], usedTextureIds: Set<Int> = [], usedTextIds: Set<Int> = [], crossDomainSlotCount: Int = 0, crossDomainSlotMap: [String: Int] = [:], intermediatePipelines: [MTLComputePipelineState] = [], intermediateCount: Int = 0, scopeTextureCount: Int = 0, scopedBundleNames: [String] = [], probeSlotMap: [String: Int] = [:], probeSlotCount: Int = 0, crossDomainBufferIndex: Int = 3) {
         self.swatchId = swatchId
         self.pipelineState = pipelineState
         self.shaderSource = shaderSource
@@ -49,6 +52,7 @@ public class MetalCompiledUnit: CompiledUnit {
         self.scopedBundleNames = scopedBundleNames
         self.probeSlotMap = probeSlotMap
         self.probeSlotCount = probeSlotCount
+        self.crossDomainBufferIndex = crossDomainBufferIndex
     }
 }
 
@@ -205,11 +209,11 @@ public class MetalBackend: Backend {
     /// Current probe slot count
     private var probeSlotCount: Int = 0
 
-    /// Last command buffer — used to sync before CPU readback of scope textures
+    /// Last command buffer -- used to sync before CPU readback of scope textures
     private var lastCommandBuffer: MTLCommandBuffer?
 
-    /// Shader source cache — skip Metal compilation when shader hasn't changed
-    private var cachedShaderHash: Int = 0
+    /// Shader source cache -- skip Metal compilation when shader hasn't changed
+    private var cachedShaderSource: String?
     private var cachedLibrary: MTLLibrary?
     private var cachedPipelineState: MTLComputePipelineState?
     private var cachedIntermediatePipelines: [MTLComputePipelineState] = []
@@ -284,8 +288,6 @@ public class MetalBackend: Backend {
 
     /// Compile swatch to Metal pipeline with cache descriptors, cross-domain inputs, and scope bundles
     public func compile(swatch: Swatch, ir: IRProgram, cacheDescriptors: [CacheNodeDescriptor], crossDomainInputs: [String: [String]] = [:], scopedBundles: [String] = []) throws -> CompiledUnit {
-        let tCompile = CFAbsoluteTimeGetCurrent()
-
         let codegen = MetalCodeGen(program: ir, swatch: swatch, cacheDescriptors: cacheDescriptors, crossDomainInputs: crossDomainInputs, scopedBundles: scopedBundles)
         let shaderSource = try codegen.generate()
         var usedInputs = codegen.usedInputs()
@@ -307,11 +309,8 @@ public class MetalBackend: Backend {
             usedInputs.insert("text")
         }
 
-        let tCodegen = CFAbsoluteTimeGetCurrent()
-
-        // Check shader cache — skip Metal compilation if shader source hasn't changed
-        let shaderHash = shaderSource.hashValue
-        let cacheHit = shaderHash == cachedShaderHash
+        // Check shader cache -- skip Metal compilation if shader source hasn't changed
+        let cacheHit = shaderSource == cachedShaderSource
             && cachedLibrary != nil
             && cachedPipelineState != nil
 
@@ -323,12 +322,7 @@ public class MetalBackend: Backend {
             library = cachedLibrary!
             pipelineState = cachedPipelineState!
             intermediatePipelines = cachedIntermediatePipelines
-            print("=== MetalBackend: shader cache HIT (skipping Metal compile) ===")
         } else {
-            // Debug: print generated shader
-            print("Generated Metal shader:")
-            print(shaderSource)
-
             // Compile shader
             do {
                 library = try device.makeLibrary(source: shaderSource, options: nil)
@@ -356,18 +350,11 @@ public class MetalBackend: Backend {
             }
 
             // Update cache
-            cachedShaderHash = shaderHash
+            cachedShaderSource = shaderSource
             cachedLibrary = library
             cachedPipelineState = pipelineState
             cachedIntermediatePipelines = intermediatePipelines
         }
-
-        let tEnd = CFAbsoluteTimeGetCurrent()
-
-        print("=== MetalBackend.compile Timing ===")
-        print("  codegen:        \(String(format: "%.1f", (tCodegen - tCompile) * 1000))ms")
-        print("  Metal compile:  \(String(format: "%.1f", (tEnd - tCodegen) * 1000))ms\(cacheHit ? " (cached)" : "")")
-        print("  TOTAL:          \(String(format: "%.1f", (tEnd - tCompile) * 1000))ms")
 
         return MetalCompiledUnit(
             swatchId: swatch.id,
@@ -383,7 +370,8 @@ public class MetalBackend: Backend {
             scopeTextureCount: codegen.scopeTextureCount,
             scopedBundleNames: codegen.scopedBundleNames,
             probeSlotMap: codegen.probeSlotMap,
-            probeSlotCount: codegen.probeSlotCount
+            probeSlotCount: codegen.probeSlotCount,
+            crossDomainBufferIndex: codegen.crossDomainBufferIndex
         )
     }
 
@@ -695,7 +683,7 @@ public class MetalBackend: Backend {
         // Bind cross-domain data buffer if needed
         if metalUnit.crossDomainSlotCount > 0 {
             if let buf = crossDomainMTLBuffer {
-                encoder.setBuffer(buf, offset: 0, index: 30)
+                encoder.setBuffer(buf, offset: 0, index: metalUnit.crossDomainBufferIndex)
             }
         }
 
@@ -725,7 +713,6 @@ public class MetalBackend: Backend {
             desc.usage = [.shaderWrite, .shaderRead]
             desc.storageMode = .private
             guard let tex = device.makeTexture(descriptor: desc) else {
-                print("Warning: Failed to allocate intermediate texture")
                 intermediateTextures = []
                 return
             }
@@ -755,7 +742,6 @@ public class MetalBackend: Backend {
             desc.usage = [.shaderWrite, .shaderRead]
             desc.storageMode = .shared
             guard let tex = device.makeTexture(descriptor: desc) else {
-                print("Warning: Failed to allocate scope texture")
                 scopeTextures = []
                 return
             }

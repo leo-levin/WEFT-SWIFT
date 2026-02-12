@@ -46,18 +46,20 @@ public struct CacheNodeDescriptor {
 
     // MARK: - Shader Buffer Index Calculation
 
-    /// Base buffer index for cache buffers in shader
-    /// (0 = uniforms, 1 = keyStates, 2 = probeBuffer, 3+ = cache buffers)
-    public static let shaderBufferStartIndex: Int = 3
+    // Buffer layout: 0=uniforms, 1=keyStates, 2=probe, 3+=cache pairs
+    private static let bufferStart = 3
 
-    /// Calculate shader buffer index for history buffer given cache array position
     public static func shaderHistoryBufferIndex(cachePosition: Int) -> Int {
-        return shaderBufferStartIndex + cachePosition * 2
+        bufferStart + cachePosition * 2
     }
 
-    /// Calculate shader buffer index for signal buffer given cache array position
     public static func shaderSignalBufferIndex(cachePosition: Int) -> Int {
-        return shaderBufferStartIndex + cachePosition * 2 + 1
+        bufferStart + cachePosition * 2 + 1
+    }
+
+    /// First buffer index after all cache buffers (for cross-domain data)
+    public static func shaderBufferEndIndex(cacheCount: Int) -> Int {
+        bufferStart + cacheCount * 2
     }
 }
 
@@ -126,11 +128,6 @@ public class CacheManager {
                     annotations: annotations
                 )
             }
-        }
-
-        print("CacheManager: found \(descriptors.count) cache nodes")
-        for desc in descriptors {
-            print("  - \(desc.id): \(desc.domain), historySize=\(desc.historySize), tap=\(desc.tapIndex)")
         }
     }
 
@@ -325,8 +322,6 @@ public class CacheManager {
 
         guard !cacheLocations.isEmpty else { return }
 
-        print("CacheManager: breaking cycles for cache locations: \(cacheLocations.keys.sorted())")
-
         // Transform each bundle's strand expressions
         for (bundleName, bundle) in program.bundles {
             var modifiedStrands = bundle.strands
@@ -334,8 +329,7 @@ public class CacheManager {
                 modifiedStrands[i].expr = breakCacheCycles(
                     in: modifiedStrands[i].expr,
                     cacheLocations: cacheLocations,
-                    program: program,
-                    visited: []
+                    program: program
                 )
             }
             program.bundles[bundleName] = IRBundle(name: bundleName, strands: modifiedStrands)
@@ -352,8 +346,7 @@ public class CacheManager {
     private func breakCacheCycles(
         in expr: IRExpr,
         cacheLocations: [String: (cacheId: String, tapIndex: Int)],
-        program: IRProgram,
-        visited: Set<String>
+        program: IRProgram
     ) -> IRExpr {
         switch expr {
         case .index(let bundle, let indexExpr):
@@ -365,7 +358,7 @@ public class CacheManager {
                 key = "\(bundle).\(Int(idx))"
             } else {
                 // Dynamic index - transform the index expression and return
-                let transformedIndex = breakCacheCycles(in: indexExpr, cacheLocations: cacheLocations, program: program, visited: visited)
+                let transformedIndex = breakCacheCycles(in: indexExpr, cacheLocations: cacheLocations, program: program)
                 return .index(bundle: bundle, indexExpr: transformedIndex)
             }
 
@@ -380,35 +373,35 @@ public class CacheManager {
         case .binaryOp(let op, let left, let right):
             return .binaryOp(
                 op: op,
-                left: breakCacheCycles(in: left, cacheLocations: cacheLocations, program: program, visited: visited),
-                right: breakCacheCycles(in: right, cacheLocations: cacheLocations, program: program, visited: visited)
+                left: breakCacheCycles(in: left, cacheLocations: cacheLocations, program: program),
+                right: breakCacheCycles(in: right, cacheLocations: cacheLocations, program: program)
             )
 
         case .unaryOp(let op, let operand):
             return .unaryOp(
                 op: op,
-                operand: breakCacheCycles(in: operand, cacheLocations: cacheLocations, program: program, visited: visited)
+                operand: breakCacheCycles(in: operand, cacheLocations: cacheLocations, program: program)
             )
 
         case .builtin(let name, let args):
-            let transformedArgs = args.map { breakCacheCycles(in: $0, cacheLocations: cacheLocations, program: program, visited: visited) }
+            let transformedArgs = args.map { breakCacheCycles(in: $0, cacheLocations: cacheLocations, program: program) }
             return .builtin(name: name, args: transformedArgs)
 
         case .call(let spindle, let args):
-            let transformedArgs = args.map { breakCacheCycles(in: $0, cacheLocations: cacheLocations, program: program, visited: visited) }
+            let transformedArgs = args.map { breakCacheCycles(in: $0, cacheLocations: cacheLocations, program: program) }
             return .call(spindle: spindle, args: transformedArgs)
 
         case .extract(let callExpr, let index):
             return .extract(
-                call: breakCacheCycles(in: callExpr, cacheLocations: cacheLocations, program: program, visited: visited),
+                call: breakCacheCycles(in: callExpr, cacheLocations: cacheLocations, program: program),
                 index: index
             )
 
         case .remap(let base, let substitutions):
-            let transformedBase = breakCacheCycles(in: base, cacheLocations: cacheLocations, program: program, visited: visited)
+            let transformedBase = breakCacheCycles(in: base, cacheLocations: cacheLocations, program: program)
             var transformedSubs: [String: IRExpr] = [:]
             for (key, subExpr) in substitutions {
-                transformedSubs[key] = breakCacheCycles(in: subExpr, cacheLocations: cacheLocations, program: program, visited: visited)
+                transformedSubs[key] = breakCacheCycles(in: subExpr, cacheLocations: cacheLocations, program: program)
             }
             return .remap(base: transformedBase, substitutions: transformedSubs)
 
@@ -432,16 +425,11 @@ public class CacheManager {
         for descriptor in descriptors {
             allocateBuffersForDescriptor(descriptor)
         }
-
-        print("CacheManager: allocated \(buffers.count) buffers")
     }
 
     /// Allocate buffers for a single cache descriptor
     private func allocateBuffersForDescriptor(_ descriptor: CacheNodeDescriptor) {
-        guard let device = device else {
-            print("CacheManager: No Metal device available")
-            return
-        }
+        guard let device = device else { return }
 
         let historyCount: Int
         let signalCount: Int
@@ -509,16 +497,6 @@ public class CacheManager {
     /// Get buffer by index
     public func getBuffer(index: Int) -> CacheBuffer? {
         return buffers[index]
-    }
-
-    /// Get all buffers as a dictionary
-    public func getAllBuffers() -> [Int: CacheBuffer] {
-        return buffers
-    }
-
-    /// Get current dimensions
-    public func getDimensions() -> (width: Int, height: Int) {
-        return (width, height)
     }
 
     // MARK: - Audio Cache Operations (called from AudioCodeGen closures)

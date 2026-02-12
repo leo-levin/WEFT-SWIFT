@@ -580,15 +580,6 @@ extension NSColor {
 // MARK: - Syntax Highlighter
 
 class WeftSyntaxHighlighter {
-    private let tokenizer: WeftTokenizer
-    private let processor: WeftTokenProcessor
-
-    init() {
-        // These will be recreated for each highlight call
-        self.tokenizer = WeftTokenizer(source: "")
-        self.processor = WeftTokenProcessor()
-    }
-
     func highlight(_ textStorage: NSTextStorage) {
         let source = textStorage.string
         guard !source.isEmpty else { return }

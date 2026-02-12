@@ -354,15 +354,28 @@ extension IRExpr {
         }
     }
 
-    /// Check if expression uses a specific builtin
-    public func usesBuiltin(_ name: String) -> Bool {
-        if case .builtin(let n, _) = self, n == name { return true }
-        var found = false
-        forEachChild { if $0.usesBuiltin(name) { found = true } }
-        return found
+    /// Short-circuiting tree search. Returns true if any node satisfies the predicate.
+    public func anyNode(_ predicate: (IRExpr) -> Bool) -> Bool {
+        if predicate(self) { return true }
+        switch self {
+        case .num, .param, .cacheRead: return false
+        case .index(_, let idx): return idx.anyNode(predicate)
+        case .binaryOp(_, let l, let r): return l.anyNode(predicate) || r.anyNode(predicate)
+        case .unaryOp(_, let o): return o.anyNode(predicate)
+        case .call(_, let args), .builtin(_, let args): return args.contains { $0.anyNode(predicate) }
+        case .extract(let c, _): return c.anyNode(predicate)
+        case .remap(let b, let s): return b.anyNode(predicate) || s.values.contains { $0.anyNode(predicate) }
+        }
     }
 
-    /// Get all builtins used in this expression
+    public func usesBuiltin(_ name: String) -> Bool {
+        anyNode { if case .builtin(let n, _) = $0, n == name { return true }; return false }
+    }
+
+    public func containsCall() -> Bool {
+        anyNode { if case .call = $0 { return true }; return false }
+    }
+
     public func allBuiltins() -> Set<String> {
         var result = Set<String>()
         func visit(_ e: IRExpr) {
@@ -371,14 +384,6 @@ extension IRExpr {
         }
         visit(self)
         return result
-    }
-
-    /// Check if expression tree contains any spindle `.call` node (indicates "heavy" expression)
-    public func containsCall() -> Bool {
-        if case .call = self { return true }
-        var found = false
-        forEachChild { if $0.containsCall() { found = true } }
-        return found
     }
 
     /// Count the total number of nodes in this expression tree.

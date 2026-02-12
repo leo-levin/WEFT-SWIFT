@@ -44,6 +44,11 @@ public class MetalCodeGen {
     /// Total number of cross-domain float slots
     public private(set) var crossDomainSlotCount: Int = 0
 
+    /// Metal buffer index for cross-domain data (sits right after cache buffers)
+    public var crossDomainBufferIndex: Int {
+        CacheNodeDescriptor.shaderBufferEndIndex(cacheCount: cacheDescriptors.count)
+    }
+
     /// Intermediate textures needed for heavy remap expressions.
     /// Each entry is a base expression (pre-getDirectExpression) that will be rendered
     /// to an r32Float texture, then sampled at remapped UV coordinates.
@@ -506,7 +511,8 @@ public class MetalCodeGen {
         }
 
         if crossDomainSlotCount > 0 {
-            extraParams += "\n    device float* crossDomainData [[buffer(30)]],"
+            let cdIndex = crossDomainBufferIndex
+            extraParams += "\n    device float* crossDomainData [[buffer(\(cdIndex))]],"
         }
 
         // Text helper variables (needed if expression uses text())
@@ -647,7 +653,8 @@ public class MetalCodeGen {
 
         // Add cross-domain data buffer parameter
         if crossDomainSlotCount > 0 {
-            extraParams += "\n    device float* crossDomainData [[buffer(30)]],"
+            let cdIndex = crossDomainBufferIndex
+            extraParams += "\n    device float* crossDomainData [[buffer(\(cdIndex))]],"
         }
 
         // Add probe buffer parameter
@@ -715,12 +722,7 @@ public class MetalCodeGen {
             precomputedVars[scopeBundleName] = varNames
 
             // Write to scope texture (pack up to 4 strands into rgba)
-            let channels = ["r", "g", "b", "a"]
-            var components: [String] = []
-            for (i, varName) in varNames.prefix(4).enumerated() {
-                _ = channels[i]
-                components.append(varName)
-            }
+            var components = Array(varNames.prefix(4))
             // Pad missing color channels with 0.0, alpha with 1.0 (opaque)
             while components.count < 3 {
                 components.append("0.0")
@@ -1276,7 +1278,6 @@ public class MetalCodeGen {
 
     // MARK: - Probe Buffer Support
 
-    /// Buffer index for probe data
     public static let probeBufferIndex = 2
 
     /// Build probe slot map from spatially-varying strands in the swatch (excluding output bundles).

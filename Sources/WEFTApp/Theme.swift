@@ -53,61 +53,6 @@ extension Font {
     static let statsLabel = Font.system(size: 9, weight: .medium, design: .monospaced)
 }
 
-// MARK: - Panel Header Style
-
-struct PanelHeader<TrailingContent: View>: View {
-    let title: String
-    let icon: String?
-    let isCollapsed: Bool
-    let onToggle: (() -> Void)?
-    @ViewBuilder let trailing: () -> TrailingContent
-
-    init(
-        _ title: String,
-        icon: String? = nil,
-        isCollapsed: Bool = false,
-        onToggle: (() -> Void)? = nil,
-        @ViewBuilder trailing: @escaping () -> TrailingContent = { EmptyView() }
-    ) {
-        self.title = title
-        self.icon = icon
-        self.isCollapsed = isCollapsed
-        self.onToggle = onToggle
-        self.trailing = trailing
-    }
-
-    var body: some View {
-        HStack(spacing: Spacing.sm) {
-            if let onToggle {
-                Button(action: onToggle) {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 12)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if let icon {
-                Image(systemName: icon)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-
-            Text(title)
-                .font(.panelTitle)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            trailing()
-        }
-        .padding(.horizontal, Spacing.sm)
-        .padding(.vertical, Spacing.xs)
-        .background(Color.panelHeaderBackground)
-    }
-}
-
 // MARK: - Collapsed Panel Header (minimal)
 
 struct CollapsedPanelHeader: View {
@@ -138,36 +83,6 @@ struct CollapsedPanelHeader: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .background(Color.panelHeaderBackground)
-    }
-}
-
-// MARK: - Panel Container
-
-struct Panel<Content: View, Header: View>: View {
-    let header: Header
-    let content: Content
-    let showSeparator: Bool
-
-    init(
-        showSeparator: Bool = true,
-        @ViewBuilder header: () -> Header,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.header = header()
-        self.content = content()
-        self.showSeparator = showSeparator
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-
-            if showSeparator {
-                Divider()
-            }
-
-            content
-        }
     }
 }
 
@@ -415,6 +330,10 @@ struct CompilationError {
         let column: Int
     }
 
+    private static let atLineColRegex = try! NSRegularExpression(pattern: "\\s+at\\s+line\\s+\\d+,?\\s*column\\s+\\d+\\s*$")
+    private static let lineColRegex = try! NSRegularExpression(pattern: "[Ll]ine\\s+(\\d+),?\\s*[Cc]ol(?:umn)?\\s+(\\d+)")
+    private static let positionRegex = try! NSRegularExpression(pattern: "at position (\\d+)")
+
     struct CodeLine {
         let lineNumber: Int
         let content: String
@@ -445,15 +364,13 @@ struct CompilationError {
 
             // Strip raw preprocessed "at line X, column Y" from the message —
             // the correct location is shown via the inline highlight
-            if let atRange = try? NSRegularExpression(pattern: "\\s+at\\s+line\\s+\\d+,?\\s*column\\s+\\d+\\s*$"),
-               let match = atRange.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
+            if let match = atLineColRegex.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
                let swiftRange = Range(match.range, in: message) {
                 message = String(message[..<swiftRange.lowerBound])
             }
         } else {
             // Regex fallback: try to extract line/col from error string
-            if let lineColPattern = try? NSRegularExpression(pattern: "[Ll]ine\\s+(\\d+),?\\s*[Cc]ol(?:umn)?\\s+(\\d+)"),
-               let match = lineColPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)) {
+            if let match = lineColRegex.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)) {
                 if let lineRange = Range(match.range(at: 1), in: errorString),
                    let colRange = Range(match.range(at: 2), in: errorString),
                    let line = Int(errorString[lineRange]),
@@ -464,8 +381,7 @@ struct CompilationError {
 
             // Also check for "at position X" style
             if location == nil,
-               let posPattern = try? NSRegularExpression(pattern: "at position (\\d+)"),
-               let match = posPattern.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)),
+               let match = positionRegex.firstMatch(in: errorString, range: NSRange(errorString.startIndex..., in: errorString)),
                let posRange = Range(match.range(at: 1), in: errorString),
                let pos = Int(errorString[posRange]) {
                 var charCount = 0

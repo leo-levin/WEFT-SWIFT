@@ -254,8 +254,8 @@ public class WeftParser {
     }
 
     private func parseChainExpr() throws -> Expr {
-        // ComparisonExpr ("->" PatternBlock)*
-        var expr = try parseComparisonExpr()
+        // LogicalOrExpr ("->" PatternBlock)*
+        var expr = try parseLogicalOrExpr()
 
         var patterns: [PatternBlock] = []
         while match(.arrow) {
@@ -270,6 +270,30 @@ public class WeftParser {
         return .chainExpr(ChainExpr(base: expr, patterns: patterns))
     }
 
+    private func parseLogicalOrExpr() throws -> Expr {
+        // LogicalAndExpr ("||" LogicalAndExpr)*
+        var expr = try parseLogicalAndExpr()
+
+        while match(.pipePipe) {
+            let right = try parseLogicalAndExpr()
+            expr = .binaryOp(BinaryOp(left: expr, op: .or, right: right))
+        }
+
+        return expr
+    }
+
+    private func parseLogicalAndExpr() throws -> Expr {
+        // ComparisonExpr ("&&" ComparisonExpr)*
+        var expr = try parseComparisonExpr()
+
+        while match(.ampAmp) {
+            let right = try parseComparisonExpr()
+            expr = .binaryOp(BinaryOp(left: expr, op: .and, right: right))
+        }
+
+        return expr
+    }
+
     private func parseComparisonExpr() throws -> Expr {
         // AddExpr (compareOp AddExpr)*
         var expr = try parseAddExpr()
@@ -282,8 +306,6 @@ public class WeftParser {
             else if match(.greater) { op = .greater }
             else if match(.lessEqual) { op = .lessEqual }
             else if match(.greaterEqual) { op = .greaterEqual }
-            else if match(.ampAmp) { op = .and }
-            else if match(.pipePipe) { op = .or }
             else { break }
 
             let right = try parseAddExpr()
