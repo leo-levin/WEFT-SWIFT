@@ -124,6 +124,7 @@ struct PanelCommands: Commands {
 
                 FrameRatePicker()
                 RenderScalePicker()
+                AspectRatioPicker()
             }
         }
     }
@@ -154,6 +155,28 @@ struct RenderScalePicker: View {
 
     var body: some View {
         Picker("Resolution", selection: $renderScale) {
+            ForEach(Self.options, id: \.value) { option in
+                Text(option.label).tag(option.value)
+            }
+        }
+    }
+}
+
+struct AspectRatioPicker: View {
+    @AppStorage("canvasAspectRatio") private var aspectRatio: Double = 1.6  // 16:10
+
+    static let options: [(label: String, value: Double)] = [
+        ("16:10", 16.0/10.0),
+        ("16:9", 16.0/9.0),
+        ("5:4", 5.0/4.0),
+        ("4:3", 4.0/3.0),
+        ("1:1", 1.0),
+        ("3:4", 3.0/4.0),
+        ("9:16", 9.0/16.0),
+    ]
+
+    var body: some View {
+        Picker("Aspect Ratio", selection: $aspectRatio) {
             ForEach(Self.options, id: \.value) { option in
                 Text(option.label).tag(option.value)
             }

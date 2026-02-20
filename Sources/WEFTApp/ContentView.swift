@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var devModeTab: DevModeTab = .ir
     @AppStorage("preferredFPS") private var preferredFPS: Int = 60
     @AppStorage("renderScale") private var renderScale: Double = 2.0
+    @AppStorage("canvasAspectRatio") private var canvasAspectRatio: Double = 1.6
 
     var body: some View {
         VStack(spacing: 0) {
@@ -352,7 +353,7 @@ struct ContentView: View {
 
     private var canvasContent: some View {
         GeometryReader { geo in
-            let aspectRatio: CGFloat = 16.0 / 10.0
+            let aspectRatio = CGFloat(canvasAspectRatio)
             let availableWidth = geo.size.width
             let availableHeight = geo.size.height
             let fittedWidth = min(availableWidth, availableHeight * aspectRatio)
