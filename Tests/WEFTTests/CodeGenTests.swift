@@ -120,10 +120,12 @@ final class MetalCodeGenTests: XCTestCase {
             tapIndex: 1,
             valueExpr: valueExpr,
             signalExpr: signalExpr,
-            domain: .visual,
+            storage: .perCoordinate,
+            backendId: "visual",
             historyBufferIndex: 0,
             signalBufferIndex: 1,
-            hasSelfReference: false
+            hasSelfReference: false,
+            spatialDimensions: ["x", "y"]
         )
 
         let program = IRProgram(

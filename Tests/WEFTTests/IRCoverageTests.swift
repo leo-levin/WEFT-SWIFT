@@ -45,7 +45,7 @@ final class IRExprTreeTests: XCTestCase {
         )
 
         // cacheRead is a separate leaf -- add it separately
-        let cacheExpr = IRExpr.cacheRead(cacheId: "c1", tapIndex: 0)
+        let cacheExpr = IRExpr.cacheRead(cacheId: "c1", tapIndex: 0, coordinates: [])
 
         // anyNode should find deeply nested param("x")
         XCTAssertTrue(expr.anyNode { if case .param("x") = $0 { return true }; return false })
@@ -1170,7 +1170,7 @@ final class IRParserExtendedTests: XCTestCase {
         let parser = IRParser()
         let program = try parser.parse(json: json)
         let strand = program.bundles["test"]!.strands[0]
-        if case .cacheRead(let cacheId, let tapIndex) = strand.expr {
+        if case .cacheRead(let cacheId, let tapIndex, _) = strand.expr {
             XCTAssertEqual(cacheId, "env_val_0")
             XCTAssertEqual(tapIndex, 1)
         } else {

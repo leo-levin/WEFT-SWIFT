@@ -149,9 +149,16 @@ public class AnnotationPass {
             }
             return (resultDom, resultHw, resultState)
 
-        case .cacheRead:
-            // Reading from cache is stateful, domain depends on context
-            return ([], [], true)
+        case .cacheRead(_, _, let coordinates):
+            // Reading from cache is stateful; recurse into coordinate expressions for domain/hardware
+            var resultDom: [IRDimension] = []
+            var resultHw: Set<IRHardware> = []
+            for coord in coordinates {
+                let (cDom, cHw, _) = annotateExpr(coord, bundleName: bundleName)
+                resultDom = mergeDomains([resultDom, cDom])
+                resultHw = resultHw.union(cHw)
+            }
+            return (resultDom, resultHw, true)
         }
     }
 

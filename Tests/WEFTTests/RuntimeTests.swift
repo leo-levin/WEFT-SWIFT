@@ -265,12 +265,13 @@ final class CacheManagerAnalysisTests: XCTestCase {
         XCTAssertEqual(cm.getDescriptors().count, 1, "Cache nested in binary op should be found")
     }
 
-    func testFilterDescriptorsByDomain() {
-        // CacheManager determines domain from annotations.bundleHardware().
-        // A bundle is classified as audio only if it uses hardware owned by the audio backend
-        // (e.g., microphone). Pure math expressions (even in a "play" bundle) default to visual.
+    func testFilterDescriptorsByBackendAndStorage() {
+        // CacheManager determines backend from annotations.bundleHardware() and
+        // storage from the strand's free dimensions. A cache of a spatially-varying
+        // value (has free dims like x, y) gets .perCoordinate storage. A cache of
+        // a uniform value (no free dims) gets .scalar storage.
         //
-        // To get an audio-domain cache, the bundle must use a microphone builtin.
+        // To get an audio-backend cache, the bundle must use a microphone builtin.
         let visualCache = IRExpr.builtin(name: "cache", args: [
             .index(bundle: "me", indexExpr: .param("x")),
             .num(2), .num(0),
@@ -304,13 +305,47 @@ final class CacheManagerAnalysisTests: XCTestCase {
         let allDescriptors = cm.getDescriptors()
         XCTAssertEqual(allDescriptors.count, 2)
 
-        let visual = cm.getDescriptors(for: .visual)
-        let audio = cm.getDescriptors(for: .audio)
+        let visual = cm.getDescriptors(forBackend: "visual")
+        let audio = cm.getDescriptors(forBackend: "audio")
 
         XCTAssertEqual(visual.count, 1, "Should have one visual cache descriptor")
         XCTAssertEqual(audio.count, 1, "Should have one audio cache descriptor")
         XCTAssertEqual(visual[0].bundleName, "display")
         XCTAssertEqual(audio[0].bundleName, "mic")
+
+        // display.r caches me.x which has free spatial dimensions -> perCoordinate
+        XCTAssertEqual(visual[0].storage, .perCoordinate, "Visual cache of me.x should be perCoordinate")
+        // mic.val caches microphone output which has no free spatial dims -> scalar
+        XCTAssertEqual(audio[0].storage, .scalar, "Audio cache of microphone should be scalar")
+    }
+
+    func testScalarStorageForUniformVisualCache() {
+        // A visual-domain cache of mouse.x (uniform across pixels) should get scalar storage
+        let mouseCache = IRExpr.builtin(name: "cache", args: [
+            .builtin(name: "mouse", args: [.num(0)]),
+            .num(20), .num(19),
+            .index(bundle: "me", indexExpr: .param("t")),
+        ])
+        let program = IRProgram(
+            bundles: [
+                "display": IRBundle(name: "display", strands: [
+                    IRStrand(name: "r", index: 0, expr: mouseCache),
+                    IRStrand(name: "g", index: 1, expr: .num(0)),
+                    IRStrand(name: "b", index: 2, expr: .num(0)),
+                ]),
+            ],
+            spindles: [:],
+            order: [.init(bundle: "display")]
+        )
+        let annotations = annotate(program)
+
+        let cm = CacheManager()
+        cm.analyze(program: program, annotations: annotations)
+
+        let descriptors = cm.getDescriptors()
+        XCTAssertEqual(descriptors.count, 1)
+        XCTAssertEqual(descriptors[0].backendId, "visual", "Mouse cache should be in visual backend")
+        XCTAssertEqual(descriptors[0].storage, .scalar, "Cache of mouse (no free dims) should be scalar")
     }
 }
 
@@ -423,6 +458,148 @@ final class CacheManagerCycleBreakingTests: XCTestCase {
         // so cycle breaking won't apply.
         XCTAssertFalse(containsCacheRead,
                        "Self-reference detection requires numeric index; param-based access won't trigger cycle breaking")
+    }
+
+    func testPerCoordinateCacheReadCarriesSpatialDimensions() {
+        // Visual cache with spatial dimensions should get [me.x, me.y] coordinates
+        // The value expression references me.x so annotation marks it as spatially varying
+        let cacheExpr = IRExpr.builtin(name: "cache", args: [
+            .builtin(name: "max", args: [
+                .index(bundle: "trail", indexExpr: .num(0)),  // self-reference
+                .index(bundle: "me", indexExpr: .param("x")),  // spatial dependency
+            ]),
+            .num(2),
+            .num(1),
+            .index(bundle: "me", indexExpr: .param("t")),
+        ])
+        var program = IRProgram(
+            bundles: [
+                "trail": IRBundle(name: "trail", strands: [
+                    IRStrand(name: "val", index: 0, expr: cacheExpr)
+                ]),
+                "display": IRBundle(name: "display", strands: [
+                    IRStrand(name: "r", index: 0, expr: .index(bundle: "trail", indexExpr: .num(0))),
+                    IRStrand(name: "g", index: 1, expr: .num(0)),
+                    IRStrand(name: "b", index: 2, expr: .num(0)),
+                ])
+            ],
+            spindles: [:],
+            order: [.init(bundle: "trail"), .init(bundle: "display")]
+        )
+        let annotations = annotate(program)
+
+        let cm = CacheManager()
+        cm.analyze(program: program, annotations: annotations)
+
+        // Verify the descriptor has spatial dimensions
+        let descs = cm.getDescriptors()
+        XCTAssertEqual(descs.count, 1)
+        XCTAssertEqual(descs[0].storage, .perCoordinate)
+        XCTAssertFalse(descs[0].spatialDimensions.isEmpty, "perCoordinate cache should have spatial dimensions")
+
+        // After cycle breaking, the cacheRead should carry coordinates
+        cm.transformProgramForCaches(program: &program)
+        let transformed = program.bundles["trail"]!.strands[0].expr
+        var foundCoordinates: [IRExpr]?
+        _ = transformed.anyNode { node in
+            if case .cacheRead(_, _, let coords) = node {
+                foundCoordinates = coords
+                return true
+            }
+            return false
+        }
+        XCTAssertNotNil(foundCoordinates, "cacheRead should exist after cycle breaking")
+        XCTAssertTrue((foundCoordinates?.count ?? 0) > 0, "perCoordinate cacheRead should have coordinates")
+        // Coordinates should be me.{dim} references
+        if let coords = foundCoordinates {
+            for coord in coords {
+                if case .index(let bundle, _) = coord {
+                    XCTAssertEqual(bundle, "me", "Coordinates should reference 'me' bundle")
+                } else {
+                    XCTFail("Expected .index(me, ...) coordinate, got \(coord)")
+                }
+            }
+        }
+    }
+
+    func testScalarCacheReadCarriesEmptyCoordinates() {
+        // Scalar cache (no spatial dimensions): value depends only on time
+        let cacheExpr = IRExpr.builtin(name: "cache", args: [
+            .builtin(name: "max", args: [
+                .index(bundle: "env", indexExpr: .num(0)),
+                .num(0.0),
+            ]),
+            .num(2),
+            .num(1),
+            .index(bundle: "me", indexExpr: .param("t")),
+        ])
+        // Scalar: the value expression only depends on me.t, not me.x/me.y
+        var program = IRProgram(
+            bundles: [
+                "env": IRBundle(name: "env", strands: [
+                    IRStrand(name: "val", index: 0, expr: cacheExpr)
+                ]),
+                "display": IRBundle(name: "display", strands: [
+                    IRStrand(name: "r", index: 0, expr: .index(bundle: "env", indexExpr: .num(0))),
+                    IRStrand(name: "g", index: 1, expr: .num(0)),
+                    IRStrand(name: "b", index: 2, expr: .num(0)),
+                ])
+            ],
+            spindles: [:],
+            order: [.init(bundle: "env"), .init(bundle: "display")]
+        )
+        let annotations = annotate(program)
+
+        let cm = CacheManager()
+        cm.analyze(program: program, annotations: annotations)
+
+        let descs = cm.getDescriptors()
+        XCTAssertEqual(descs.count, 1)
+        XCTAssertEqual(descs[0].storage, .scalar)
+        XCTAssertTrue(descs[0].spatialDimensions.isEmpty, "Scalar cache should have empty spatial dimensions")
+
+        cm.transformProgramForCaches(program: &program)
+        let transformed = program.bundles["env"]!.strands[0].expr
+        var foundCoordinates: [IRExpr]?
+        _ = transformed.anyNode { node in
+            if case .cacheRead(_, _, let coords) = node {
+                foundCoordinates = coords
+                return true
+            }
+            return false
+        }
+        XCTAssertNotNil(foundCoordinates, "cacheRead should exist after cycle breaking")
+        XCTAssertEqual(foundCoordinates?.count, 0, "Scalar cacheRead should have empty coordinates")
+    }
+
+    func testRemapSubstitutionFlowsThroughCacheReadCoordinates() {
+        // After cycle breaking produces cacheRead(id, tap, [me.x, me.y]),
+        // wrapping in a remap should substitute the coordinates
+        let cacheRead = IRExpr.cacheRead(
+            cacheId: "test.0.0",
+            tapIndex: 1,
+            coordinates: [
+                .index(bundle: "me", indexExpr: .param("x")),
+                .index(bundle: "me", indexExpr: .param("y")),
+            ]
+        )
+        let substitutions: [String: IRExpr] = [
+            "me.x": .binaryOp(op: "+", left: .index(bundle: "me", indexExpr: .param("x")), right: .num(0.1)),
+            "me.y": .index(bundle: "me", indexExpr: .param("y")),
+        ]
+        let remapped = IRTransformations.applyRemap(to: cacheRead, substitutions: substitutions)
+
+        // The remapped expression should have substituted coordinates
+        if case .cacheRead(let id, let tap, let coords) = remapped {
+            XCTAssertEqual(id, "test.0.0")
+            XCTAssertEqual(tap, 1)
+            XCTAssertEqual(coords.count, 2)
+            // First coordinate should be the substituted expression
+            XCTAssertEqual(coords[0], .binaryOp(op: "+", left: .index(bundle: "me", indexExpr: .param("x")), right: .num(0.1)))
+            XCTAssertEqual(coords[1], .index(bundle: "me", indexExpr: .param("y")))
+        } else {
+            XCTFail("Expected cacheRead after remap, got \(remapped)")
+        }
     }
 
 }

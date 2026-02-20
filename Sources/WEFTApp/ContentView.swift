@@ -1757,9 +1757,10 @@ private struct ExprRenderer {
             }
             return inner + Text("]").foregroundColor(ExprColors.chain)
 
-        case .cacheRead(let cacheId, let tapIndex):
+        case .cacheRead(let cacheId, let tapIndex, let coordinates):
+            let coordStr = coordinates.isEmpty ? "" : ", [\(coordinates.map { $0.description }.joined(separator: ", "))]"
             return Text("cache").foregroundColor(ExprColors.ident)
-                + Text("[\(cacheId), \(tapIndex)]").foregroundColor(ExprColors.op)
+                + Text("[\(cacheId), \(tapIndex)\(coordStr)]").foregroundColor(ExprColors.op)
         }
     }
 

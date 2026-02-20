@@ -283,6 +283,13 @@ public class Coordinator: CameraCaptureDelegate {
                     )
                 }
 
+                // Build CPU evaluators for scalar visual caches (ticked before each GPU dispatch)
+                metalBackend?.buildScalarCacheEvaluators(
+                    descriptors: cacheManager.getDescriptors(),
+                    program: program,
+                    cacheManager: cacheManager
+                )
+
                 // Collect and set input providers for this backend
                 let visualProviders = collectProvidersForBackend(
                     backendId: MetalBackend.identifier,

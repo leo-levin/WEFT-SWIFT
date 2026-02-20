@@ -84,8 +84,8 @@ public class MetalCodeGen {
         self.swatch = swatch
         self.crossDomainInputs = crossDomainInputs
         self.scopedBundles = scopedBundles
-        // Filter to only visual domain caches
-        self.cacheDescriptors = cacheDescriptors.filter { $0.domain == .visual }
+        // Filter to only visual backend caches
+        self.cacheDescriptors = cacheDescriptors.filter { $0.backendId == MetalBackend.identifier }
 
         // Build slot map for cross-domain inputs
         var slot = 0
@@ -542,13 +542,26 @@ public class MetalCodeGen {
                 let historySize = descriptor.historySize
                 let tapIndex = min(descriptor.tapIndex, historySize - 1)
 
-                cacheHelpers += """
+                switch descriptor.storage {
+                case .perCoordinate:
+                    cacheHelpers += """
 
-                    // Cache \(cacheIdx): \(descriptor.id) (read-only)
-                    uint cache\(cacheIdx)_historyBase = pixelIndex * \(historySize);
-                    float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + \(tapIndex)];
+                        // Cache \(cacheIdx): \(descriptor.id) (read-only, per-coordinate)
+                        uint cache\(cacheIdx)_historyBase = pixelIndex * \(historySize);
+                        float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + \(tapIndex)];
 
-                """
+                    """
+
+                case .scalar:
+                    cacheHelpers += """
+
+                        // Cache \(cacheIdx): \(descriptor.id) (read-only, scalar)
+                        uint cache\(cacheIdx)_writeIdx = uint(cache\(cacheIdx)_history[\(historySize)]);
+                        uint cache\(cacheIdx)_readIdx = (cache\(cacheIdx)_writeIdx + \(historySize) - 1 - \(tapIndex)) % \(historySize);
+                        float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_readIdx];
+
+                    """
+                }
             }
         }
 
@@ -674,32 +687,47 @@ public class MetalCodeGen {
 
             // Pre-compute all cache operations as separate statements (MSL doesn't support lambdas)
             for (cacheIdx, descriptor) in cacheDescriptors.enumerated() {
-                // Track which cache we're generating so self-references return buffer reads
-                currentlyGeneratingCacheIndex = cacheIdx
-                let valueCode = try generateExpression(descriptor.valueExpr)
-                currentlyGeneratingCacheIndex = nil
-                let signalCode = try generateExpression(descriptor.signalExpr)
                 let historySize = descriptor.historySize
                 let tapIndex = min(descriptor.tapIndex, historySize - 1)
 
-                cacheHelpers += """
+                switch descriptor.storage {
+                case .perCoordinate:
+                    // Per-coordinate caches: tick in the shader (each pixel has its own history)
+                    currentlyGeneratingCacheIndex = cacheIdx
+                    let valueCode = try generateExpression(descriptor.valueExpr)
+                    currentlyGeneratingCacheIndex = nil
+                    let signalCode = try generateExpression(descriptor.signalExpr)
 
-                    // Cache \(cacheIdx): \(descriptor.id)
-                    float cache\(cacheIdx)_value = \(valueCode);
-                    float cache\(cacheIdx)_signal_val = \(signalCode);
-                    uint cache\(cacheIdx)_historyBase = pixelIndex * \(historySize);
-                    float cache\(cacheIdx)_prevSignal = cache\(cacheIdx)_signal[pixelIndex];
-                    bool cache\(cacheIdx)_shouldTick = isnan(cache\(cacheIdx)_prevSignal) || cache\(cacheIdx)_prevSignal != cache\(cacheIdx)_signal_val;
-                    if (cache\(cacheIdx)_shouldTick) {
-                        cache\(cacheIdx)_signal[pixelIndex] = cache\(cacheIdx)_signal_val;
-                        for (int j = \(historySize - 1); j > 0; j--) {
-                            cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j] = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j - 1];
+                    cacheHelpers += """
+
+                        // Cache \(cacheIdx): \(descriptor.id) (per-coordinate)
+                        float cache\(cacheIdx)_value = \(valueCode);
+                        float cache\(cacheIdx)_signal_val = \(signalCode);
+                        uint cache\(cacheIdx)_historyBase = pixelIndex * \(historySize);
+                        float cache\(cacheIdx)_prevSignal = cache\(cacheIdx)_signal[pixelIndex];
+                        bool cache\(cacheIdx)_shouldTick = isnan(cache\(cacheIdx)_prevSignal) || cache\(cacheIdx)_prevSignal != cache\(cacheIdx)_signal_val;
+                        if (cache\(cacheIdx)_shouldTick) {
+                            cache\(cacheIdx)_signal[pixelIndex] = cache\(cacheIdx)_signal_val;
+                            for (int j = \(historySize - 1); j > 0; j--) {
+                                cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j] = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + j - 1];
+                            }
+                            cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase] = cache\(cacheIdx)_value;
                         }
-                        cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase] = cache\(cacheIdx)_value;
-                    }
-                    float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + \(tapIndex)];
+                        float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_historyBase + \(tapIndex)];
 
-                """
+                    """
+
+                case .scalar:
+                    // Scalar caches: read-only in shader, CPU-ticked by MetalBackend before dispatch
+                    cacheHelpers += """
+
+                        // Cache \(cacheIdx): \(descriptor.id) (scalar — read-only, CPU-ticked)
+                        uint cache\(cacheIdx)_writeIdx = uint(cache\(cacheIdx)_history[\(historySize)]);
+                        uint cache\(cacheIdx)_readIdx = (cache\(cacheIdx)_writeIdx + \(historySize) - 1 - \(tapIndex)) % \(historySize);
+                        float cache\(cacheIdx)_result = cache\(cacheIdx)_history[cache\(cacheIdx)_readIdx];
+
+                    """
+                }
             }
         }
 
@@ -1003,7 +1031,7 @@ public class MetalCodeGen {
             let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try generateExpression(remapped)
 
-        case .cacheRead(let cacheId, let tapIndex):
+        case .cacheRead(let cacheId, let tapIndex, let coordinates):
             // cacheRead is used to break cycles - but only return buffer read when
             // generating a cache's valueExpr (self-reference). Otherwise return the
             // precomputed result.
@@ -1018,7 +1046,29 @@ public class MetalCodeGen {
             if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
                 let historySize = descriptor.historySize
                 let clampedTap = min(tapIndex, historySize - 1)
-                return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(clampedTap)]"
+                switch descriptor.storage {
+                case .perCoordinate:
+                    if coordinates.count >= 2 {
+                        // Coordinate-aware: compute pixel index from coordinate expressions
+                        let coordX = try generateExpression(coordinates[0])
+                        let coordY = try generateExpression(coordinates[1])
+                        return "cache\(cacheIndex)_history[(uint(clamp(\(coordY) * h, 0.0, h - 1.0)) * uint(w) + uint(clamp(\(coordX) * w, 0.0, w - 1.0))) * \(historySize) + \(clampedTap)]"
+                    }
+                    return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + \(clampedTap)]"
+                case .scalar:
+                    return "cache\(cacheIndex)_history[(uint(cache\(cacheIndex)_history[\(historySize)]) + \(historySize) - 1 - \(clampedTap)) % \(historySize)]"
+                }
+            }
+
+            // Non-self-reference: if coordinates differ from default (me.x, me.y), compute custom pixel index
+            if !coordinates.isEmpty, descriptor.storage == .perCoordinate {
+                let historySize = descriptor.historySize
+                let clampedTap = min(tapIndex, historySize - 1)
+                if coordinates.count >= 2 {
+                    let coordX = try generateExpression(coordinates[0])
+                    let coordY = try generateExpression(coordinates[1])
+                    return "cache\(cacheIndex)_history[(uint(clamp(\(coordY) * h, 0.0, h - 1.0)) * uint(w) + uint(clamp(\(coordX) * w, 0.0, w - 1.0))) * \(historySize) + \(clampedTap)]"
+                }
             }
 
             // Otherwise return the precomputed result
@@ -1255,12 +1305,17 @@ public class MetalCodeGen {
         }
 
         // If we're currently generating the valueExpr for THIS cache, return buffer read
-        // (self-reference: need previous frame's value, which is at position 0 before shift)
+        // (self-reference: need previous frame's value)
         if let currentIdx = currentlyGeneratingCacheIndex, currentIdx == cacheIndex {
             let historySize = descriptor.historySize
-            // Always read from position 0 for self-reference - this is the most recent
-            // stored value (from previous frame), before the current frame's shift
-            return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + 0]"
+            switch descriptor.storage {
+            case .perCoordinate:
+                // Most recent stored value (from previous frame), before the current frame's shift
+                return "cache\(cacheIndex)_history[pixelIndex * \(historySize) + 0]"
+            case .scalar:
+                // Circular buffer: read most recent value (writeIdx - 1)
+                return "cache\(cacheIndex)_history[(uint(cache\(cacheIndex)_history[\(historySize)]) + \(historySize) - 1) % \(historySize)]"
+            }
         }
 
         // Return reference to the precomputed result variable

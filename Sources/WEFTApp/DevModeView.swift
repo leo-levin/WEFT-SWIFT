@@ -692,7 +692,7 @@ struct AnalysisView: View {
                                         Text("[\(idx)] \(desc.bundleName).\(desc.strandIndex)")
                                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         Spacer()
-                                        CacheDomainBadge(domain: desc.domain)
+                                        CacheStorageBadge(storage: desc.storage, backendId: desc.backendId)
                                     }
                                     HStack(spacing: Spacing.sm) {
                                         Text("History: \(desc.historySize)")
@@ -996,31 +996,45 @@ extension IRAnnotatedProgram {
     }
 }
 
-struct CacheDomainBadge: View {
-    let domain: CacheDomain
+struct CacheStorageBadge: View {
+    let storage: CacheStorage
+    let backendId: String
 
     var body: some View {
-        Text(domainText)
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(domainColor)
-            .cornerRadius(3)
-    }
-
-    private var domainText: String {
-        switch domain {
-        case .visual: return "VISUAL"
-        case .audio: return "AUDIO"
+        HStack(spacing: 2) {
+            Text(storageText)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(storageColor)
+                .cornerRadius(3)
+            Text(backendId.uppercased())
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(backendColor)
+                .cornerRadius(3)
         }
     }
 
-    private var domainColor: Color {
-        switch domain {
-        case .visual: return .blue
-        case .audio: return .green
+    private var storageText: String {
+        switch storage {
+        case .scalar: return "SCALAR"
+        case .perCoordinate: return "PER-PX"
         }
+    }
+
+    private var storageColor: Color {
+        switch storage {
+        case .scalar: return .orange
+        case .perCoordinate: return .purple
+        }
+    }
+
+    private var backendColor: Color {
+        backendId == "visual" ? .blue : .green
     }
 }
 

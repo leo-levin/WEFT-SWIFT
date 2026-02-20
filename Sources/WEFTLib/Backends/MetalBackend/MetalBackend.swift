@@ -218,6 +218,16 @@ public class MetalBackend: Backend {
     private var cachedPipelineState: MTLComputePipelineState?
     private var cachedIntermediatePipelines: [MTLComputePipelineState] = []
 
+    /// Current time (set at top of render, read by scalar cache evaluator closures)
+    private var currentTime: Double = 0
+
+    /// Compiled CPU evaluators for scalar visual caches (built once per compile, called each frame)
+    private var scalarCacheTickers: [(
+        descriptor: CacheNodeDescriptor,
+        value: () -> Float,
+        signal: () -> Float
+    )] = []
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw BackendError.deviceNotAvailable("Metal device not available")
@@ -493,7 +503,14 @@ public class MetalBackend: Backend {
         guard let metalUnit = unit as? MetalCompiledUnit else { return }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
 
+        self.currentTime = time
+
         let texture = drawable.texture
+
+        // Tick scalar visual caches on CPU before GPU dispatch
+        if let cacheManager = cacheManager {
+            tickScalarCaches(cacheManager: cacheManager)
+        }
 
         // Get current input state
         let mouseState = InputState.shared.getMouseState()
@@ -605,6 +622,250 @@ public class MetalBackend: Backend {
         lastCommandBuffer = nil
     }
 
+    // MARK: - Scalar Cache CPU Ticking
+
+    /// Build CPU evaluator closures for scalar visual caches.
+    /// Called once per compile. The closures capture `self` weakly for time/dimensions
+    /// and read mouse/key state from InputState.shared.
+    public func buildScalarCacheEvaluators(
+        descriptors: [CacheNodeDescriptor],
+        program: IRProgram,
+        cacheManager: CacheManager
+    ) {
+        scalarCacheTickers = descriptors
+            .filter { $0.backendId == MetalBackend.identifier && $0.storage == .scalar }
+            .map { descriptor in
+                let valueEval = buildUniformEvaluator(
+                    expr: descriptor.valueExpr,
+                    program: program,
+                    cacheManager: cacheManager,
+                    descriptors: descriptors
+                )
+                let signalEval = buildUniformEvaluator(
+                    expr: descriptor.signalExpr,
+                    program: program,
+                    cacheManager: cacheManager,
+                    descriptors: descriptors
+                )
+                return (descriptor: descriptor, value: valueEval, signal: signalEval)
+            }
+    }
+
+    /// Tick all scalar visual caches on the CPU. Called before each GPU dispatch.
+    public func tickScalarCaches(cacheManager: CacheManager) {
+        for ticker in scalarCacheTickers {
+            _ = cacheManager.tickScalarCache(
+                descriptor: ticker.descriptor,
+                value: ticker.value(),
+                signal: ticker.signal()
+            )
+        }
+    }
+
+    /// Build a CPU evaluator closure for a uniform-only IRExpr (no spatial coordinates).
+    /// Handles the subset of IRExpr that can appear in scalar cache expressions:
+    /// time/dimensions from self, mouse/key from InputState, math builtins, bundle refs.
+    private func buildUniformEvaluator(
+        expr: IRExpr,
+        program: IRProgram,
+        cacheManager: CacheManager,
+        descriptors: [CacheNodeDescriptor],
+        depth: Int = 0
+    ) -> () -> Float {
+        guard depth < 256 else { return { 0 } }
+        let nextDepth = depth + 1
+
+        switch expr {
+        case .num(let v):
+            let fv = Float(v)
+            return { fv }
+
+        case .param(let name):
+            switch name {
+            case "t": return { [weak self] in Float(self?.currentTime ?? 0) }
+            case "w": return { [weak self] in Float(self?.width ?? 0) }
+            case "h": return { [weak self] in Float(self?.height ?? 0) }
+            default: return { 0 }
+            }
+
+        case .index(let bundle, let indexExpr):
+            if bundle == "me" {
+                if case .param(let field) = indexExpr {
+                    return buildUniformEvaluator(
+                        expr: .param(field), program: program,
+                        cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth
+                    )
+                }
+                return { 0 }
+            }
+
+            // Resolve bundle strand reference by inlining the strand expression
+            if let targetBundle = program.bundles[bundle] {
+                let strandExpr: IRExpr?
+                if case .num(let idx) = indexExpr {
+                    let i = Int(idx)
+                    strandExpr = i < targetBundle.strands.count ? targetBundle.strands[i].expr : nil
+                } else if case .param(let field) = indexExpr {
+                    strandExpr = targetBundle.strands.first(where: { $0.name == field })?.expr
+                } else {
+                    strandExpr = nil
+                }
+                if let expr = strandExpr {
+                    return buildUniformEvaluator(
+                        expr: expr, program: program,
+                        cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth
+                    )
+                }
+            }
+            return { 0 }
+
+        case .binaryOp(let op, let left, let right):
+            let l = buildUniformEvaluator(expr: left, program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+            let r = buildUniformEvaluator(expr: right, program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+            switch op {
+            case "+": return { l() + r() }
+            case "-": return { l() - r() }
+            case "*": return { l() * r() }
+            case "/": return { l() / r() }
+            case "%": return { fmodf(l(), r()) }
+            case "^": return { powf(l(), r()) }
+            case "<": return { l() < r() ? 1 : 0 }
+            case ">": return { l() > r() ? 1 : 0 }
+            case "<=": return { l() <= r() ? 1 : 0 }
+            case ">=": return { l() >= r() ? 1 : 0 }
+            case "==": return { l() == r() ? 1 : 0 }
+            case "!=": return { l() != r() ? 1 : 0 }
+            case "&&": return { (l() != 0 && r() != 0) ? 1 : 0 }
+            case "||": return { (l() != 0 || r() != 0) ? 1 : 0 }
+            default: return { 0 }
+            }
+
+        case .unaryOp(let op, let operand):
+            let e = buildUniformEvaluator(expr: operand, program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+            switch op {
+            case "-": return { -e() }
+            case "!": return { e() == 0 ? 1 : 0 }
+            default: return { 0 }
+            }
+
+        case .builtin(let name, let args):
+            if name == "cache" {
+                // Scalar cache inside another scalar cache expression — tick it
+                if args.count >= 4,
+                   let desc = descriptors.first(where: { $0.valueExpr == args[0] && $0.signalExpr == args[3] }) {
+                    let valEval = buildUniformEvaluator(expr: args[0], program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+                    let sigEval = buildUniformEvaluator(expr: args[3], program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+                    return { cacheManager.tickScalarCache(descriptor: desc, value: valEval(), signal: sigEval()) }
+                }
+                // Fallback: evaluate the value expression
+                if !args.isEmpty {
+                    return buildUniformEvaluator(expr: args[0], program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+                }
+                return { 0 }
+            }
+
+            if name == "mouse" {
+                guard args.count >= 1, case .num(let ch) = args[0] else { return { 0 } }
+                let channel = Int(ch)
+                return {
+                    let state = InputState.shared.getMouseState()
+                    switch channel {
+                    case 0: return state.x
+                    case 1: return state.y
+                    case 2: return state.down
+                    default: return state.x
+                    }
+                }
+            }
+
+            if name == "key" {
+                guard args.count >= 1, case .num(let code) = args[0] else { return { 0 } }
+                let keyCode = Int(code)
+                return { InputState.shared.getKeyState(keyCode: keyCode) }
+            }
+
+            // Math builtins
+            let evals = args.map { buildUniformEvaluator(expr: $0, program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth) }
+            switch name {
+            case "sin": return { sinf(evals[0]()) }
+            case "cos": return { cosf(evals[0]()) }
+            case "tan": return { tanf(evals[0]()) }
+            case "asin": return { asinf(evals[0]()) }
+            case "acos": return { acosf(evals[0]()) }
+            case "atan": return { atanf(evals[0]()) }
+            case "atan2" where evals.count >= 2: return { atan2f(evals[0](), evals[1]()) }
+            case "abs": return { abs(evals[0]()) }
+            case "floor": return { floorf(evals[0]()) }
+            case "ceil": return { ceilf(evals[0]()) }
+            case "round": return { roundf(evals[0]()) }
+            case "sqrt": return { sqrtf(evals[0]()) }
+            case "pow" where evals.count >= 2: return { powf(evals[0](), evals[1]()) }
+            case "exp": return { expf(evals[0]()) }
+            case "log": return { logf(evals[0]()) }
+            case "log2": return { log2f(evals[0]()) }
+            case "min" where evals.count >= 2: return { min(evals[0](), evals[1]()) }
+            case "max" where evals.count >= 2: return { max(evals[0](), evals[1]()) }
+            case "clamp" where evals.count >= 3: return { min(max(evals[0](), evals[1]()), evals[2]()) }
+            case "lerp" where evals.count >= 3, "mix" where evals.count >= 3:
+                return { let a = evals[0](); let b = evals[1](); return a + (b - a) * evals[2]() }
+            case "step" where evals.count >= 2: return { evals[1]() < evals[0]() ? 0 : 1 }
+            case "smoothstep" where evals.count >= 3:
+                return {
+                    let edge0 = evals[0](); let edge1 = evals[1](); let x = evals[2]()
+                    let t = min(max((x - edge0) / (edge1 - edge0), 0), 1)
+                    return t * t * (3 - 2 * t)
+                }
+            case "fract": return { let v = evals[0](); return v - floorf(v) }
+            case "mod" where evals.count >= 2: return { fmodf(evals[0](), evals[1]()) }
+            case "sign":
+                return { let v = evals[0](); return v > 0 ? 1 : (v < 0 ? -1 : 0) }
+            case "select" where evals.count >= 2:
+                let branches = Array(evals.dropFirst())
+                let indexEval = evals[0]
+                return {
+                    let idx = Int(indexEval())
+                    let clamped = max(0, min(idx, branches.count - 1))
+                    return branches[clamped]()
+                }
+            case "noise":
+                let xEval = evals[0]
+                let yEval = evals.count > 1 ? evals[1] : { Float(0) }
+                return {
+                    let dot = xEval() * 12.9898 + yEval() * 78.233
+                    let s = sinf(dot) * 43758.5453
+                    return s - floorf(s)
+                }
+            default: return { 0 }
+            }
+
+        case .call(let spindle, let args):
+            guard let spindleDef = program.spindles[spindle], !spindleDef.returns.isEmpty else { return { 0 } }
+            let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var inlined = IRTransformations.substituteParams(in: spindleDef.returns[0], substitutions: substitutions)
+            inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
+            return buildUniformEvaluator(expr: inlined, program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+
+        case .extract(let callExpr, let index):
+            guard case .call(let spindle, let args) = callExpr,
+                  let spindleDef = program.spindles[spindle],
+                  index < spindleDef.returns.count else { return { 0 } }
+            let substitutions = IRTransformations.buildSpindleSubstitutions(spindleDef: spindleDef, args: args)
+            var inlined = IRTransformations.substituteParams(in: spindleDef.returns[index], substitutions: substitutions)
+            inlined = IRTransformations.substituteIndexRefs(in: inlined, substitutions: substitutions)
+            return buildUniformEvaluator(expr: inlined, program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+
+        case .remap(let base, let substitutions):
+            let directExpr = IRTransformations.getDirectExpression(base, program: program)
+            let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
+            return buildUniformEvaluator(expr: remapped, program: program, cacheManager: cacheManager, descriptors: descriptors, depth: nextDepth)
+
+        case .cacheRead(let cacheId, let tapIndex, _):
+            guard let descriptor = descriptors.first(where: { $0.id == cacheId }) else { return { 0 } }
+            let clampedTap = min(tapIndex, descriptor.historySize - 1)
+            return { cacheManager.readScalarCache(descriptor: descriptor, tapIndex: clampedTap) }
+        }
+    }
+
     // MARK: - Shared Resource Binding
 
     /// Bind shared resources (textures, samplers, buffers) to a compute encoder.
@@ -666,7 +927,7 @@ public class MetalBackend: Backend {
 
         // Bind cache buffers if needed
         if metalUnit.usedInputs.contains("cache"), let manager = cacheManager {
-            let cacheDescriptors = manager.getDescriptors(for: .visual)
+            let cacheDescriptors = manager.getDescriptors(forBackend: MetalBackend.identifier)
             for (i, descriptor) in cacheDescriptors.enumerated() {
                 let historyIdx = CacheNodeDescriptor.shaderHistoryBufferIndex(cachePosition: i)
                 let signalIdx = CacheNodeDescriptor.shaderSignalBufferIndex(cachePosition: i)

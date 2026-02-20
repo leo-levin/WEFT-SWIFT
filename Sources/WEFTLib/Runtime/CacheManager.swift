@@ -31,8 +31,11 @@ public struct CacheNodeDescriptor {
     /// The signal expression for edge detection
     public let signalExpr: IRExpr
 
-    /// Backend domain (visual or audio)
-    public let domain: CacheDomain
+    /// Storage strategy: scalar (uniform value) or perCoordinate (varies per pixel/sample)
+    public let storage: CacheStorage
+
+    /// Backend identifier ("visual" or "audio") for filtering
+    public let backendId: String
 
     /// Buffer index for history data (CacheManager internal)
     public let historyBufferIndex: Int
@@ -43,6 +46,10 @@ public struct CacheNodeDescriptor {
     /// Whether the cache value expression references the bundle/strand containing it
     /// Only caches with self-references need cycle breaking
     public let hasSelfReference: Bool
+
+    /// Free dimension names from annotation (e.g. ["x", "y"] for visual, ["i"] for audio).
+    /// Used to emit backend-agnostic coordinates in cacheRead nodes.
+    public let spatialDimensions: [String]
 
     // MARK: - Shader Buffer Index Calculation
 
@@ -63,10 +70,10 @@ public struct CacheNodeDescriptor {
     }
 }
 
-/// Cache domain determines buffer layout
-public enum CacheDomain {
-    case visual  // Per-pixel history: width × height × history_size
-    case audio   // Shared delay line: history_size (circular buffer)
+/// Cache storage strategy, determined by whether the cached value has spatial dimensions
+public enum CacheStorage {
+    case scalar         // Uniform value: historySize + 1 floats (circular buffer)
+    case perCoordinate  // Spatially varying: coordinateCount × historySize + coordinateCount floats
 }
 
 // MARK: - Cache Buffer
@@ -158,10 +165,23 @@ public class CacheManager {
                     tapIndex = 0
                 }
 
-                // Determine domain from hardware requirements
+                // Determine backend from hardware requirements
                 let hardware = annotations.bundleHardware(bundleName)
-                let backendId = BackendRegistry.shared.backendFor(hardware: hardware)
-                let domain: CacheDomain = (backendId == AudioBackend.identifier) ? .audio : .visual
+                let backendId = BackendRegistry.shared.backendFor(hardware: hardware) ?? "visual"
+
+                // Determine storage and spatial dimensions from annotation's free dimensions (domain-agnostic)
+                let storage: CacheStorage
+                let spatialDims: [String]
+                if let bundle = program.bundles[bundleName],
+                   let strand = bundle.strands.first(where: { $0.index == strandIndex }),
+                   let signal = annotations.signals["\(bundleName).\(strand.name)"] {
+                    let freeDims = signal.freeDimensions
+                    storage = freeDims.isEmpty ? .scalar : .perCoordinate
+                    spatialDims = freeDims
+                } else {
+                    storage = .perCoordinate  // conservative fallback
+                    spatialDims = ["x", "y"]  // conservative fallback for visual
+                }
 
                 // Check for duplicates - same bundle/strand/value/signal means same cache
                 let isDuplicate = descriptors.contains { existing in
@@ -191,10 +211,12 @@ public class CacheManager {
                         tapIndex: tapIndex,
                         valueExpr: args[0],
                         signalExpr: args[3],
-                        domain: domain,
+                        storage: storage,
+                        backendId: backendId,
                         historyBufferIndex: historyBufferIndex,
                         signalBufferIndex: signalBufferIndex,
-                        hasSelfReference: hasSelfReference
+                        hasSelfReference: hasSelfReference,
+                        spatialDimensions: spatialDims
                     )
                     descriptors.append(descriptor)
                 }
@@ -303,7 +325,7 @@ public class CacheManager {
     public func transformProgramForCaches(program: inout IRProgram) {
         // Build map of cache locations: "bundleName.strandIndex" or "bundleName.strandName" -> (cacheId, tapIndex)
         // Only include caches with self-references (those that need cycle breaking)
-        var cacheLocations: [String: (cacheId: String, tapIndex: Int)] = [:]
+        var cacheLocations: [String: (cacheId: String, tapIndex: Int, spatialDimensions: [String])] = [:]
 
         for descriptor in descriptors {
             // Only break cycles for caches that reference themselves
@@ -311,12 +333,12 @@ public class CacheManager {
 
             // Map the strand that CONTAINS this cache (even if nested inside other expressions)
             // This allows breaking self-reference cycles like: combined.val = max(x, cache(combined.val, ...))
-            cacheLocations["\(descriptor.bundleName).\(descriptor.strandIndex)"] = (descriptor.id, descriptor.tapIndex)
+            cacheLocations["\(descriptor.bundleName).\(descriptor.strandIndex)"] = (descriptor.id, descriptor.tapIndex, descriptor.spatialDimensions)
 
             // Also map by strand name if we can find it
             if let bundle = program.bundles[descriptor.bundleName],
                let strand = bundle.strands.first(where: { $0.index == descriptor.strandIndex }) {
-                cacheLocations["\(descriptor.bundleName).\(strand.name)"] = (descriptor.id, descriptor.tapIndex)
+                cacheLocations["\(descriptor.bundleName).\(strand.name)"] = (descriptor.id, descriptor.tapIndex, descriptor.spatialDimensions)
             }
         }
 
@@ -345,7 +367,7 @@ public class CacheManager {
     /// Recursively transform expression to replace cache back-references with cacheRead
     private func breakCacheCycles(
         in expr: IRExpr,
-        cacheLocations: [String: (cacheId: String, tapIndex: Int)],
+        cacheLocations: [String: (cacheId: String, tapIndex: Int, spatialDimensions: [String])],
         program: IRProgram
     ) -> IRExpr {
         switch expr {
@@ -364,7 +386,11 @@ public class CacheManager {
 
             // If this reference is to a cache location, replace with cacheRead
             if let cacheInfo = cacheLocations[key] {
-                return .cacheRead(cacheId: cacheInfo.cacheId, tapIndex: cacheInfo.tapIndex)
+                // Emit coordinates from annotation-derived spatial dimensions (backend-agnostic)
+                let coordinates: [IRExpr] = cacheInfo.spatialDimensions.map { dim in
+                    .index(bundle: "me", indexExpr: .param(dim))
+                }
+                return .cacheRead(cacheId: cacheInfo.cacheId, tapIndex: cacheInfo.tapIndex, coordinates: coordinates)
             }
 
             // Otherwise, continue with the original expression
@@ -434,14 +460,14 @@ public class CacheManager {
         let historyCount: Int
         let signalCount: Int
 
-        switch descriptor.domain {
-        case .visual:
+        switch descriptor.storage {
+        case .perCoordinate:
             // Per-pixel: width × height × history_size
             historyCount = width * height * descriptor.historySize
             signalCount = width * height
 
-        case .audio:
-            // Shared delay line: history_size + 1 (extra element stores write index)
+        case .scalar:
+            // Circular buffer: history_size + 1 (extra element stores write index)
             historyCount = descriptor.historySize + 1
             signalCount = 1
         }
@@ -489,9 +515,9 @@ public class CacheManager {
         return descriptors
     }
 
-    /// Get descriptors for a specific domain
-    public func getDescriptors(for domain: CacheDomain) -> [CacheNodeDescriptor] {
-        return descriptors.filter { $0.domain == domain }
+    /// Get descriptors for a specific backend
+    public func getDescriptors(forBackend backendId: String) -> [CacheNodeDescriptor] {
+        return descriptors.filter { $0.backendId == backendId }
     }
 
     /// Get buffer by index
@@ -499,18 +525,19 @@ public class CacheManager {
         return buffers[index]
     }
 
-    // MARK: - Audio Cache Operations (called from AudioCodeGen closures)
+    // MARK: - Scalar Cache Operations (CPU-ticked by each backend)
 
-    /// Tick audio cache: store value if signal changed
-    /// Returns the tapped value
+    /// Tick a scalar cache: store value if signal changed, return the tapped value.
     ///
-    /// Thread safety: This method is called from the audio render callback, which
-    /// runs on a single real-time thread. The method is safe for single-threaded
-    /// access. Do not call `allocateBuffers()` while audio playback is active.
+    /// Called by AudioCodeGen closures during the audio render callback and by
+    /// MetalBackend before each GPU dispatch for visual scalar caches.
+    ///
+    /// Thread safety: safe for single-threaded access per call site. Do not call
+    /// `allocateBuffers()` while a backend is actively ticking caches.
     ///
     /// The write index is stored at historyBuffer[historySize] (one extra element)
     /// to avoid dictionary access in the hot path.
-    public func tickAudioCache(
+    public func tickScalarCache(
         descriptor: CacheNodeDescriptor,
         value: Float,
         signal: Float
@@ -544,9 +571,9 @@ public class CacheManager {
         return historyPtr[readIdx]
     }
 
-    /// Read from audio cache without ticking (for cacheRead expressions)
+    /// Read from scalar cache without ticking (for cacheRead expressions)
     /// Returns the value at the specified tap index
-    public func readAudioCache(descriptor: CacheNodeDescriptor, tapIndex: Int) -> Float {
+    public func readScalarCache(descriptor: CacheNodeDescriptor, tapIndex: Int) -> Float {
         guard let historyBuffer = buffers[descriptor.historyBufferIndex] else {
             return 0.0
         }

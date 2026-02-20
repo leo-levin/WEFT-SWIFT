@@ -141,7 +141,7 @@ public enum IRTransformations {
         program: IRProgram
     ) throws -> IRExpr {
         switch expr {
-        case .num, .param, .cacheRead:
+        case .num, .param:
             return expr
 
         case .index(let bundle, let indexExpr):
@@ -610,7 +610,7 @@ public enum IRTransformations {
         }
     }
 
-    /// Resolve builtins used by a remap base, following bundle indirection.
+    /// Resolve builtins used by a remap base, following bundle indirection recursively.
     /// Checks both program bundles and optional local bundles (for spindle contexts).
     private static func resolveBaseBuiltins(
         _ expr: IRExpr,
@@ -623,11 +623,12 @@ public enum IRTransformations {
                 if case .num(let idx) = indexExpr {
                     let strandIdx = Int(idx)
                     if strandIdx < targetBundle.strands.count {
-                        return targetBundle.strands[strandIdx].expr.allBuiltins()
+                        // Recurse to follow chained bundle aliases (mv.x → mouse.x → _mouse.x → builtin)
+                        return resolveBaseBuiltins(targetBundle.strands[strandIdx].expr, program: program, localBundles: localBundles)
                     }
                 } else if case .param(let field) = indexExpr {
                     if let strand = targetBundle.strands.first(where: { $0.name == field }) {
-                        return strand.expr.allBuiltins()
+                        return resolveBaseBuiltins(strand.expr, program: program, localBundles: localBundles)
                     }
                 }
             }

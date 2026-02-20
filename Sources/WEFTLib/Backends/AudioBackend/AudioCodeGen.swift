@@ -28,8 +28,8 @@ public class AudioCodeGen {
         self.program = program
         self.swatch = swatch
         self.cacheManager = cacheManager
-        // Filter to only audio domain caches
-        self.cacheDescriptors = cacheManager?.getDescriptors(for: .audio) ?? []
+        // Filter to only audio backend caches
+        self.cacheDescriptors = cacheManager?.getDescriptors(forBackend: AudioBackend.identifier) ?? []
     }
 
     /// Generate audio render function
@@ -205,7 +205,7 @@ public class AudioCodeGen {
                             let tapIndex = min(descriptor.tapIndex, descriptor.historySize - 1)
                             return { _ in
                                 guard let mgr = manager else { return 0.0 }
-                                return mgr.readAudioCache(descriptor: descriptor, tapIndex: tapIndex)
+                                return mgr.readScalarCache(descriptor: descriptor, tapIndex: tapIndex)
                             }
                         }
                     }
@@ -286,9 +286,9 @@ public class AudioCodeGen {
             let remapped = IRTransformations.applyRemap(to: directExpr, substitutions: substitutions)
             return try buildEvaluator(for: remapped)
 
-        case .cacheRead(let cacheId, let tapIndex):
+        case .cacheRead(let cacheId, let tapIndex, _):
             // Read from cache history buffer (used to break cycles)
-            // Find the descriptor for this cacheId
+            // Audio caches are always scalar — coordinates ignored
             guard let descriptor = cacheDescriptors.first(where: { $0.id == cacheId }) else {
                 // Fallback: return 0 if no descriptor found
                 return { _ in 0.0 }
@@ -297,7 +297,7 @@ public class AudioCodeGen {
             let clampedTap = min(tapIndex, descriptor.historySize - 1)
             return { _ in
                 guard let mgr = manager else { return 0.0 }
-                return mgr.readAudioCache(descriptor: descriptor, tapIndex: clampedTap)
+                return mgr.readScalarCache(descriptor: descriptor, tapIndex: clampedTap)
             }
         }
     }
@@ -587,7 +587,7 @@ public class AudioCodeGen {
 
             // Use CacheManager's tick method for audio caches
             guard let mgr = manager else { return value }
-            return mgr.tickAudioCache(descriptor: descriptor, value: value, signal: signal)
+            return mgr.tickScalarCache(descriptor: descriptor, value: value, signal: signal)
         }
     }
 }

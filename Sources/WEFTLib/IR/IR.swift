@@ -96,7 +96,9 @@ public indirect enum IRExpr: Codable, Equatable {
     case extract(call: IRExpr, index: Int)
     case remap(base: IRExpr, substitutions: [String: IRExpr])
     /// Read from cache history buffer (used to break cycles in feedback effects)
-    case cacheRead(cacheId: String, tapIndex: Int)
+    /// coordinates: spatial expressions for per-coordinate caches (e.g. [me.x, me.y]).
+    /// Empty for scalar caches. Remap substitutions flow through these expressions.
+    case cacheRead(cacheId: String, tapIndex: Int, coordinates: [IRExpr])
 
     // MARK: - Codable
 
@@ -104,7 +106,7 @@ public indirect enum IRExpr: Codable, Equatable {
         case type, value, name, bundle, field, indexExpr, op, left, right, operand
         case spindle, args, call, index, base, substitutions
         case resourceId, u, v, channel, offset
-        case cacheId, tapIndex
+        case cacheId, tapIndex, coordinates
     }
 
     public init(from decoder: Decoder) throws {
@@ -190,7 +192,8 @@ public indirect enum IRExpr: Codable, Equatable {
         case "cacheRead":
             let cacheId = try container.decode(String.self, forKey: .cacheId)
             let tapIndex = try container.decode(Int.self, forKey: .tapIndex)
-            self = .cacheRead(cacheId: cacheId, tapIndex: tapIndex)
+            let coordinates = try container.decodeIfPresent([IRExpr].self, forKey: .coordinates) ?? []
+            self = .cacheRead(cacheId: cacheId, tapIndex: tapIndex, coordinates: coordinates)
 
         default:
             throw DecodingError.dataCorruptedError(
@@ -249,10 +252,13 @@ public indirect enum IRExpr: Codable, Equatable {
             try container.encode(base, forKey: .base)
             try container.encode(substitutions, forKey: .substitutions)
 
-        case .cacheRead(let cacheId, let tapIndex):
+        case .cacheRead(let cacheId, let tapIndex, let coordinates):
             try container.encode("cacheRead", forKey: .type)
             try container.encode(cacheId, forKey: .cacheId)
             try container.encode(tapIndex, forKey: .tapIndex)
+            if !coordinates.isEmpty {
+                try container.encode(coordinates, forKey: .coordinates)
+            }
         }
     }
 }
@@ -296,8 +302,8 @@ extension IRExpr {
                 vars.formUnion(expr.freeVars())
             }
             return vars
-        case .cacheRead:
-            return []  // cacheRead is a terminal - no bundle references
+        case .cacheRead(_, _, let coordinates):
+            return coordinates.reduce(into: Set<String>()) { $0.formUnion($1.freeVars()) }
         }
     }
 
@@ -349,8 +355,8 @@ extension IRExpr {
                 vars.formUnion(expr.currentTickFreeVars())
             }
             return vars
-        case .cacheRead:
-            return []
+        case .cacheRead(_, _, let coordinates):
+            return coordinates.reduce(into: Set<String>()) { $0.formUnion($1.currentTickFreeVars()) }
         }
     }
 
@@ -358,7 +364,8 @@ extension IRExpr {
     public func anyNode(_ predicate: (IRExpr) -> Bool) -> Bool {
         if predicate(self) { return true }
         switch self {
-        case .num, .param, .cacheRead: return false
+        case .num, .param: return false
+        case .cacheRead(_, _, let coords): return coords.contains { $0.anyNode(predicate) }
         case .index(_, let idx): return idx.anyNode(predicate)
         case .binaryOp(_, let l, let r): return l.anyNode(predicate) || r.anyNode(predicate)
         case .unaryOp(_, let o): return o.anyNode(predicate)
@@ -406,8 +413,11 @@ extension IRExpr {
     /// Apply a transform to all direct children, preserving node structure.
     public func mapChildren(_ transform: (IRExpr) throws -> IRExpr) rethrows -> IRExpr {
         switch self {
-        case .num, .param, .cacheRead:
+        case .num, .param:
             return self
+        case .cacheRead(let cacheId, let tapIndex, let coordinates):
+            if coordinates.isEmpty { return self }
+            return .cacheRead(cacheId: cacheId, tapIndex: tapIndex, coordinates: try coordinates.map(transform))
         case .index(let bundle, let indexExpr):
             return .index(bundle: bundle, indexExpr: try transform(indexExpr))
         case .binaryOp(let op, let left, let right):
@@ -445,8 +455,10 @@ extension IRExpr {
     /// Visit all direct children.
     public func forEachChild(_ visitor: (IRExpr) -> Void) {
         switch self {
-        case .num, .param, .cacheRead:
+        case .num, .param:
             break
+        case .cacheRead(_, _, let coordinates):
+            coordinates.forEach(visitor)
         case .index(_, let indexExpr):
             visitor(indexExpr)
         case .binaryOp(_, let left, let right):
@@ -494,8 +506,12 @@ extension IRExpr: CustomStringConvertible {
         case .remap(let base, let substitutions):
             let subs = substitutions.map { "\($0.key) ~ \($0.value)" }.joined(separator: ", ")
             return "\(base)[\(subs)]"
-        case .cacheRead(let cacheId, let tapIndex):
-            return "cacheRead(\(cacheId), \(tapIndex))"
+        case .cacheRead(let cacheId, let tapIndex, let coordinates):
+            if coordinates.isEmpty {
+                return "cacheRead(\(cacheId), \(tapIndex))"
+            }
+            let coordStr = coordinates.map { $0.description }.joined(separator: ", ")
+            return "cacheRead(\(cacheId), \(tapIndex), [\(coordStr)])"
         }
     }
 }
