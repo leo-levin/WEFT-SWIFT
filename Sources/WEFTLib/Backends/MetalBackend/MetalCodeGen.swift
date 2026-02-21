@@ -317,6 +317,16 @@ public class MetalCodeGen {
             float probeY;
         };
 
+        // Integer hash noise (no sin-based artifacts)
+        float weft_noise(float x, float y, float z = 0.0) {
+            uint h = as_type<uint>(x) * 374761393u
+                   + as_type<uint>(y) * 668265263u
+                   + as_type<uint>(z) * 2654435761u;
+            h = (h ^ (h >> 13)) * 1274126177u;
+            h = h ^ (h >> 16);
+            return float(h) / float(0xFFFFFFFFu);
+        }
+
         """
 
         // Build probe slot map before generating shader
@@ -1174,8 +1184,12 @@ public class MetalCodeGen {
         case "mod": return "fmod(\(argCodes[0]), \(argCodes[1]))"
         case "sign": return "sign(\(argCodes[0]))"
 
-        // Noise (simplified - would need actual implementation)
-        case "noise": return "fract(sin(dot(float2(\(argCodes[0]), \(argCodes.count > 1 ? argCodes[1] : "0.0")), float2(12.9898, 78.233))) * 43758.5453)"
+        // Noise (integer hash, 1-3 args)
+        case "noise":
+            let a0 = argCodes[0]
+            let a1 = argCodes.count > 1 ? argCodes[1] : "0.0"
+            let a2 = argCodes.count > 2 ? argCodes[2] : "0.0"
+            return "weft_noise(\(a0), \(a1), \(a2))"
 
         // Hardware inputs - now handled as builtins
         case "camera":

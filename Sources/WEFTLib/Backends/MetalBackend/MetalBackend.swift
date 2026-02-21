@@ -830,10 +830,14 @@ public class MetalBackend: Backend {
             case "noise":
                 let xEval = evals[0]
                 let yEval = evals.count > 1 ? evals[1] : { Float(0) }
+                let zEval = evals.count > 2 ? evals[2] : { Float(0) }
                 return {
-                    let dot = xEval() * 12.9898 + yEval() * 78.233
-                    let s = sinf(dot) * 43758.5453
-                    return s - floorf(s)
+                    var h = xEval().bitPattern &* 374761393
+                        &+ yEval().bitPattern &* 668265263
+                        &+ zEval().bitPattern &* 2654435761
+                    h = (h ^ (h >> 13)) &* 1274126177
+                    h = h ^ (h >> 16)
+                    return Float(h) / Float(UInt32.max)
                 }
             default: return { 0 }
             }

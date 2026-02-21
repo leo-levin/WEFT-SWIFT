@@ -364,7 +364,7 @@ struct ContentView: View {
 
                 if viewModel.hasVisual {
                     ZStack(alignment: .topTrailing) {
-                        WeftMetalView(coordinator: viewModel.coordinator, preferredFPS: preferredFPS, renderScale: renderScale)
+                        WeftMetalView(coordinator: viewModel.coordinator, preferredFPS: preferredFPS, renderScale: renderScale, recorder: viewModel.videoRecorder)
 
                         if showStats {
                             StatsBadge(fps: renderStats.fps, frameTime: renderStats.frameTime)
@@ -538,6 +538,7 @@ class WeftViewModel: ObservableObject {
     @Published var errorLine: Int? = nil
     @Published var errorColumn: Int? = nil
     @Published var isRunning = false
+    @Published var isRecording = false
     @Published var resourceWarning: String? = nil
 
     // Layout preview state
@@ -563,6 +564,7 @@ class WeftViewModel: ObservableObject {
         return isDirty ? "\(filename) \u{2022}" : filename
     }
 
+    private(set) var videoRecorder: VideoRecorder?
     private let compiler = WeftCompiler()
     private var compileTask: Task<Void, Never>?
 
@@ -672,6 +674,9 @@ class WeftViewModel: ObservableObject {
     }
 
     func stop() {
+        if isRecording {
+            toggleRecording()
+        }
         if isAudioPlaying {
             coordinator.stopAudio()
             isAudioPlaying = false
@@ -791,6 +796,30 @@ class WeftViewModel: ObservableObject {
             } catch {
                 errorMessage = "Audio error: \(error.localizedDescription)"
             }
+        }
+    }
+
+    func toggleRecording() {
+        if isRecording {
+            // Stop recording
+            videoRecorder?.stopRecording { url in
+                if let url = url {
+                    print("Recording saved: \(url.path)")
+                }
+            }
+            videoRecorder = nil
+            isRecording = false
+            print("Recording stopped")
+        } else {
+            // Start recording
+            guard let device = coordinator.getMetalBackend()?.device else {
+                print("VideoRecorder: No Metal device available")
+                return
+            }
+            let recorder = VideoRecorder(device: device)
+            videoRecorder = recorder
+            isRecording = true
+            print("Recording started: \(recorder.outputURL.path)")
         }
     }
 

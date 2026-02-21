@@ -426,19 +426,18 @@ public class AudioCodeGen {
                 return 0.0
             }
 
-        // Noise (hash-based pseudo-random - same formula as Metal)
+        // Noise (integer hash - same algorithm as Metal)
         case "noise":
             let xEval = argEvals[0]
             let yEval = argEvals.count > 1 ? argEvals[1] : { _ in Float(0.0) }
+            let zEval = argEvals.count > 2 ? argEvals[2] : { _ in Float(0.0) }
             return { ctx in
-                let x = xEval(ctx)
-                let y = yEval(ctx)
-                // dot(float2(x, y), float2(12.9898, 78.233))
-                let dot = x * 12.9898 + y * 78.233
-                // fract(sin(dot) * 43758.5453)
-                let sinVal = sinf(dot)
-                let scaled = sinVal * 43758.5453
-                return scaled - floorf(scaled)
+                var h = xEval(ctx).bitPattern &* 374761393
+                    &+ yEval(ctx).bitPattern &* 668265263
+                    &+ zEval(ctx).bitPattern &* 2654435761
+                h = (h ^ (h >> 13)) &* 1274126177
+                h = h ^ (h >> 16)
+                return Float(h) / Float(UInt32.max)
             }
 
         // Hardware inputs - now handled as builtins

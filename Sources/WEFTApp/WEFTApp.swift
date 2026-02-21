@@ -86,6 +86,7 @@ struct ViewModelKey: FocusedValueKey {
 // MARK: - Panel Commands (View Menu)
 
 struct PanelCommands: Commands {
+    @FocusedValue(\.viewModel) var viewModel
     @FocusedBinding(\.showGraph) var showGraph
     @FocusedBinding(\.showErrors) var showErrors
     @FocusedBinding(\.showStats) var showStats
@@ -119,6 +120,15 @@ struct PanelCommands: Commands {
                     set: { showDevMode = $0 }
                 ))
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                Divider()
+
+                if let vm = viewModel {
+                    Button(vm.isRecording ? "Stop Recording" : "Record Video") {
+                        vm.toggleRecording()
+                    }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                }
 
                 Divider()
 

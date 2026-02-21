@@ -67,6 +67,7 @@ class WeftMetalViewCoordinator: NSObject, MTKViewDelegate {
     var weftCoordinator: Coordinator
     var startTime: CFTimeInterval = 0
     var renderScale: CGFloat = 2.0
+    var recorder: VideoRecorder?
 
     init(coordinator: Coordinator) {
         self.weftCoordinator = coordinator
@@ -97,6 +98,12 @@ class WeftMetalViewCoordinator: NSObject, MTKViewDelegate {
 
         // Render frame
         weftCoordinator.renderVisual(to: drawable, time: time)
+
+        // Capture frame for video recording
+        if let recorder = recorder,
+           let blitBuffer = weftCoordinator.getMetalBackend()?.commandQueue.makeCommandBuffer() {
+            recorder.appendFrame(commandBuffer: blitBuffer, sourceTexture: drawable.texture, time: time)
+        }
 
         // Record stats
         RenderStats.shared.recordFrame()
@@ -209,6 +216,7 @@ struct WeftMetalView: NSViewRepresentable {
     let coordinator: Coordinator
     var preferredFPS: Int = 60
     var renderScale: Double = 2.0
+    var recorder: VideoRecorder?
 
     func makeCoordinator() -> WeftMetalViewCoordinator {
         WeftMetalViewCoordinator(coordinator: coordinator)
@@ -242,5 +250,6 @@ struct WeftMetalView: NSViewRepresentable {
             RenderStats.shared.expectedFrameTime = 1.0 / Double(preferredFPS)
         }
         context.coordinator.renderScale = CGFloat(renderScale)
+        context.coordinator.recorder = recorder
     }
 }

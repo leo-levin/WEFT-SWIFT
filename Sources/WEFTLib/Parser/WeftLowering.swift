@@ -53,11 +53,9 @@ public enum LoweringError: Error, LocalizedError {
 
 // MARK: - Built-in Functions
 
-private let BUILTINS: Set<String> = [
-    "sin", "cos", "tan", "abs", "floor", "ceil", "sqrt", "pow",
-    "min", "max", "lerp", "clamp", "step", "smoothstep", "fract", "mod",
-    "osc", "cache", "key"
-]
+private let BUILTINS: Set<String> = SharedBuiltins.domainAgnosticNames.union([
+    "osc", "cache", "key"  // handled by desugar/lowering, not backends
+])
 
 private struct ResourceBuiltin {
     let width: Int
